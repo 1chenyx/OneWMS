@@ -1,0 +1,17 @@
+{
+  "name": "onewms",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @one/core -w @one/wms",
+    "test": "npm run test -w @one/core -w @one/wms",
+    "typecheck": "npm run typecheck -w @one/core -w @one/wms"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
