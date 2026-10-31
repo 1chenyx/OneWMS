@@ -14,8 +14,8 @@ export class FieldsView {
     private readonly registry: FieldRegistry,
   ) {}
 
-  provide(providedBy: string, def: FieldDefinition): RegisteredField {
-    return this.registry.provide(this.workspaceId, providedBy, def);
+  provide(providedBy: string, def: FieldDefinition, opts?: { actor?: string }): RegisteredField {
+    return this.registry.provide(this.workspaceId, providedBy, def, opts);
   }
 
   require(
@@ -26,8 +26,9 @@ export class FieldsView {
       sharing?: 'shared' | 'private';
       expectType?: 'string' | 'number' | 'boolean' | 'date' | 'json';
     },
+    opts?: { actor?: string },
   ): RegisteredField {
-    return this.registry.require(this.workspaceId, requiredBy, spec);
+    return this.registry.require(this.workspaceId, requiredBy, spec, opts);
   }
 
   /** 软删除/恢复可见性 */

@@ -1,4 +1,5 @@
 import type { Database as SqliteDatabase } from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { EventError } from '../errors.js';
 import type { EventEnvelope, EventRow } from './envelope.js';
 import { buildEnvelope, rowToEnvelope } from './envelope.js';
@@ -166,6 +167,32 @@ export class OplogStore {
       .all(workspaceId);
     const result: Record<string, { seq: number; lamport: number }> = {};
     for (const r of rows) result[r.actor] = { seq: r.last_seq, lamport: r.last_lamport };
+    return result;
+  }
+
+  /**
+   * 各 actor 通道的内容指纹（eventId 集合的 sha256，握手 checksum 用）。
+   * 捕获「水位持平但事件集不同」的分裂（如多节点各自以相同 actor 落账）——
+   * eventId 全局唯一，集合差异必然显影；排序后折叠保证与摄入顺序无关。
+   */
+  actorChecksums(workspaceId: string): Record<string, string> {
+    const rows = this.db
+      .prepare<unknown[], { actor: string; event_id: string }>(
+        `SELECT actor, event_id FROM oplog WHERE workspace_id = ? ORDER BY actor, event_id`,
+      )
+      .all(workspaceId);
+    const result: Record<string, string> = {};
+    let actor = '';
+    let hash = createHash('sha256');
+    for (const r of rows) {
+      if (r.actor !== actor) {
+        if (actor !== '') result[actor] = hash.digest('hex');
+        actor = r.actor;
+        hash = createHash('sha256');
+      }
+      hash.update(r.event_id);
+    }
+    if (actor !== '') result[actor] = hash.digest('hex');
     return result;
   }
 

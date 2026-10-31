@@ -2,7 +2,7 @@ import type { Database as SqliteDatabase } from 'better-sqlite3';
 import { FieldConflictError, FieldNotFoundError } from '../errors.js';
 import type { EventEnvelope } from '../oplog/envelope.js';
 import type { OplogStore } from '../oplog/oplog-store.js';
-import { qualifyKey } from './key-naming.js';
+import { qualifyKey, type FieldSharing } from './key-naming.js';
 
 /**
  * 全局字段注册表（FieldRegistry，DESIGN.md §7.1）。
@@ -12,10 +12,10 @@ import { qualifyKey } from './key-naming.js';
  *  - 本注册表是事件投影：所有变更先落 `registry.*` 事件再应用，
  *    因此「重放全部事件 = 完整重建注册表」（§8 唯一真相纪律）；
  *  - 软删除：visible=false，永不物理删除（卸载模块不丢用户数据）；
- *  - private 字段自动加模块前缀，从机制上消除无意撞名（§7.2，规则见 key-naming.ts）。
+ *  - private 字段自动加模块前缀，从机制上消除无意撞名（§7.2，规则与
+ *    FieldSharing 定义见 key-naming.ts——依赖方向：本文件向下引用基础层）。
  */
 export type FieldDataType = 'string' | 'number' | 'boolean' | 'date' | 'json';
-export type FieldSharing = 'shared' | 'private';
 
 export interface FieldDefinition {
   entity: string;
@@ -76,8 +76,15 @@ export class FieldRegistry {
   /**
    * 提供字段（模块 provides，§6 manifest）。
    * 不存在 → 创建并成为 owner；已存在且类型兼容 → 加入 usedBy；类型冲突 → 拒绝。
+   * opts.actor：事件 actor 覆盖（缺省 `module:providedBy`）——种子场景传
+   * `module:xxx@nodeId` 使通道节点唯一（M5 同步的账本唯一约束要求，§8.5）。
    */
-  provide(workspaceId: string, providedBy: string, def: FieldDefinition): RegisteredField {
+  provide(
+    workspaceId: string,
+    providedBy: string,
+    def: FieldDefinition,
+    opts?: { actor?: string },
+  ): RegisteredField {
     const qualifiedKey = qualifyKey(providedBy, def.key, def.sharing);
     const existing = this.#getRow(workspaceId, def.entity, qualifiedKey);
 
@@ -91,7 +98,7 @@ export class FieldRegistry {
     // 命令侧校验通过 → 落事件（唯一真相）→ 立即应用投影（命令路径与重放共用 applyEvent）
     const provided = this.oplog.append({
       workspaceId,
-      actor: `module:${providedBy}`,
+      actor: opts?.actor ?? `module:${providedBy}`,
       type: 'registry.field.provided',
       payload: {
         providedBy,
@@ -114,11 +121,14 @@ export class FieldRegistry {
   /**
    * 声明依赖（模块 requires，§6 manifest）。
    * 字段必须已存在且类型兼容——这是安装期冲突检测的执行点（§7.2）。
+   * opts.actor：事件 actor 覆盖（与 provide 同——M5 同步的账本唯一约束要求
+   * 落账 actor 通道节点唯一，模块系统安装时传 `module:xxx@nodeId`）。
    */
   require(
     workspaceId: string,
     requiredBy: string,
     spec: { entity: string; key: string; sharing?: FieldSharing; expectType?: FieldDataType },
+    opts?: { actor?: string },
   ): RegisteredField {
     const sharing = spec.sharing ?? 'shared';
     const qualifiedKey = qualifyKey(requiredBy, spec.key, sharing);
@@ -139,7 +149,7 @@ export class FieldRegistry {
 
     const required = this.oplog.append({
       workspaceId,
-      actor: `module:${requiredBy}`,
+      actor: opts?.actor ?? `module:${requiredBy}`,
       type: 'registry.field.required',
       payload: { requiredBy, entity: spec.entity, qualifiedKey },
     });

@@ -42,12 +42,14 @@ describe('工具总线', () => {
   it('注册 + listTools 暴露元数据（handler 不可见——AI 上下文安全）', () => {
     ws.tools.register(adjustTool);
     const tools = ws.tools.list();
-    expect(tools).toHaveLength(1);
-    expect(tools[0]).toMatchObject({
+    // 内核默认注册 profile.propose（M4 慢通道入口）+ 本测试注册的领域工具
+    expect(tools.map((t) => t.id)).toContain('wms.inventory.adjust');
+    const listed = tools.find((t) => t.id === 'wms.inventory.adjust')!;
+    expect(listed).toMatchObject({
       id: 'wms.inventory.adjust',
       permission: 'write',
     });
-    expect(tools[0]).not.toHaveProperty('handler');
+    expect(listed).not.toHaveProperty('handler');
   });
 
   it('工具 id 必须带命名空间', () => {
