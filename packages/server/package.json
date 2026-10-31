@@ -1,0 +1,29 @@
+{
+  "name": "@one/server",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch --tsconfig tsconfig.runtime.json src/main.ts",
+    "start": "node dist/main.js",
+    "start:relay": "node dist/relay-main.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "pretest": "npm run build -w @one/core -w @one/wms -w @one/ai",
+    "pretypecheck": "npm run build -w @one/core -w @one/wms -w @one/ai"
+  },
+  "dependencies": {
+    "@one/ai": "*",
+    "@one/core": "*",
+    "@one/wms": "*",
+    "@hono/node-server": "^1.13.0",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.7"
+  }
+}
