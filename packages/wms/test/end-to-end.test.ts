@@ -104,11 +104,37 @@ describe('端到端全链路', () => {
     core.close();
   });
 
+  it('两层投影同时被篡改 → replayAll() 一次修正（M5 同步回合后的重建入口）', async () => {
+    const core = OneCore.open(':memory:');
+    const domain = WmsDomain.attach(core);
+    const ws = domain.workspace('ws-replay-all');
+
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: 'x', extData: { spec: 'M6' } });
+    const material = ws.fields.get('sku', 'spec')!; // 构造期种子字段（内核投影）
+
+    // 内核（field_registry）与领域（wms_sku）两层同时绕过命令通道篡改
+    const db = core.exposeDb();
+    db.prepare(`UPDATE field_registry SET visible = 0 WHERE 1=1`).run();
+    db.prepare(`UPDATE wms_sku SET name = '被篡改' WHERE 1=1`).run();
+    expect(ws.fields.get('sku', 'spec')!.visible).toBe(false);
+
+    // 一次调用修正两层：注册表可见性恢复、SKU 名称恢复
+    const result = ws.replayAll();
+    expect(result.core.appliedRegistryEvents).toBeGreaterThan(0);
+    expect(result.wms.appliedWmsEvents).toBeGreaterThan(0);
+    expect(ws.fields.get('sku', 'spec')!.visible).toBe(true);
+    expect(ws.fields.get('sku', 'spec')!.qualifiedKey).toBe(material.qualifiedKey);
+    expect(ws.skus.byCode('A-1')!.name).toBe('x');
+    core.close();
+  });
+
   it('多工作区隔离：SKU / 库存 / 单据互不可见', async () => {
     const core = OneCore.open(':memory:');
     const domain = WmsDomain.attach(core);
     const a = domain.workspace('ws-a');
     const b = domain.workspace('ws-b');
+    const baselineA = a.events.count(); // 构造期种子事件之后
+    const baselineB = b.events.count();
 
     await a.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: '甲区' });
     await a.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 5 });
@@ -118,8 +144,8 @@ describe('端到端全链路', () => {
     expect(b.skus.byCode('A-1')!.name).toBe('乙区');
     expect(a.inventory.list()).toHaveLength(1);
     expect(b.inventory.list()).toHaveLength(0);
-    expect(a.events.count()).toBe(2);
-    expect(b.events.count()).toBe(1);
+    expect(a.events.count()).toBe(baselineA + 2);
+    expect(b.events.count()).toBe(baselineB + 1);
     core.close();
   });
 

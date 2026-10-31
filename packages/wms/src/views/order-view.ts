@@ -5,7 +5,7 @@ import {
   type OrderCreatedPayload,
   type OrderStateChangedPayload,
 } from '../events/catalog.js';
-import type { OrderDirection, OrderState } from '../state/order-state-machine.js';
+import type { OrderDirection } from '../state/order-state-machine.js';
 import { OrderStateConflictError } from '../errors.js';
 
 /**
@@ -21,7 +21,8 @@ export interface OrderRecord {
   readonly id: string;
   readonly orderNo: string;
   readonly direction: OrderDirection;
-  readonly state: OrderState;
+  /** 状态词汇由流程配置定义（模块可贡献新状态）——投影只记事实（M8） */
+  readonly state: string;
   readonly note: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -52,7 +53,7 @@ function rowToRecord(row: OrderRow): OrderRecord {
     id: row.id,
     orderNo: row.order_no,
     direction: row.direction as OrderDirection,
-    state: row.state as OrderState,
+    state: row.state,
     note: row.note,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

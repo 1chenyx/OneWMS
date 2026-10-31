@@ -2,13 +2,18 @@ import { randomUUID } from 'node:crypto';
 import type { ToolContext, ToolDefinition } from '@one/core';
 import type { WmsWorkspace } from '../wms.js';
 import { WMS_EVENT_TYPES } from '../events/catalog.js';
-import { assertTransition, type OrderDirection, type OrderState } from '../state/order-state-machine.js';
+import {
+  assertTransition,
+  WORKFLOW_BY_DIRECTION,
+  type OrderDirection,
+} from '../state/order-state-machine.js';
 import {
   InsufficientStockError,
   OrderAlreadyExistsError,
   OrderNotFoundError,
   SkuAlreadyExistsError,
   SkuNotFoundError,
+  WorkflowNotFoundError,
 } from '../errors.js';
 
 /**
@@ -164,20 +169,18 @@ export function createWmsTools(
     },
   };
 
-  const orderTransition: ToolDefinition<{ orderNo: string; to: OrderState }> = {
+  const orderTransition: ToolDefinition<{ orderNo: string; to: string }> = {
     id: 'wms.order.transition',
     label: '单据状态转移',
-    description: '推进单据状态。入库单：created → received → done；出库单：created → picking → shipped → done；未完成前可 canceled。to 是目标状态。',
+    description:
+      '推进单据状态。合法转移由当前流程配置决定（默认：入库 created → received → done；出库 created → picking → shipped → done；未完成前可 canceled；流程配置可含更多状态）。to 是目标状态。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
         orderNo: { type: 'string', description: '单据号' },
-        to: {
-          type: 'string',
-          enum: ['created', 'received', 'picking', 'shipped', 'done', 'canceled'],
-          description: '目标状态',
-        },
+        // 不设 enum：状态词汇由流程配置定义（模块可贡献新状态），合法性由 handler 按配置裁决
+        to: { type: 'string', description: '目标状态（合法值由当前流程配置决定）' },
       },
       required: ['orderNo', 'to'],
     },
@@ -186,8 +189,12 @@ export function createWmsTools(
       ws.sync();
       const order = ws.orders.byNo(params.orderNo);
       if (!order) throw new OrderNotFoundError(params.orderNo);
-      // 状态机校验——非法转移在此被墙拦下（§4.2 规则即护栏）
-      assertTransition(order.direction, order.state, params.to);
+      // 流程校验（M8 行为闭环）——转移表来自 Profile workflows（配置即权威）：
+      // AI 慢通道改流程、模块 contributes 叠加转移，下一次流转立即生效。
+      // 流程定义缺失 → 明确报错，不静默回退硬编码表（否则「删流程」的配置静默失效）。
+      const workflow = ws.profile.getSnapshot().workflows[WORKFLOW_BY_DIRECTION[order.direction]];
+      if (!workflow) throw new WorkflowNotFoundError(order.direction);
+      assertTransition(workflow.transitions, order.direction, order.state, params.to);
       ctx.appendEvent(WMS_EVENT_TYPES.orderStateChanged, {
         orderId: order.id,
         orderNo: order.orderNo,

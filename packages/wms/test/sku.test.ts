@@ -30,20 +30,23 @@ describe('SKU：创建与更新', () => {
     expect(sku!.extData).toEqual({ spec: '不锈钢' });
     expect(sku!.id).toBe((result as { skuId: string }).skuId);
 
-    // 事件账本里有且仅有一条创建事件（wms. 命名空间 + 过去时）
+    // wms. 命名空间里有且仅有一条创建事件（构造期另有种子事件：字段 provide + config.change）
     const types: string[] = [];
-    ws.events.forEach((e) => types.push(e.type));
+    ws.events.forEach((e) => {
+      if (e.type.startsWith('wms.')) types.push(e.type);
+    });
     expect(types).toEqual(['wms.sku.created']);
   });
 
   it('重复编码 → 拒绝且不产生第二个事件（命令失败 ≠ 事实）', async () => {
+    const baseline = ws.events.count(); // 构造期种子事件之后
     await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: 'x' });
     await expect(
       ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: 'y' }),
     ).rejects.toThrow(SkuAlreadyExistsError);
 
     expect(ws.skus.list()).toHaveLength(1);
-    expect(ws.events.count()).toBe(1);
+    expect(ws.events.count()).toBe(baseline + 1);
   });
 
   it('更新名称与扩展字段（未传字段保持不变）', async () => {

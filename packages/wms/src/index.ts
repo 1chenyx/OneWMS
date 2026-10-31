@@ -16,12 +16,18 @@ export { InventoryView, type InventoryRecord, type LedgerRecord } from './views/
 
 export {
   ORDER_TRANSITIONS,
+  WORKFLOW_BY_DIRECTION,
   canTransition,
   assertTransition,
   transitionsFrom,
   isTerminalState,
 } from './state/order-state-machine.js';
-export type { OrderDirection, OrderState, StateTransition } from './state/order-state-machine.js';
+export type {
+  OrderDirection,
+  OrderState,
+  StateTransition,
+  TransitionEdge,
+} from './state/order-state-machine.js';
 
 export { WMS_EVENT_TYPES, isWmsEventType } from './events/catalog.js';
 export type {
@@ -44,6 +50,7 @@ export {
   OrderAlreadyExistsError,
   OrderNotFoundError,
   InvalidTransitionError,
+  WorkflowNotFoundError,
   InsufficientStockError,
   OrderStateConflictError,
 } from './errors.js';

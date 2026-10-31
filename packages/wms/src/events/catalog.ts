@@ -1,4 +1,4 @@
-import type { OrderDirection, OrderState } from '../state/order-state-machine.js';
+import type { OrderDirection } from '../state/order-state-machine.js';
 
 /**
  * 领域事件目录（DESIGN.md §8.2 事件目录的 wms 子集）。
@@ -60,8 +60,9 @@ export interface OrderStateChangedPayload {
   readonly orderId: string;
   readonly orderNo: string;
   readonly direction: OrderDirection;
-  readonly from: OrderState;
-  readonly to: OrderState;
+  /** 状态词汇由流程配置定义（模块可贡献新状态）——事件是事实记录，不持词汇表权威（M8） */
+  readonly from: string;
+  readonly to: string;
 }
 
 export interface InventoryAdjustedPayload {

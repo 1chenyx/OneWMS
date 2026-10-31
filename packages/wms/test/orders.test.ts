@@ -119,12 +119,13 @@ describe('单据：状态机', () => {
   });
 
   it('跳步非法：created → done 直接拒绝（InvalidTransitionError，不落事件）', async () => {
+    const baseline = ws.events.count(); // 构造期种子事件之后
     const no = await createIn();
     await expect(
       ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'done' }),
     ).rejects.toThrow(InvalidTransitionError);
     expect(ws.orders.byNo(no)!.state).toBe('created');
-    expect(ws.events.count()).toBe(3); // 2 SKU 创建 + 1 单据创建，无状态事件
+    expect(ws.events.count()).toBe(baseline + 1); // 1 单据创建（2 SKU 在 beforeEach 已计入 baseline），无状态事件
   });
 
   it('入库单 received 后不可取消；出库单 picking 可取消', async () => {

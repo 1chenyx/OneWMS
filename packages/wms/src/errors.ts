@@ -46,6 +46,18 @@ export class InvalidTransitionError extends CoreError {
   }
 }
 
+/** 方向对应的流程定义缺失（M8：配置是唯一行为权威，缺配置不静默回退硬编码表） */
+export class WorkflowNotFoundError extends CoreError {
+  constructor(direction: string) {
+    super(
+      'WMS_WORKFLOW_NOT_FOUND',
+      `${direction === 'in' ? '入库' : '出库'}单的流程定义（workflows.${
+        direction === 'in' ? 'inbound' : 'outbound'
+      }）不存在——请经配置确认通道恢复流程定义后再流转`,
+    );
+  }
+}
+
 /** 库存不足（负库存防线——DESIGN.md §7.2 对抗型冲突的 v1 默认规则） */
 export class InsufficientStockError extends CoreError {
   constructor(skuCode: string, requested: number, available: number) {
