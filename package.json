@@ -7,9 +7,11 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @one/core -w @one/wms",
-    "test": "npm run test -w @one/core -w @one/wms",
-    "typecheck": "npm run typecheck -w @one/core -w @one/wms"
+    "build": "npm run build -w @one/core -w @one/wms -w @one/ai -w @one/server -w @one/app",
+    "test": "npm run test -w @one/core -w @one/wms -w @one/ai -w @one/server -w @one/app",
+    "typecheck": "npm run typecheck -w @one/core -w @one/wms -w @one/ai -w @one/server -w @one/app",
+    "dev:server": "npm run dev -w @one/server",
+    "dev:app": "npm run dev -w @one/app"
   },
   "engines": {
     "node": ">=22"
