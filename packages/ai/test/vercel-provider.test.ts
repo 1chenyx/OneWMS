@@ -1,0 +1,136 @@
+import { describe, it, expect } from 'vitest';
+import { MockLanguageModelV4 } from 'ai/test';
+import type { LanguageModelV4GenerateResult } from '@ai-sdk/provider';
+import { createVercelLlmProvider } from '../src/index.js';
+import type { AgentMessage, AgentToolMeta, LlmTurnRequest } from '../src/index.js';
+
+/**
+ * Vercel 适配层测试：MockLanguageModelV4 模拟模型响应（不打真实 API）。
+ * 锁定三件事：响应解析（toolCalls/text）、请求翻译（消息/工具/schema 透传）、
+ * 以及「无 execute 的工具被调用时 SDK 正常返回 toolCalls」这一行为契约。
+ */
+
+const demoTools: AgentToolMeta[] = [
+  {
+    id: 'wms.inventory.adjust',
+    label: '库存调整',
+    description: '对某 SKU 做库存增减',
+    parameters: {
+      type: 'object',
+      properties: { skuCode: { type: 'string' }, delta: { type: 'integer' } },
+      required: ['skuCode', 'delta'],
+    },
+    permission: 'write',
+  },
+];
+
+function textResult(text: string): LanguageModelV4GenerateResult {
+  return {
+    content: [{ type: 'text', text }],
+    finishReason: { unified: 'stop', raw: 'stop' },
+    usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
+    warnings: [],
+  };
+}
+
+function toolCallResult(callId: string, toolName: string, input: unknown): LanguageModelV4GenerateResult {
+  return {
+    content: [{ type: 'tool-call', toolCallId: callId, toolName, input: JSON.stringify(input) }],
+    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+    usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
+    warnings: [],
+  };
+}
+
+function baseRequest(messages: AgentMessage[]): LlmTurnRequest {
+  return { system: 'SYS-PROMPT', messages, tools: demoTools };
+}
+
+describe('createVercelLlmProvider：响应解析', () => {
+  it('纯文本回复 → text，无 toolCalls', async () => {
+    const mock = new MockLanguageModelV4({ doGenerate: async () => textResult('你好') });
+    const provider = createVercelLlmProvider(mock as never);
+
+    const res = await provider.completeTurn(baseRequest([{ role: 'user', text: 'hi' }]));
+
+    expect(res.text).toBe('你好');
+    expect(res.toolCalls).toEqual([]);
+  });
+
+  it('工具调用 → toolCalls（input JSON 串已解为 args 对象）', async () => {
+    const mock = new MockLanguageModelV4({
+      doGenerate: async () => toolCallResult('call_1', 'wms.inventory.adjust', { skuCode: 'A-1', delta: 10 }),
+    });
+    const provider = createVercelLlmProvider(mock as never);
+
+    const res = await provider.completeTurn(baseRequest([{ role: 'user', text: '入库 10 个 A-1' }]));
+
+    expect(res.toolCalls).toEqual([
+      { callId: 'call_1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: 10 } },
+    ]);
+    // 行为契约：无 execute 的工具被调用时 SDK 不抛错、正常返回（循环主权在编排层）
+    expect(mock.doGenerateCalls).toHaveLength(1);
+  });
+});
+
+describe('createVercelLlmProvider：请求翻译', () => {
+  it('system 与 user 消息进入 prompt；工具定义（含 schema）透传', async () => {
+    const mock = new MockLanguageModelV4({ doGenerate: async () => textResult('ok') });
+    const provider = createVercelLlmProvider(mock as never);
+
+    await provider.completeTurn(baseRequest([{ role: 'user', text: '入库 10 个 A-1' }]));
+
+    const call = mock.doGenerateCalls[0];
+    const prompt = JSON.stringify(call.prompt);
+    expect(prompt).toContain('SYS-PROMPT');
+    expect(prompt).toContain('入库 10 个 A-1');
+    // 工具定义与 JSON Schema 关键字段到达 provider 层
+    const tools = JSON.stringify(call.tools ?? []);
+    expect(tools).toContain('wms.inventory.adjust');
+    expect(tools).toContain('库存调整');
+    expect(tools).toContain('skuCode');
+  });
+
+  it('tool-calls / tool-results 历史正确翻译（含旁白与错误输出）', async () => {
+    const mock = new MockLanguageModelV4({ doGenerate: async () => textResult('done') });
+    const provider = createVercelLlmProvider(mock as never);
+
+    const messages: AgentMessage[] = [
+      { role: 'user', text: '出库 999 个' },
+      { role: 'tool-calls', text: '我试试', calls: [{ callId: 'c1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: -999 } }] },
+      { role: 'tool-results', results: [{ callId: 'c1', toolId: 'wms.inventory.adjust', ok: false, payload: { error: 'InsufficientStockError: 库存不足' } }] },
+    ];
+    await provider.completeTurn(baseRequest(messages));
+
+    const prompt = JSON.stringify(mock.doGenerateCalls[0].prompt);
+    expect(prompt).toContain('我试试');
+    expect(prompt).toContain('tool-call');
+    expect(prompt).toContain('tool-result');
+    expect(prompt).toContain('error-json');
+    expect(prompt).toContain('库存不足');
+    expect(prompt).toContain('-999');
+  });
+
+  it('多轮往返：第一轮的调用+结果作为历史进入第二轮 prompt', async () => {
+    const results = [
+      toolCallResult('c1', 'wms.inventory.adjust', { skuCode: 'A-1', delta: 10 }),
+      textResult('入库完成'),
+    ];
+    const mock = new MockLanguageModelV4({ doGenerate: results });
+    const provider = createVercelLlmProvider(mock as never);
+
+    const first = await provider.completeTurn(baseRequest([{ role: 'user', text: '入库 10 个 A-1' }]));
+    const second = await provider.completeTurn(
+      baseRequest([
+        { role: 'user', text: '入库 10 个 A-1' },
+        { role: 'tool-calls', calls: first.toolCalls },
+        { role: 'tool-results', results: [{ callId: 'c1', toolId: 'wms.inventory.adjust', ok: true, payload: { quantity: 10 } }] },
+      ]),
+    );
+
+    expect(second.text).toBe('入库完成');
+    expect(second.toolCalls).toEqual([]);
+    const secondPrompt = JSON.stringify(mock.doGenerateCalls[1].prompt);
+    expect(secondPrompt).toContain('quantity');
+  });
+});

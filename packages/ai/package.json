@@ -1,0 +1,36 @@
+{
+  "name": "@one/ai",
+  "version": "0.1.0",
+  "description": "OneWMS AI 快通道：自然语言 → Tool Calling → 工具总线（编排循环纯逻辑可测，LLM 通信是薄 Provider 适配层）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prebuild": "npm run build -w @one/core -w @one/wms",
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build -w @one/core -w @one/wms",
+    "test": "vitest run",
+    "pretypecheck": "npm run build -w @one/core -w @one/wms",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.81",
+    "@one/core": "^0.1.0",
+    "@one/wms": "^0.1.0",
+    "ai": "^7.0.157"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

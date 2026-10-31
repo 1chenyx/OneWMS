@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "paths": {
+      "@one/core": ["../core/dist/index.d.ts"],
+      "@one/wms": ["../wms/dist/index.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}
