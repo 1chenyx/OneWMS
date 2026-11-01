@@ -13,6 +13,7 @@ import {
 } from '@one/core';
 import { migrateWms } from './db/migrations.js';
 import { SkuView } from './views/sku-view.js';
+import { LocationView } from './views/location-view.js';
 import { OrderView } from './views/order-view.js';
 import { InventoryView } from './views/inventory-view.js';
 import { createWmsTools } from './tools/wms-tools.js';
@@ -68,15 +69,15 @@ function detachHandler(t: ToolDefinition): Omit<ToolDefinition, 'handler'> {
 }
 
 /**
- * WmsWorkspace —— 领域工作区门面：内核五视图 + 领域三投影 + 追账器。
+ * WmsWorkspace —— 领域工作区门面：内核五视图 + 领域四投影 + 追账器。
  *
  * 追账模型（「事件是唯一真相，投影是缓存」的直接实现）：
  *  - #cursor 是内存游标（已应用的 lamport 高水位）；
- *  - sync() 增量应用游标之后的 wms.* 事件到三个投影（工具 handler 前后调用）；
+ *  - sync() 增量应用游标之后的 wms.* 事件到四个投影（工具 handler 前后调用）；
  *  - replay() 清空领域投影、游标复位、全量重放——与 sync() 同一条 applyEvent 路径，
  *    迁移/修复/自检是同一个动作（§8.5「全量为真，增量为快」）。
  * 构造期即全量追账一次 + manifest 安装种子：新进程打开旧库（投影落后）、
- * 全新工作区、M4 老库（升级收敛）三条路径都正确。
+ * 全新工作区、M4 老库（升级收敛）、M9 老库（M10 结构升级后整组重建）都正确。
  */
 export class WmsWorkspace {
   /** 内核五视图（与 WorkspaceFacade 同源，直接展开在门面上） */
@@ -86,8 +87,9 @@ export class WmsWorkspace {
   readonly profile: ProfileView;
   readonly modules: ModulesView;
 
-  /** 领域三投影 */
+  /** 领域四投影 */
   readonly skus: SkuView;
+  readonly locations: LocationView;
   readonly orders: OrderView;
   readonly inventory: InventoryView;
 
@@ -106,6 +108,7 @@ export class WmsWorkspace {
     this.profile = this.#facade.profile;
     this.modules = this.#facade.modules;
     this.skus = new SkuView(db, workspaceId);
+    this.locations = new LocationView(db, workspaceId);
     this.orders = new OrderView(db, workspaceId);
     this.inventory = new InventoryView(db, workspaceId);
     this.sync();
@@ -136,6 +139,7 @@ export class WmsWorkspace {
       this.events.forEach((env) => {
         if (isWmsEventType(env.type)) {
           this.skus.applyEvent(env);
+          this.locations.applyEvent(env);
           this.orders.applyEvent(env);
           this.inventory.applyEvent(env);
           applied++;
@@ -155,6 +159,7 @@ export class WmsWorkspace {
     const run = this.#db.transaction(() => {
       const wsId = this.#facade.workspaceId;
       this.#db.prepare(`DELETE FROM wms_sku WHERE workspace_id = ?`).run(wsId);
+      this.#db.prepare(`DELETE FROM wms_location WHERE workspace_id = ?`).run(wsId);
       this.#db.prepare(`DELETE FROM wms_order WHERE workspace_id = ?`).run(wsId);
       this.#db.prepare(`DELETE FROM wms_order_line WHERE workspace_id = ?`).run(wsId);
       this.#db.prepare(`DELETE FROM wms_inventory_ledger WHERE workspace_id = ?`).run(wsId);
@@ -167,6 +172,7 @@ export class WmsWorkspace {
         total++;
         if (isWmsEventType(env.type)) {
           this.skus.applyEvent(env);
+          this.locations.applyEvent(env);
           this.orders.applyEvent(env);
           this.inventory.applyEvent(env);
           applied++;
@@ -185,6 +191,17 @@ export class WmsWorkspace {
    */
   replayAll(): { core: ReturnType<WorkspaceFacade['replay']>; wms: ReturnType<WmsWorkspace['replay']> } {
     return { core: this.#facade.replay(), wms: this.replay() };
+  }
+
+  /**
+   * 多事件原子落账（M9 单据→库存联动）：把若干 ctx.appendEvent 包进一个事务，
+   * 同生共死——任一 append 失败整体回滚，杜绝「状态变了库存没动」的半落账。
+   * better-sqlite3 嵌套事务自动降级为 savepoint，OplogStore.append 的独立事务
+   * 在本包裹内安全嵌套。仅供工具 handler 的发射段调用（校验在包裹外完成——
+   * 命令失败 ≠ 事实，拒绝路径不进事务）。
+   */
+  runAtomic<T>(fn: () => T): T {
+    return this.#db.transaction(fn)();
   }
 }
 
@@ -224,14 +241,17 @@ function defaultWorkflows(): Record<string, WorkflowDef> {
  *  - tools 从工具定义派生（detachHandler 剥离 handler）：声明与事实零重复维护；
  *  - workflows.base 消费 defaultWorkflows()（与 M2 硬编码转移表一致，逐流程守卫）；
  *  - fields.provides 三个 shared 扩展字段（规格/分类/单位）——M4 手写种子的 manifest 化；
- *  - settings 暂无（空 schema 占位，表单渲染/AI 上下文的自然扩展点）。
+ *  - settings 两键（M13）：defaultAllocation 全局缺省批次分配策略（仅出库单）/
+ *    blockExpiredOutbound 过期出库拦截。新库由 install 从 default 种子；老库
+ *    （0.1.0 已装，install 幂等短路）不补种子——工具层 readSettings 兜底缺省，
+ *    保证「未配置 = 旧行为」。改值走 profile 慢通道（propose → confirm）。
  */
 function wmsManifest(tools: Omit<ToolDefinition, 'handler'>[]): ModuleManifest {
   return {
     id: 'core.wms',
     name: '仓储基础',
     description:
-      '仓储管理核心领域：SKU 档案、出入库单据、库存流水与汇总。提供基础扩展字段（规格/分类/单位）与出入库流程骨架。',
+      '仓储管理核心领域：SKU 档案、出入库单据、库存流水与汇总、库位管理（分库位余量、移库与默认库位 DEFAULT）。提供基础扩展字段（规格/分类/单位）与出入库流程骨架。',
     version: '0.1.0',
     capabilities: ['db.read', 'events.subscribe', 'tools.register'],
     fields: {
@@ -243,6 +263,25 @@ function wmsManifest(tools: Omit<ToolDefinition, 'handler'>[]): ModuleManifest {
     },
     tools,
     workflows: { base: defaultWorkflows() },
-    settings: { schema: { type: 'object', properties: {} } },
+    settings: {
+      schema: {
+        type: 'object',
+        properties: {
+          defaultAllocation: {
+            type: 'string',
+            enum: ['strict', 'fifo', 'fefo'],
+            description:
+              '全局缺省批次分配策略（仅出库单）：strict=严格桶（不分配，未指定批次只扣 DEFAULT），fifo=先进先出，fefo=先到期先出。order.create 的 allocation 参数优先于本值',
+            default: 'strict',
+          },
+          blockExpiredOutbound: {
+            type: 'boolean',
+            description:
+              '过期批次出库拦截：开启后单据出库（拣货预检与发货扣减）拒绝效期早于今日的批次（今天到期=临期可出），fifo/fefo 分配自动跳过过期桶；库存调整/移库不受影响',
+            default: false,
+          },
+        },
+      },
+    },
   };
 }

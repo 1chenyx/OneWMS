@@ -98,16 +98,31 @@ describe('库存：流水与余量', () => {
 
     const single = (await ws.tools.invoke('wms.inventory.query', {
       skuCode: 'A-1',
-    })) as { quantity: number };
-    expect(single.quantity).toBe(7);
+    })) as {
+      total: number;
+      byLocation: {
+        locationCode: string;
+        quantity: number;
+        batches: { batchNo: string; batchExpiryDate: string | null; quantity: number }[];
+      }[];
+    };
+    expect(single.total).toBe(7);
+    expect(single.byLocation).toEqual([
+      {
+        locationCode: 'DEFAULT',
+        locationName: '默认库位',
+        quantity: 7,
+        batches: [{ batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 7 }],
+      },
+    ]);
 
     const all = (await ws.tools.invoke('wms.inventory.query', {})) as {
       skuCode: string;
-      quantity: number;
+      total: number;
     }[];
     expect(all).toEqual([
-      { skuId: expect.any(String), skuCode: 'A-1', name: '螺丝', quantity: 7 },
-      { skuId: expect.any(String), skuCode: 'B-2', name: '螺母', quantity: 3 },
+      expect.objectContaining({ skuCode: 'A-1', total: 7 }),
+      expect.objectContaining({ skuCode: 'B-2', total: 3 }),
     ]);
     expect(ws.events.count()).toBe(before); // 读操作零事件
   });

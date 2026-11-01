@@ -20,6 +20,7 @@ beforeEach(async () => {
     direction: 'out',
     lines: [{ skuCode: 'A-1', quantity: 5 }],
   });
+  await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 100 }); // M9：出库 picking 预检需余量
 });
 
 afterEach(() => {

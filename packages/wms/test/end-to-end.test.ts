@@ -44,15 +44,18 @@ describe('端到端全链路', () => {
       { direction: 'in', lines: [{ skuCode: 'A-1001', quantity: 200 }] },
       AI,
     )) as { orderNo: string; orderId: string };
-    await ws.tools.invoke('wms.order.transition', { orderNo: order.orderNo, to: 'received' }, AI);
-    const adjustResult = (await ws.tools.invoke(
-      'wms.inventory.adjust',
-      { skuCode: 'A-1001', delta: 200, orderNo: order.orderNo, reason: '收货上架' },
+    // M9 单据→库存联动：received 即按明细自动上架（无需手动 adjust）
+    const received = (await ws.tools.invoke(
+      'wms.order.transition',
+      { orderNo: order.orderNo, to: 'received' },
       AI,
-    )) as { quantity: number };
+    )) as { adjustedLines: { skuCode: string; locationCode: string; delta: number }[] };
+    expect(received.adjustedLines).toEqual([
+      { skuCode: 'A-1001', locationCode: 'DEFAULT', batchNo: 'DEFAULT', delta: 200 },
+    ]);
     await ws.tools.invoke('wms.order.transition', { orderNo: order.orderNo, to: 'done' }, AI);
 
-    expect(adjustResult.quantity).toBe(200);
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1001')!.id)).toBe(200);
 
     // ③ 事件账本：全部 wms.* + registry.* 事件，AI 的 actor 可审计
     const actors = new Set<string>();
@@ -62,7 +65,7 @@ describe('端到端全链路', () => {
       types.push(e.type);
     });
     expect(actors.has(AI)).toBe(true);
-    expect(types.filter((t) => t.startsWith('wms.')).length).toBe(5); // sku.created + order.created + 2×state_changed + inventory.adjusted
+    expect(types.filter((t) => t.startsWith('wms.')).length).toBe(5); // sku.created + order.created + 2×state_changed + 联动 inventory.adjusted（M9）
 
     // ④ 领域重放：清空投影全量重建 → 与重放前完全一致
     const before = {

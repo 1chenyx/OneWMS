@@ -40,8 +40,8 @@ describe('单据：创建', () => {
     expect(order.direction).toBe('in');
     expect(order.note).toBe('首单');
     expect(ws.orders.lines(order.id)).toEqual([
-      { skuId: ws.skus.byCode('A-1')!.id, quantity: 100 },
-      { skuId: ws.skus.byCode('B-2')!.id, quantity: 50 },
+      { skuId: ws.skus.byCode('A-1')!.id, locationId: 'DEFAULT', batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 100 },
+      { skuId: ws.skus.byCode('B-2')!.id, locationId: 'DEFAULT', batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 50 },
     ]);
   });
 
@@ -75,6 +75,21 @@ describe('单据：创建', () => {
         lines: [{ skuCode: 'A-1', quantity: 0 }],
       }),
     ).rejects.toThrow(/正整数/);
+  });
+
+  it('同单同 SKU 重复行 → 拒绝且不落事件（M9：行唯一约束的命令侧守卫）', async () => {
+    const baseline = ws.events.count();
+    await expect(
+      ws.tools.invoke('wms.order.create', {
+        direction: 'in',
+        lines: [
+          { skuCode: 'A-1', quantity: 30 },
+          { skuCode: 'A-1', quantity: 70 },
+        ],
+      }),
+    ).rejects.toThrow(/重复/);
+    expect(ws.orders.list()).toHaveLength(0);
+    expect(ws.events.count()).toBe(baseline);
   });
 
   it('手动单号重复 → OrderAlreadyExists', async () => {
@@ -136,6 +151,7 @@ describe('单据：状态机', () => {
     ).rejects.toThrow(InvalidTransitionError);
 
     const outNo = await createIn('out');
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 10 }); // M9：出库 picking 前需余量
     await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'picking' });
     await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'canceled' });
     expect(ws.orders.byNo(outNo)!.state).toBe('canceled');

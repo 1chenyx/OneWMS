@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import type { EventEnvelope } from '@one/core';
 import {
+  DEFAULT_BATCH_NO,
+  DEFAULT_LOCATION_ID,
   WMS_EVENT_TYPES,
   type OrderCreatedPayload,
   type OrderStateChangedPayload,
@@ -30,6 +32,12 @@ export interface OrderRecord {
 
 export interface OrderLineRecord {
   readonly skuId: string;
+  /** 行目标库位（M10）：收货上架/发货扣减的维度；老事件兜底 DEFAULT */
+  readonly locationId: string;
+  /** 行批次（M11）：入库声明/出库扣减的批次桶；老事件兜底 DEFAULT 虚拟批次 */
+  readonly batchNo: string;
+  /** 行声明的批次效期（M11，仅入库行有意义；未声明为 null） */
+  readonly batchExpiryDate: string | null;
   readonly quantity: number;
 }
 
@@ -45,6 +53,9 @@ interface OrderRow {
 
 interface OrderLineRow {
   sku_id: string;
+  location_id: string;
+  batch_no: string;
+  batch_expiry_date: string | null;
   quantity: number;
 }
 
@@ -79,12 +90,24 @@ export class OrderView {
           )
           .run(p.orderId, this.workspaceId, p.orderNo, p.direction, p.note ?? null, env.createdAt, env.createdAt);
         const insertLine = this.db.prepare(
-          `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, quantity)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const line of p.lines) {
-          // 行 id 由 orderId+skuId 派生：同一事件重放不产生重复行
-          insertLine.run(`${p.orderId}:${line.skuId}`, this.workspaceId, p.orderId, line.skuId, line.quantity);
+          // 行 id 由 orderId+skuId+locationId+batchNo 四段派生（M11）：同一事件重放
+          // 不产生重复行，且同单同 SKU 可分多库位/多批次多行（唯一约束同四段）
+          const locationId = line.locationId ?? DEFAULT_LOCATION_ID;
+          const batchNo = line.batchNo ?? DEFAULT_BATCH_NO;
+          insertLine.run(
+            `${p.orderId}:${line.skuId}:${locationId}:${batchNo}`,
+            this.workspaceId,
+            p.orderId,
+            line.skuId,
+            locationId,
+            batchNo,
+            line.batchExpiryDate ?? null,
+            line.quantity,
+          );
         }
         break;
       }
@@ -138,10 +161,16 @@ export class OrderView {
   lines(orderId: string): OrderLineRecord[] {
     const rows = this.db
       .prepare<unknown[], OrderLineRow>(
-        `SELECT sku_id, quantity FROM wms_order_line WHERE workspace_id = ? AND order_id = ? ORDER BY rowid`,
+        `SELECT sku_id, location_id, batch_no, batch_expiry_date, quantity FROM wms_order_line WHERE workspace_id = ? AND order_id = ? ORDER BY rowid`,
       )
       .all(this.workspaceId, orderId) as unknown as OrderLineRow[];
-    return rows.map((r) => ({ skuId: r.sku_id, quantity: r.quantity }));
+    return rows.map((r) => ({
+      skuId: r.sku_id,
+      locationId: r.location_id,
+      batchNo: r.batch_no,
+      batchExpiryDate: r.batch_expiry_date,
+      quantity: r.quantity,
+    }));
   }
 
   #byIdRaw(id: string): OrderRow | undefined {
