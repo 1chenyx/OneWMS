@@ -169,6 +169,118 @@ describe('库存端点', () => {
   });
 });
 
+describe('效期看板端点（M14：临期分层预警）', () => {
+  /** 相对今天的日期（UTC）：与端点/工具层的 today 判定同源 */
+  const dateOffset = (days: number) =>
+    new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+  const today = dateOffset(0);
+
+  /** 经 HTTP adjust 灌一个批次桶（正数入库声明批次 + 效期） */
+  async function seedBatch(
+    app: ReturnType<typeof createApp>,
+    skuCode: string,
+    batchNo: string,
+    expiry: string,
+    delta: number,
+    locationCode?: string,
+  ) {
+    const res = await post(app, '/api/inventory/adjust', {
+      skuCode,
+      delta,
+      batchNo,
+      batchExpiryDate: expiry,
+      reason: '期初上架',
+      ...(locationCode ? { locationCode } : {}),
+    });
+    expect(res.status).toBe(200);
+  }
+
+  it('SKU×批次 聚合 + 五层分级 + 效期升序（未登记殿后）+ 零余量桶不上板', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/skus', { skuCode: 'B-2', name: '螺母' });
+    // 实体库位（默认库位 DEFAULT 是虚拟保留词，不经创建）
+    await ctx!.ws.tools.invoke(
+      'wms.location.create',
+      { locationCode: 'LOC-01', name: '一号架' },
+      'user:test',
+    );
+
+    // 过期批次（today-3）跨两库位：默认 5 + LOC-01 3 → 聚合 8
+    await seedBatch(app, 'A-1', 'B-OLD', dateOffset(-3), 5);
+    await seedBatch(app, 'A-1', 'B-OLD', dateOffset(-3), 3, 'LOC-01');
+    // 今天到期（critical 边界：今天 = 临期，未过期——与 M13 拦截同界）
+    await seedBatch(app, 'A-1', 'B-TODAY', dateOffset(0), 4);
+    // critical 上界（+7）/ warning 上界（+30）/ safe 下界（+31）
+    await seedBatch(app, 'B-2', 'B-SOON', dateOffset(7), 10);
+    await seedBatch(app, 'B-2', 'B-MID', dateOffset(30), 20);
+    await seedBatch(app, 'B-2', 'B-LATE', dateOffset(31), 30);
+    // 零余量桶（+10 后 -10）：出清的批次不上板
+    await seedBatch(app, 'A-1', 'B-ZERO', dateOffset(5), 10);
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: -10, batchNo: 'B-ZERO' });
+    // 未指定批次 → DEFAULT 虚拟批次（未登记效期 → unknown）
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 2, reason: '期初' });
+
+    const res = await app.request('/api/inventory/expiry');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      today: string;
+      rows: Array<{
+        skuCode: string;
+        batchNo: string;
+        batchExpiryDate: string | null;
+        daysLeft: number | null;
+        level: string;
+        quantity: number;
+        locations: string[];
+      }>;
+    };
+    expect(body.today).toBe(today);
+
+    // 排序：效期升序（最紧急在上），未登记效期殿后；B-ZERO 零余量被过滤
+    expect(body.rows.map((r) => r.batchNo)).toEqual([
+      'B-OLD',
+      'B-TODAY',
+      'B-SOON',
+      'B-MID',
+      'B-LATE',
+      'DEFAULT',
+    ]);
+
+    const [old, todayRow, soon, mid, late, unknown] = body.rows;
+    // 过期批：daysLeft 负、余量跨库位合计、库位清单（虚拟默认兜底直出 id）
+    expect(old).toMatchObject({
+      skuCode: 'A-1',
+      level: 'expired',
+      daysLeft: -3,
+      quantity: 8,
+    });
+    expect([...old.locations].sort()).toEqual(['DEFAULT', 'LOC-01']);
+    // 今天到期 → critical（0 天）
+    expect(todayRow).toMatchObject({ level: 'critical', daysLeft: 0, quantity: 4 });
+    // critical 上界 +7；warning 上界 +30；safe 下界 +31
+    expect(soon).toMatchObject({ skuCode: 'B-2', level: 'critical', daysLeft: 7 });
+    expect(mid).toMatchObject({ level: 'warning', daysLeft: 30 });
+    expect(late).toMatchObject({ level: 'safe', daysLeft: 31 });
+    // DEFAULT 虚拟批次：未登记效期
+    expect(unknown).toMatchObject({
+      batchNo: 'DEFAULT',
+      batchExpiryDate: null,
+      daysLeft: null,
+      level: 'unknown',
+    });
+  });
+
+  it('空库存 → 空板（rows: []，today 仍在——前端可展示截至日期）', async () => {
+    const app = setup();
+    const res = await app.request('/api/inventory/expiry');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { today: string; rows: unknown[] };
+    expect(body.today).toBe(today);
+    expect(body.rows).toEqual([]);
+  });
+});
+
 describe('写操作的审计（人与 AI 同通道的红利）', () => {
   it('全部业务事件的 actor = user:local@nodeId（同步通道节点唯一）', async () => {
     const app = setup();

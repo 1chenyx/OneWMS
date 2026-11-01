@@ -6,9 +6,9 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx watch --tsconfig tsconfig.runtime.json src/main.ts",
-    "start": "node dist/main.js",
-    "start:relay": "node dist/relay-main.js",
+    "dev": "tsx watch --env-file-if-exists=../../.env --tsconfig tsconfig.runtime.json src/main.ts",
+    "start": "node --env-file-if-exists=../../.env dist/main.js",
+    "start:relay": "node --env-file-if-exists=../../.env dist/relay-main.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "pretest": "npm run build -w @one/core -w @one/wms -w @one/ai",
