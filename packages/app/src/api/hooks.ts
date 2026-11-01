@@ -38,7 +38,11 @@ export function useTransitionOrder() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (params: { orderNo: string; to: string }) => api.transitionOrder(params.orderNo, params.to),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['orders'] }),
+    // 出库扣减改桶余量 → 效期看板随之变（M14）
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['orders'] });
+      void qc.invalidateQueries({ queryKey: ['expiry-board'] });
+    },
   });
 }
 
@@ -52,8 +56,19 @@ export function useAdjustInventory() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.adjustInventory,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['inventory'] }),
+    // 调整改桶余量 → 效期看板的聚合/分层随之变（M14）
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['inventory'] });
+      void qc.invalidateQueries({ queryKey: ['expiry-board'] });
+    },
   });
+}
+
+// ── 效期看板（M14）────────────────────────────────────
+
+/** 全仓批次分层清单（切页挂载即刷新；调整/出入库后由对应 mutation 失效重取） */
+export function useExpiryBoard() {
+  return useQuery({ queryKey: ['expiry-board'], queryFn: api.expiryBoard });
 }
 
 // ── 慢通道 ───────────────────────────────────────────
@@ -97,10 +112,6 @@ export function useRejectProposal() {
     mutationFn: (id: string) => api.rejectProposal(id),
     onSuccess: invalidate,
   });
-}
-
-export function useChat() {
-  return useMutation({ mutationFn: api.chat });
 }
 
 // ── 设置页（M8）──────────────────────────────────────

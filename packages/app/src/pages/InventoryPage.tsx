@@ -1,20 +1,31 @@
 import { useState } from 'react';
 import { EditOutlined } from '@ant-design/icons';
-import { App as AntApp, Button, Card, Form, Input, InputNumber, Modal, Select, Table, Typography } from 'antd';
+import { App as AntApp, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useAdjustInventory, useInventory, useSkus } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { InventoryRow } from '../api/client';
+import { useAppNav } from '../app-nav';
 
 /**
  * 库存页：清单（流水汇总投影 + SKU 联查）+ 手工调整。
  * 调整走 wms.inventory.adjust 工具（库存不可为负的护栏在 handler）。
  * 注意：v1 单据状态流转不产生库存流水（二者解耦），库存从调整/期初录入开始。
+ * AI 跳转携带的 skuCode 预填过滤框（M12 步骤4，挂载时一次性消费）。
  */
 export default function InventoryPage() {
+  const { takeInitialFilter } = useAppNav();
   const { data: rows, isLoading } = useInventory();
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [preset, setPreset] = useState<InventoryRow | null>(null);
+  const [keyword, setKeyword] = useState(() => takeInitialFilter()?.skuCode ?? '');
+
+  const kw = keyword.trim().toLowerCase();
+  const visibleRows = kw
+    ? (rows ?? []).filter(
+        (r) => r.skuCode.toLowerCase().includes(kw) || r.name.toLowerCase().includes(kw),
+      )
+    : (rows ?? []);
 
   const openAdjust = (row: InventoryRow | null) => {
     setPreset(row);
@@ -47,15 +58,24 @@ export default function InventoryPage() {
     <Card
       title="库存"
       extra={
-        <Button type="primary" icon={<EditOutlined />} onClick={() => openAdjust(null)}>
-          库存调整
-        </Button>
+        <Space>
+          <Input
+            allowClear
+            placeholder="按编码/名称过滤"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            style={{ width: 180 }}
+          />
+          <Button type="primary" icon={<EditOutlined />} onClick={() => openAdjust(null)}>
+            库存调整
+          </Button>
+        </Space>
       }
     >
       <Table<InventoryRow>
         rowKey="skuId"
         columns={columns}
-        dataSource={rows ?? []}
+        dataSource={visibleRows}
         loading={isLoading}
         pagination={false}
         locale={{ emptyText: '还没有库存流水（录入期初或调整后出现）' }}

@@ -1,25 +1,34 @@
 import { useState } from 'react';
 import { PlusOutlined } from '@ant-design/icons';
-import { App as AntApp, Button, Card, Popconfirm, Segmented, Space, Table, Tag, Typography } from 'antd';
+import { App as AntApp, Button, Card, Input, Popconfirm, Segmented, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ProfileSnapshot } from '@one/core';
 import { useOrders, useProfileSnapshot, useTransitionOrder } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { Order } from '../api/client';
 import OrderFormModal from '../components/OrderFormModal';
+import { useAppNav } from '../app-nav';
 
 /**
  * 单据管理页——流转按钮由 Profile workflows 驱动（UI 消费配置面）：
  * 候选目标状态 = workflows[inbound|outbound].transitions.filter(from === 当前态)。
  * 行为权威仍是服务端状态机：非法转移被 400 WMS_INVALID_TRANSITION 兜底。
+ * AI 跳转携带的 orderNo 预填过滤框（M12 步骤4，挂载时一次性消费）。
  */
 export default function OrdersPage() {
   const { message } = AntApp.useApp();
+  const { takeInitialFilter } = useAppNav();
   const [direction, setDirection] = useState<'all' | 'in' | 'out'>('all');
   const { data: orders, isLoading } = useOrders(direction === 'all' ? undefined : direction);
   const snapshot = useProfileSnapshot();
   const transition = useTransitionOrder();
   const [formOpen, setFormOpen] = useState(false);
+  const [orderNoFilter, setOrderNoFilter] = useState(() => takeInitialFilter()?.orderNo ?? '');
+
+  const noKw = orderNoFilter.trim().toLowerCase();
+  const visibleOrders = noKw
+    ? (orders ?? []).filter((o) => o.orderNo.toLowerCase().includes(noKw))
+    : (orders ?? []);
 
   const doTransition = async (orderNo: string, to: string) => {
     try {
@@ -109,6 +118,13 @@ export default function OrdersPage() {
               { value: 'out', label: '出库' },
             ]}
           />
+          <Input
+            allowClear
+            placeholder="按单号过滤"
+            value={orderNoFilter}
+            onChange={(e) => setOrderNoFilter(e.target.value)}
+            style={{ width: 180 }}
+          />
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setFormOpen(true)}>
             新建单据
           </Button>
@@ -118,7 +134,7 @@ export default function OrdersPage() {
       <Table<Order>
         rowKey="id"
         columns={columns}
-        dataSource={orders ?? []}
+        dataSource={visibleOrders}
         loading={isLoading}
         pagination={false}
         locale={{ emptyText: '还没有单据' }}
