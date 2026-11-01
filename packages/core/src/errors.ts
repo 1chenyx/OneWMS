@@ -123,23 +123,9 @@ export class ModuleDependencyError extends CoreError {
   }
 }
 
-// ── 加密与迁移（里程碑 7）────────────────────────────────
+// ── 迁移（里程碑 7）────────────────────────────────────
 
-/** 加解密失败：密钥格式非法、密钥不一致、密文被篡改（绝不静默给错数据） */
-export class CryptoError extends CoreError {
-  constructor(message: string) {
-    super('CRYPTO_ERROR', message);
-  }
-}
-
-/** 工作区密钥已存在（generate/import 的幂等拒绝——换密钥会使存量密文不可解） */
-export class KeyExistsError extends CoreError {
-  constructor(message: string) {
-    super('KEY_EXISTS', message);
-  }
-}
-
-/** 迁移包结构非法 / workspaceId 不一致（跨工作区 = 跨密钥边界，v1 拒绝） */
+/** 迁移包结构非法 / workspaceId 不一致（跨工作区拒绝） */
 export class MigrationError extends CoreError {
   constructor(message: string) {
     super('MIGRATION_ERROR', message);

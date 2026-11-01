@@ -8,7 +8,6 @@ import { createProfileProposeTool } from './profile/propose-tool.js';
 import { ToolBus } from './bus/tool-bus.js';
 import { SyncService } from './sync/sync-service.js';
 import { ModuleRegistry } from './modules/module-registry.js';
-import { KeyService } from './crypto/key-service.js';
 import { MigrationService } from './migration/migration-service.js';
 import { WorkspaceFacade } from './workspace/workspace.js';
 
@@ -25,8 +24,6 @@ export class OneCore {
   readonly nodeId: string;
   /** 节点间同步编排（进程级，M5）：hello/events 端点与幂等摄入的数据源 */
   readonly sync: SyncService;
-  /** 工作区密钥管理（进程级，M7）：seal/unseal 的密钥供给方 */
-  readonly keys: KeyService;
   /** 迁移包导出/导入（进程级，M7）：全量事件包 + 幂等摄入 */
   readonly migration: MigrationService;
   /** 模块生命周期编排（进程级，M6）：manifest 目录 + 安装/卸载管线 */
@@ -45,7 +42,6 @@ export class OneCore {
     this.#profile = new ProfileService(db, this.#oplog, this.#registry);
     this.#modules = new ModuleRegistry(nodeId, this.#oplog, this.#registry, this.#profile, this.#bus);
     this.sync = new SyncService(nodeId, this.#oplog, this.#profile);
-    this.keys = new KeyService(db);
     this.migration = new MigrationService(nodeId, this.#oplog, this.#profile);
     // 慢通道工具（M4）：AI 提议配置变更的唯一入口；confirm/reject 不注册——
     // 人工确认权不可委托给 AI（§4.1）

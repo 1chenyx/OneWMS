@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import {
-  Alert,
   App as AntApp,
   Button,
   Card,
@@ -14,9 +13,7 @@ import {
 } from 'antd';
 import type { UploadFile } from 'antd';
 import {
-  CloudUploadOutlined,
   DownloadOutlined,
-  KeyOutlined,
   LinkOutlined,
   NodeIndexOutlined,
   SyncOutlined,
@@ -24,19 +21,15 @@ import {
 } from '@ant-design/icons';
 import { api, ApiError } from '../api/client';
 import {
-  useGenerateKey,
-  useImportKey,
-  useKeyStatus,
   useMigrationImport,
   useNodeHello,
-  useRelayRun,
   useSyncRun,
 } from '../api/hooks';
 
 /**
- * 设置页（M8）——M5 同步与 M7 密钥/中继/迁移的用户面收口。
- * 定位：触发器 + 状态显示器（不引入新服务端状态——peers/relay 每次随请求发送，
- * 服务端 env 是唯一持久位）。密钥明文只在生成/导出时一次性展示，常态展示指纹。
+ * 设置页（M8）——M5 同步与 M7 迁移的用户面收口。
+ * 定位：触发器 + 状态显示器（不引入新服务端状态——peers 每次随请求发送，
+ * 服务端 env 是唯一持久位）。
  */
 
 export default function SettingsPage() {
@@ -46,8 +39,6 @@ export default function SettingsPage() {
       items={[
         { key: 'node', icon: <NodeIndexOutlined />, label: '节点', children: <NodeTab /> },
         { key: 'sync', icon: <LinkOutlined />, label: '局域网同步', children: <SyncTab /> },
-        { key: 'relay', icon: <CloudUploadOutlined />, label: '云中继', children: <RelayTab /> },
-        { key: 'keys', icon: <KeyOutlined />, label: '工作区密钥', children: <KeyTab /> },
         { key: 'migration', icon: <SyncOutlined />, label: '迁移', children: <MigrationTab /> },
       ]}
     />
@@ -132,158 +123,7 @@ function SyncTab() {
   );
 }
 
-/** ③ 云中继：手动跑一轮密文回合（push 我有它无 + pull 它有我无） */
-function RelayTab() {
-  const { message } = AntApp.useApp();
-  const [relayUrl, setRelayUrl] = useState('');
-  const run = useRelayRun();
-
-  const doRun = async () => {
-    const relay = relayUrl.trim();
-    if (!relay) {
-      message.warning('请先填写中继地址');
-      return;
-    }
-    try {
-      const r = await run.mutateAsync(relay);
-      message.success(`中继回合完成：接受 ${r.accepted} 条`);
-    } catch (e) {
-      message.error(e instanceof ApiError ? e.message : `中继回合失败：${String(e)}`);
-    }
-  };
-
-  return (
-    <Card title="云中继（端到端加密邮箱）">
-      <Space.Compact style={{ width: '100%', marginBottom: 12 }}>
-        <Input
-          placeholder="中继地址，如 http://relay.example.com:3900"
-          value={relayUrl}
-          onChange={(e) => setRelayUrl(e.target.value)}
-          onPressEnter={doRun}
-        />
-        <Button type="primary" loading={run.isPending} onClick={doRun}>
-          立即回合
-        </Button>
-      </Space.Compact>
-      {run.data && (
-        <Descriptions title="回合结果" bordered size="small" column={2}>
-          <Descriptions.Item label="推送到中继">{run.data.pushed} 条</Descriptions.Item>
-          <Descriptions.Item label="推送接受/跳过/冲突">
-            {run.data.pushAccepted} / {run.data.pushSkipped} / {run.data.pushConflicted}
-          </Descriptions.Item>
-          <Descriptions.Item label="从中继拉取">{run.data.pulled} 条</Descriptions.Item>
-          <Descriptions.Item label="本地接受/跳过">
-            {run.data.accepted} / {run.data.skipped}
-          </Descriptions.Item>
-          <Descriptions.Item label="投影重建">{run.data.replayed ? '是' : '否'}</Descriptions.Item>
-        </Descriptions>
-      )}
-      <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
-        中继只见密文（工作区密钥加密，中继无需被信任）；未配置密钥时回合会被拒绝（先到「工作区密钥」页生成或导入）。
-      </Typography.Paragraph>
-    </Card>
-  );
-}
-
-/** ④ 工作区密钥：生成/导入/导出（人工交换的边界参数，不经事件不同步） */
-function KeyTab() {
-  const { message } = AntApp.useApp();
-  const { data: status, isLoading } = useKeyStatus();
-  const generate = useGenerateKey();
-  const importKey = useImportKey();
-  const [revealed, setRevealed] = useState<string | null>(null); // 明文一次性展示
-  const [importText, setImportText] = useState('');
-
-  const doGenerate = async () => {
-    try {
-      const key = await generate.mutateAsync();
-      setRevealed(key.key);
-      message.success('密钥已生成——请立即复制保存，此明文不再主动展示');
-    } catch (e) {
-      message.error(e instanceof ApiError ? e.message : `生成失败：${String(e)}`);
-    }
-  };
-
-  const doExport = async () => {
-    try {
-      const key = await api.exportKey();
-      setRevealed(key.key);
-    } catch (e) {
-      message.error(e instanceof ApiError ? e.message : `导出失败：${String(e)}`);
-    }
-  };
-
-  const doImport = async () => {
-    const key = importText.trim();
-    if (!key) {
-      message.warning('请粘贴 64 位 hex 密钥');
-      return;
-    }
-    try {
-      await importKey.mutateAsync(key);
-      message.success('密钥已导入');
-      setImportText('');
-    } catch (e) {
-      message.error(e instanceof ApiError ? e.message : `导入失败：${String(e)}`);
-    }
-  };
-
-  if (isLoading) return <Card loading />;
-
-  return (
-    <Card title="工作区密钥（E2E 加密边界）">
-      {status?.exists ? (
-        <Descriptions bordered size="small" column={1} style={{ marginBottom: 12 }}>
-          <Descriptions.Item label="指纹">{status.fingerprint}</Descriptions.Item>
-          <Descriptions.Item label="创建时间">{status.createdAt}</Descriptions.Item>
-        </Descriptions>
-      ) : (
-        <Alert
-          type="info"
-          showIcon
-          message="本工作区尚未生成密钥"
-          description="密钥用于云中继的端到端加密。生成后请把明文经可信渠道交给其他节点（导入），中继全程不经手密钥。"
-          style={{ marginBottom: 12 }}
-        />
-      )}
-      {revealed && (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="密钥明文（仅此一次展示，请立即复制）"
-          description={<Typography.Text copyable code>{revealed}</Typography.Text>}
-        />
-      )}
-      <Space style={{ marginBottom: 24 }}>
-        <Button type="primary" loading={generate.isPending} onClick={doGenerate} disabled={status?.exists}>
-          生成密钥
-        </Button>
-        <Button icon={<DownloadOutlined />} onClick={doExport} disabled={!status?.exists}>
-          导出明文
-        </Button>
-      </Space>
-
-      <Typography.Title level={5}>导入已有密钥（加入已有加密工作区）</Typography.Title>
-      <Space.Compact style={{ width: '100%' }}>
-        <Input
-          placeholder="粘贴 64 位 hex 密钥（来自源节点导出）"
-          value={importText}
-          onChange={(e) => setImportText(e.target.value)}
-          onPressEnter={doImport}
-        />
-        <Button loading={importKey.isPending} onClick={doImport} disabled={status?.exists}>
-          导入
-        </Button>
-      </Space.Compact>
-      <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
-        已有密钥的工作区不可换钥（换钥使存量密文不可解）——确需换 = 新工作区。
-      </Typography.Paragraph>
-    </Card>
-  );
-}
-
-/** ⑤ 迁移：导出迁移包（明文 JSON，本地可信域）/ 导入并全量重放 */
+/** ③ 迁移：导出迁移包（明文 JSON，本地可信域）/ 导入并全量重放 */
 function MigrationTab() {
   const { message } = AntApp.useApp();
   const importBundle = useMigrationImport();

@@ -91,7 +91,7 @@ export interface ConfirmResponse {
   appliedOps: number;
 }
 
-// ── 设置页（M8：节点 / 同步 / 中继 / 密钥 / 迁移）──────────
+// ── 设置页（M8：节点 / 同步 / 迁移）──────────
 
 /** GET /api/sync/hello——节点名片 */
 export interface NodeHello {
@@ -111,32 +111,6 @@ export interface SyncRoundResult {
   skipped: number;
   replayed: boolean;
   message?: string;
-}
-
-/** POST /api/relay/run 的回合结果（RelayRoundResult 同形） */
-export interface RelayRoundResult {
-  pushed: number;
-  pushAccepted: number;
-  pushSkipped: number;
-  pushConflicted: number;
-  pulled: number;
-  accepted: number;
-  skipped: number;
-  replayed: boolean;
-}
-
-/** GET /api/keys——密钥存在性与指纹（不回明文） */
-export interface KeyStatus {
-  exists: boolean;
-  fingerprint?: string;
-  createdAt?: string;
-}
-
-/** POST /api/keys 与 GET /api/keys/export——含明文本体（生成后一次性展示 / 人工搬运） */
-export interface KeyMaterial {
-  key: string;
-  fingerprint: string;
-  createdAt: string;
 }
 
 /** POST /api/migration/import 的结果 */
@@ -288,19 +262,6 @@ export const api = {
     request<{ results: SyncRoundResult[] }>('/api/sync/run', {
       method: 'POST',
       body: JSON.stringify({ peers }),
-    }),
-  relayRun: (relay: string) =>
-    request<RelayRoundResult>('/api/relay/run', {
-      method: 'POST',
-      body: JSON.stringify({ relay }),
-    }),
-  keyStatus: () => request<KeyStatus>('/api/keys'),
-  generateKey: () => request<KeyMaterial>('/api/keys', { method: 'POST' }),
-  exportKey: () => request<KeyMaterial>('/api/keys/export'),
-  importKey: (key: string) =>
-    request<{ fingerprint: string; createdAt: string }>('/api/keys/import', {
-      method: 'POST',
-      body: JSON.stringify({ key }),
     }),
   migrationExport: () =>
     request<Record<string, unknown>>('/api/migration/export'),

@@ -3,21 +3,16 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App as AntApp, ConfigProvider } from 'antd';
 import SettingsPage from '../src/pages/SettingsPage';
-import { ApiError } from '../src/api/client';
 
 /**
- * 设置页测试（M8）：mock 数据层 hooks（保留真实 ApiError 类供分支断言）。
- * 覆盖五分区中的四个关键路径（中继与同步同构，不重复测）：
+ * 设置页测试（M8）：mock 数据层 hooks。
+ * 覆盖三分区关键路径：
  *  - 节点名片：hello 数据渲染；
  *  - 同步：peers 输入解析（中英文逗号/换行分隔）+ 回合结果渲染；
- *  - 密钥：生成（明文一次性展示）、导入 409 提示、已有密钥态（生成/导入禁用 + 指纹）；
  *  - 迁移：选文件 → 导入 → 结果提示。
  */
 
 const syncRunMock = vi.fn();
-const relayRunMock = vi.fn();
-const generateMock = vi.fn();
-const importKeyMock = vi.fn();
 const migrationImportMock = vi.fn();
 
 const nodeHelloFixture = {
@@ -29,16 +24,11 @@ const nodeHelloFixture = {
 };
 
 /** 可变 fixture：每个用例渲染前赋值（mock 函数体惰性取值） */
-let keyStatusFixture: { exists: boolean; fingerprint?: string; createdAt?: string } = { exists: false };
 let syncRunResult: { results: unknown[] } | undefined = undefined;
 
 vi.mock('../src/api/hooks', () => ({
   useNodeHello: () => ({ isLoading: false, data: nodeHelloFixture }),
   useSyncRun: () => ({ mutateAsync: syncRunMock, isPending: false, data: syncRunResult }),
-  useRelayRun: () => ({ mutateAsync: relayRunMock, isPending: false, data: undefined }),
-  useKeyStatus: () => ({ isLoading: false, data: keyStatusFixture }),
-  useGenerateKey: () => ({ mutateAsync: generateMock, isPending: false }),
-  useImportKey: () => ({ mutateAsync: importKeyMock, isPending: false }),
   useMigrationImport: () => ({ mutateAsync: migrationImportMock, isPending: false }),
 }));
 
@@ -58,11 +48,7 @@ afterEach(() => {
 
 beforeEach(() => {
   syncRunMock.mockReset();
-  relayRunMock.mockReset();
-  generateMock.mockReset();
-  importKeyMock.mockReset();
   migrationImportMock.mockReset();
-  keyStatusFixture = { exists: false };
   syncRunResult = undefined;
 });
 
@@ -107,49 +93,6 @@ describe('局域网同步', () => {
     expect(screen.getByText('拉取 3 条 / 接受 3 / 跳过 0 / 已重建投影')).toBeInTheDocument();
     expect(screen.getByText('synced')).toBeInTheDocument(); // 状态 tag
     expect(screen.getByText('connect ECONNREFUSED')).toBeInTheDocument(); // 错误分支可见
-  });
-});
-
-describe('工作区密钥', () => {
-  it('生成 → 明文一次性展示（warning Alert）', async () => {
-    generateMock.mockResolvedValueOnce({
-      key: 'feedbeef'.repeat(8),
-      fingerprint: 'FP1234AB',
-      createdAt: '2026-10-30T08:00:00.000Z',
-    });
-    const user = userEvent.setup();
-    render(wrap(<SettingsPage />));
-    await user.click(screen.getByText('工作区密钥'));
-
-    expect(screen.getByText('本工作区尚未生成密钥')).toBeInTheDocument(); // 无密钥态
-    await user.click(screen.getByRole('button', { name: '生成密钥' }));
-
-    expect(await screen.findByText('feedbeef'.repeat(8))).toBeInTheDocument(); // 明文可见
-    expect(screen.getByText('密钥明文（仅此一次展示，请立即复制）')).toBeInTheDocument();
-  });
-
-  it('导入 409（已有密钥）→ 错误提示', async () => {
-    importKeyMock.mockRejectedValueOnce(new ApiError('KEY_EXISTS', '工作区已有密钥，不可换钥', 409));
-    const user = userEvent.setup();
-    render(wrap(<SettingsPage />));
-    await user.click(screen.getByText('工作区密钥'));
-
-    await user.type(screen.getByPlaceholderText(/粘贴 64 位 hex 密钥/), 'cafe'.repeat(16));
-    await user.click(screen.getByRole('button', { name: '导入' }));
-    // 用完整 message 文本断言（页面静态说明也含「不可换钥」字样，避免误匹配）
-    expect(await screen.findByText('工作区已有密钥，不可换钥')).toBeInTheDocument();
-    expect(importKeyMock).toHaveBeenCalledWith('cafe'.repeat(16));
-  });
-
-  it('已有密钥态：指纹展示 + 生成/导入禁用（换钥 = 存量密文不可解）', async () => {
-    keyStatusFixture = { exists: true, fingerprint: 'FP9999XY', createdAt: '2026-10-01T00:00:00.000Z' };
-    const user = userEvent.setup();
-    render(wrap(<SettingsPage />));
-    await user.click(screen.getByText('工作区密钥'));
-
-    expect(screen.getByText('FP9999XY')).toBeInTheDocument(); // 常态展示指纹而非明文
-    expect(screen.getByRole('button', { name: '生成密钥' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '导入' })).toBeDisabled();
   });
 });
 

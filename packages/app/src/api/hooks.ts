@@ -116,38 +116,13 @@ export function useRejectProposal() {
 
 // ── 设置页（M8）──────────────────────────────────────
 
-/** 节点名片（切页挂载即刷新——同步/中继回合后计数会变） */
+/** 节点名片（切页挂载即刷新——同步回合后计数会变） */
 export function useNodeHello() {
   return useQuery({ queryKey: ['node-hello'], queryFn: api.nodeHello });
 }
 
 export function useSyncRun() {
   return useMutation({ mutationFn: api.syncRun });
-}
-
-export function useRelayRun() {
-  return useMutation({ mutationFn: api.relayRun });
-}
-
-/** 密钥状态（生成/导入成功后 invalidate 刷新指纹展示） */
-export function useKeyStatus() {
-  return useQuery({ queryKey: ['key-status'], queryFn: api.keyStatus });
-}
-
-export function useGenerateKey() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: api.generateKey,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['key-status'] }),
-  });
-}
-
-export function useImportKey() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: api.importKey,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['key-status'] }),
-  });
 }
 
 /** 迁移导入后事件账本已变——节点名片与业务列表一并失效 */

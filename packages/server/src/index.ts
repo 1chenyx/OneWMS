@@ -12,13 +12,8 @@ import { proposalRoutes } from './routes/proposals.js';
 import { chatRoutes } from './routes/chat.js';
 import { wmsRoutes } from './routes/wms.js';
 import { syncRoutes } from './routes/sync.js';
-import { keysRoutes } from './routes/keys.js';
 import { migrationRoutes } from './routes/migration.js';
-import { relayRoutes } from './routes/relay.js';
 import { runSyncRound } from './sync/sync-client.js';
-import { runRelayRound } from './relay/relay-client.js';
-import { createRelayApp } from './relay/relay-app.js';
-import { RelayStore } from './relay/relay-store.js';
 
 export { createAppContext } from './context.js';
 export type { AppContext } from './context.js';
@@ -26,10 +21,6 @@ export { readAiConfig } from './ai-config.js';
 export { APP_DIST, mountStatic } from './static.js';
 export { runSyncRound } from './sync/sync-client.js';
 export type { SyncRoundResult } from './sync/sync-client.js';
-export { runRelayRound } from './relay/relay-client.js';
-export type { RelayRoundResult } from './relay/relay-client.js';
-export { createRelayApp } from './relay/relay-app.js';
-export { RelayStore } from './relay/relay-store.js';
 
 /** 组装 Hono 应用（测试口：不起端口，app.request 直测） */
 export function createApp(ctx: AppContext): Hono {
@@ -40,9 +31,7 @@ export function createApp(ctx: AppContext): Hono {
   app.route('/api/proposals', proposalRoutes(ctx));
   app.route('/api/chat', chatRoutes(ctx));
   app.route('/api/sync', syncRoutes(ctx));
-  app.route('/api/keys', keysRoutes(ctx));
   app.route('/api/migration', migrationRoutes(ctx));
-  app.route('/api/relay', relayRoutes(ctx));
   app.route('/api', wmsRoutes(ctx));
   mountStatic(app);
   return app;
@@ -81,28 +70,8 @@ export function start(): void {
         )
       : undefined;
 
-  // 定时中继回合（M7）：ONE_RELAY_URL 非空时启动，默认 60s 一轮（push + pull）
-  const relayUrl = (process.env.ONE_RELAY_URL ?? '').trim();
-  const relayTimer = relayUrl
-    ? setInterval(
-        () =>
-          void runRelayRound({
-            relayBaseUrl: relayUrl,
-            workspaceId: ctx.workspaceId,
-            core: ctx.core,
-            ws: ctx.ws,
-          }).catch((err: unknown) => {
-            console.error(
-              `[one-server] 中继回合失败 relay=${relayUrl}: ${err instanceof Error ? err.message : err}`,
-            );
-          }),
-        Number(process.env.ONE_RELAY_INTERVAL_MS ?? 60_000),
-      )
-    : undefined;
-
   const shutdown = () => {
     if (syncTimer) clearInterval(syncTimer);
-    if (relayTimer) clearInterval(relayTimer);
     server.close();
     ctx.close();
     process.exit(0);

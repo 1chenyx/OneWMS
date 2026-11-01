@@ -19,7 +19,6 @@
 │  bus/tool-bus.ts             工具注册与分发                │
 │  sync/sync-service.ts        节点间同步编排（M5）           │
 │  modules/module-registry.ts  模块安装/卸载编排（M6）        │
-│  crypto/key-service.ts       工作区密钥管理（M7）           │
 │  migration/migration-service.ts 迁移包导出/导入（M7）       │
 ├─ 基础层 ─────────────────────────────────────────────┤
 │  profile/profile-types.ts    Profile 纯类型 + 空快照构造   │
@@ -30,7 +29,6 @@
 │  registry/key-naming.ts      字段键命名（纯函数）           │
 │  bus/schema-validator.ts     参数校验（纯函数）             │
 │  sync/sync-protocol.ts       握手载荷 + 拉取计划（纯函数，M5）│
-│  crypto/seal.ts              事件密封/解封（纯函数，M7）     │
 │  modules/manifest-types.ts   manifest 纯类型 + 能力词表（M6）│
 │  modules/manifest-validate.ts manifest 结构校验（纯函数，M6）│
 │  db/migrations.ts            表结构（schema 唯一定义点）    │
@@ -57,7 +55,7 @@
    - `migration-service → profile-service`：profileVersion 是迁移包元信息（同 sync-service 的 getVersion 轻量读取）。
    新增横向依赖必须在此登记理由。
 3. **基础层之间允许纯函数/常量的单向复用，禁止环、反向与有状态依赖**：
-   - 现存单向边：`validate → patch`（校验器在虚拟快照上工作，内聚地调用应用器）、`validate → profile-types`（PATCH_ROOTS 常量）、`schema-validator → errors`、`patch/impact/proposal-store → profile-types|impact`（type-only）、`manifest-validate → manifest-types|schema-validator`（类型与词表常量 + ParameterSchema 结构复用）、`seal → envelope|errors`（type-only + 错误类型——密封的是信封，纯函数复用其形状）；
+   - 现存单向边：`validate → patch`（校验器在虚拟快照上工作，内聚地调用应用器）、`validate → profile-types`（PATCH_ROOTS 常量）、`schema-validator → errors`、`patch/impact/proposal-store → profile-types|impact`（type-only）、`manifest-validate → manifest-types|schema-validator`（类型与词表常量 + ParameterSchema 结构复用）；
    - `errors.ts` 不 import 任何东西，是人人可引用的零依赖叶子；
    - 基础层 → 服务层**禁止**（历史缺陷已修：FieldSharing 曾定义在 field-registry、被 key-naming 反向引用，现已下移到 key-naming 作为定义点）。
 4. **领域隔离**：本包不得出现仓储词汇（SKU/库存/单据）——那是 `@one/wms` 的领地（§13.5 平台化口子）。profile/ 把 entity/workflow/module 当**不透明键**处理：只做结构校验与图算法，不解释仓储语义；基础流程内容作为种子数据由领域包注入。
@@ -91,8 +89,6 @@
 | `registry/key-naming.ts` | privatePrefix / qualifyKey：private 字段前缀化（§7.2 消撞名）；`FieldSharing` 类型的定义点（共享模式是键命名的语义核心） | 无状态 |
 | `bus/schema-validator.ts` | JSON Schema 子集校验（type/required/enum/min/max/items） | 无状态 |
 | `sync/sync-protocol.ts` | 同步协议纯函数层：`SyncHandshake`/`Watermarks`/`PullRange` 类型 + `computePullPlan`（双方水位差 → 拉取区间清单；水位持平 + 指纹不同 → 该通道全量区间。客户端视角） | 无状态、无 IO |
-| `crypto/seal.ts` | 事件密封纯函数层（M7）：`SealedEvent` 类型 + `sealEnvelope`/`unsealEnvelope`（AES-256-GCM，payload 加密、信封明文）+ `keyFingerprint` | 不管理密钥（那是 KeyService）、不做 IO |
-| `crypto/key-service.ts` | 工作区密钥管理（进程级服务，方法带 workspaceId，M7）：generate / get / importKey（SQLite 持久，已有 → KeyExistsError） | 不参与事件流（密钥是边界参数不是业务事实）、不做出库分发（export 是宿主端点的事） |
 | `migration/migration-service.ts` | 迁移包编排（进程级服务，方法带 workspaceId，M7）：exportBundle（全量事件 + 元信息）、importBundle（结构校验 + workspaceId 一致性 + 幂等 ingest） | 不做 manifest 在场性报告（宿主层组装）、不碰投影（导入后 replay 在宿主）、不加密（迁移包是本地可信域文件） |
 | `db/migrations.ts` | 全部内核表结构 + user_version 迁移 | 唯一允许 `CREATE TABLE` 的文件 |
 | `errors.ts` | CoreError 族（code 供机器识别） | 无状态 |
@@ -186,7 +182,7 @@ confirm(by, proposalId)
 ```
 
 - **双向同步 = 两个方向的拉取回合**（A 拉 B、B 拉 A）；对等网无权威，谁触发都收敛。
-- **同步组 = 同 workspaceId**：客户端校验 hello 返回的 workspaceId 与本地一致，不等则拒绝交换（密钥边界的前置形态）。
+- **同步组 = 同 workspaceId**：客户端校验 hello 返回的 workspaceId 与本地一致，不等则拒绝交换（同步组即数据交换边界）。
 - **自拉防护**：hello 发现对端 nodeId 等于自己 → 跳过（配错 peer 指向自己时不自伤）。
 
 ### 关键决策与理由
@@ -204,7 +200,7 @@ confirm(by, proposalId)
 |---|---|---|
 | mDNS 自动发现 | 手动 peer 地址（env `ONE_SYNC_PEERS` 或请求体传入） | 发现是体验优化，协议正确性先行；个人 2-3 节点手填地址成本可忽略 |
 | WebSocket 双向推送 | HTTP 拉模型 + 手动/定时触发 | 拉模型天然幂等可重入；轮询间隔对个人场景足够 |
-| 端到端加密 | 局域网明文 HTTP | 加密边界在工作区密钥——**M7 已引入**（seal/unseal + 中继密文通道，见「云中继与迁移导出」章节）；节点直连仍定位局域网可信网段，跨互联网走中继 |
+| 端到端加密 | 局域网明文 HTTP | v1 定位可信网段；跨互联网由 VPN 组网承接（Tailscale/WireGuard 虚拟局域网，隧道层加密）——中继与密钥体系已移除（见「迁移导出」章节变更记录） |
 | checksum 摘要兜底 | 已实现：per-actor 通道指纹（eventId 集合 sha256），随握手交换 | 正确性必需而非量级优化——水位持平时的内容分歧检测（见决策 5） |
 5. **actor 通道节点唯一**：oplog 的 `(workspace_id, actor, seq)` 唯一约束要求每条 actor 通道**单写者**——两个节点若以同一 actor 名落账，会在相同 seq 上撞唯一约束，且「水位持平」会让漏拉静默发生。因此所有落账 actor 统一带节点后缀：`user:local@{nodeId}`（UI 写路径）、`ai:{model}@{nodeId}`（AI 工具）、`module:core@{nodeId}` / `module:core.wms@{nodeId}`（种子装载）；`registry.provide` 为此提供 `opts.actor` 覆盖口。通道指纹（决策 4 的 checksum 行）是同一致命场景的第二道防线：即使 actor 撞名，指纹分歧也会触发全量重拉、幂等摄入去重。防线测试固化：双实例同 actor 落账 → ingest 撞 UNIQUE 约束报错。
 
@@ -299,72 +295,30 @@ propose/confirm 是人类慢通道、seedDefaults 是领域种子——applyDire
 | 同 id 状态冲突 | install 预检 6 | M6 新增 |
 | 对抗型（rules veto/warn） | 不实现（无校验点消费方） | v2 |
 
-## 云中继与迁移导出（里程碑 7）
+## 迁移导出（里程碑 7）
 
-> DESIGN §8.5 传输安全 / §8.8 中继 / §6.4 迁移闭环的 v1 落地。三件事一个主题：**让事件流离开本机**——迁移是「一次性的全量带走」，中继是「持续性的异地汇聚」，两者共用同一批原语（全量事件 + 幂等摄入 + 工作区密钥）。
+> DESIGN §6.4 迁移闭环的 v1 落地：**让事件流离开本机**——一次性全量带走。与同步共用同一批原语（全量事件 + 幂等摄入 + 全量重放）。
 
-### 工作区密钥（加密边界——M5 决策 4 预定「M7 迁移导出时引入」的兑现）
-
-- **密钥形态**：每工作区一把 256-bit 对称密钥（hex 存储，`workspace_keys` 表，SCHEMA_VERSION 3）。生成/导入是管理动作，**不经事件**——密钥不是业务事实，是边界参数（与 nodeId 同类，落 meta 型存储）。
-- **密封协议（seal/unseal，纯函数）**：`sealEnvelope(env, keyHex)` → `SealedEvent`：信封字段明文（workspaceId/actor/seq/lamport/eventId/type/createdAt——路由、水位、幂等去重所需）+ payload 以 AES-256-GCM 加密（`{ cipher, nonce }`，随机 nonce）。`unsealEnvelope(sealed, keyHex)` → 还原 `EventEnvelope`；密钥不符或密文被篡改 → CryptoError。
-- **加密范围 = payload**（DESIGN §8.5 字面：「信封明文供路由，中继只见密文」）。type 留明文——它是信封的一员，中继分页存取不解释它。
-- **KeyService**（进程级，方法带 workspaceId）：`generate`（已有 → KeyExistsError）/ `get` / `importKey`（已有 → KeyExistsError——**换密钥会使存量密文不可解，v1 禁止**；确需换钥 = 开新工作区）。指纹 = 密钥 sha256 前 8 位 hex，供两台设备上人工比对。
-- **密钥交换是人工动作**（§8.5「人工确认交换」）：`GET /api/keys/export` 取明文密钥 → 用户经任意渠道（口述/扫码/加密消息）交给新节点 → `POST /api/keys/import`。**中继全程不经手密钥**——这正是「E2E 加密下中继无需被信任」的实现方式。
-
-### 迁移导出（migration）
+> **架构变更记录（移除云中继与工作区密钥）**：M7 原实现的云中继（relay/ 四端点 + VPS 独立进程）与工作区密钥体系（seal/unseal + KeyService + /api/keys）已整体移除。决策依据：跨互联网同步的可达性由 VPN 承接更简（Tailscale/WireGuard 组虚拟局域网后直接走局域网同步，隧道本身加密）；规模化多仓场景的终局形态是服务器模式（锚点节点 + 瘦客户端，属未来演进），中继在两条路径上均无不可替代角色；密钥体系的唯一消费者是中继密文通道，随之失去存在理由。迁移导出因此保持明文形态（本地可信域，与既有定位一致）。
 
 **v1 形态：全量事件包 + 重放**（§1.1「配置包 + 事件重放」、§8.5「迁移和同步是同一个动作的两种节奏」）。
 
 - `MigrationBundle` = `{ kind, bundleVersion, nodeId, workspaceId, profileVersion, eventCount, createdAt, events }`——events 为账本全量、按 (lamport, actor) 全序。**Profile 不单独打包**：快照是事件投影，重放自动恢复；快照引导（§8.6）是部分副本的优化，v1 全量节点不需要（同 M5 决策 2 的裁剪）。
-- `exportBundle(workspaceId)`：全量事件 + 元信息；`importBundle(workspaceId, bundle)`：结构校验（kind/bundleVersion/信封合法性）→ **workspaceId 一致性**（迁移 = 同工作区搬家；跨工作区 = 跨密钥边界，v1 拒绝并提示）→ 幂等 ingest（重复导入零事件，eventId 查重）。
-- **迁移包明文**（与 DESIGN §8.5 的工程偏差，已评估接受）：蓝图的加密语境是同步传输通道（不可信基础设施）；迁移包是用户本地文件（可信域——U 盘/网盘人工搬运），v1 不加密、不做口令。中继通道的密文安全不依赖迁移包形态。
+- `exportBundle(workspaceId)`：全量事件 + 元信息；`importBundle(workspaceId, bundle)`：结构校验（kind/bundleVersion/信封合法性）→ **workspaceId 一致性**（迁移 = 同工作区搬家；跨工作区 v1 拒绝并提示）→ 幂等 ingest（重复导入零事件，eventId 查重）。
+- **迁移包明文**：迁移包是用户本地文件（可信域——U 盘/网盘人工搬运），v1 不加密、不做口令。
 - **manifest 在场性报告**（宿主层组装）：导入后扫描 `module.installed` 事件引用的模块 id，对照本进程 manifest 目录（`listManifests`）；缺失 → 响应报告清单，**不阻塞**——账本是事实全收；缺代码的模块在 manifest 注册前只是「已安装记录」，不提供运行时行为。v1 无插件仓库/无签名（§10 冻结），「按 id+version 拉代码包」留待插件市场（未来生长点）。
 
-### 云中继（relay）
+### 端点契约（server，M7）
 
-**v1 形态：HTTP 加密邮箱（在线目录 + 密文暂存 + 水位自愈）。** 与 DESIGN §8.8「WebSocket 实时转发」的偏差及理由：
-
-| 蓝图 | v1 形态 | 理由 |
-|---|---|---|
-| WebSocket 长连接实时转发 | HTTP 拉模型 + push 端点（异步暂存） | 延续 M5 裁剪（拉模型幂等可重入、协议已验证）；异步暂存让 NAT 后节点**不必同时在线**也能交换 |
-| 中继「只转发不存」 | **内存暂存**密文（重启即清） | 拉模型下异步交换必然暂存；内存态 = 中继连密文都不持久化，重启后节点按水位差额自动重推（自愈）——比「转发」更贴合「中继无需被信任」的精神 |
-| 一套 WebSocket 消息目录 | 端点与节点 sync 同构（hello/events）+ push | 复用 computePullPlan / applyRemote / 通道指纹，零新协议概念；WebSocket 化是传输层替换，留待生长点 |
-
-- **中继存储**（`RelayStore`，进程内存）：`workspaceId → (actor → SealedEvent[]（按 seq 有序）)` + 每 workspace 的最新 profileVersion（push 时节点上报，hello 透传——配置版本号不是业务数据）+ 在线目录（nodeId → lastSeen，push 顺带刷新，无独立心跳端点）。**存储中永远没有明文 payload。**
-- **中继端点**（`createRelayApp()`，独立 Hono 应用，不依赖 OneCore 实例/不开数据库——VPS 零状态部署）：
-  - `GET /relay/hello?workspaceId=` → SyncHandshake 同形：nodeId = relay 身份（`relay-` 前缀，不与节点撞名）；watermarks 从暂存密文派生（信封元数据明文，通道指纹照算——eventId 明文）；profileVersion = 最近 push 上报值（无则 0）；
-  - `GET /relay/events/:actor?workspaceId=&fromSeq=&limit=` → 密文事件页（分页契约与节点端点同形）；
-  - `POST /relay/push` body `{ workspaceId, nodeId, profileVersion, sealedEvents }` → `{ accepted, skipped, conflicted }`——幂等：同 (actor,seq) 同 eventId → skipped；异 eventId → **conflicted 拒收该条**（actor 通道节点唯一防线在中继侧的延伸）；同时刷新目录 lastSeen；
-  - `GET /relay/directory?workspaceId=` → 在线节点清单（管理展示用）。
-- **节点侧回合**（`runRelayRound`，server 层）：
-  1. `GET /relay/hello`（校验 workspaceId 一致）；
-  2. **push**：计划 = `computePullPlan(中继水位, 本地水位)`——中继缺什么我推什么（方向与 pull 相反的同一纯函数）；逐区间分页读本地 `eventsFor` → `sealEnvelope` → `POST /relay/push`；
-  3. **pull**：计划 = `computePullPlan(本地水位, 中继水位)`——与节点间同步完全相同；逐区间拉密文页 → `unsealEnvelope` → `applyRemote`；
-  4. accepted > 0 → `replayAll()`（与 M5 同一条全量重建路径）。
-  - **节点把账本全部事件推给中继（含从第三方拉来的）**——中继是汇聚点，新节点只从中继即可完成全量引导（迁移闭环的在线版）。自己 push 的部分本地水位已领先，pull 计划天然不含（无回环浪费）。
-  - **无密钥不回合**：路由层预检 `core.keys.get`，缺失 → 400 `RELAY_NO_KEY`（先经 /api/keys 生成或导入）。
-- **部署**：`npm run start:relay`（packages/server 独立入口，env `ONE_RELAY_PORT` 默认 3900）。中继与节点同包不同进程：复用 @one/core 的类型与纯函数（SyncHandshake/computePullPlan/SealedEvent），但不装配 OneCore——「不碰业务数据」由依赖面保证。
-
-### 端点契约（server，M7 新增）
-
-- 密钥：`POST /api/keys`（生成；已存在 → 409 `KEY_EXISTS`）、`GET /api/keys`（`{ exists, fingerprint, createdAt }`，不回密钥本体）、`GET /api/keys/export`（`{ key }` 明文本体——本地可信域，人工交给新节点）、`POST /api/keys/import` body `{ key }`（64 位 hex 校验；已有 → 409）。
 - 迁移：`GET /api/migration/export` → MigrationBundle；`POST /api/migration/import` body `{ bundle }` → `{ accepted, skipped, replayed, missingManifests }`。
-- 中继：`POST /api/relay/run` body `{ relay?: url }`（缺省 env `ONE_RELAY_URL`，两者皆空 → 400）→ 一轮 push+pull 结果；`ONE_RELAY_URL` 非空时 start() 按 `ONE_RELAY_INTERVAL_MS`（默认 60s）定时执行。
-- 错误映射新增：`KEY_EXISTS` → 409；`CRYPTO_ERROR`（解密失败：密钥不一致或密文被篡改）→ 400；`MIGRATION_ERROR` → 400。
+- 错误映射：`MIGRATION_ERROR` → 400。
 
 ### 组件协作（谁调谁）
 
 ```
-server/routes/keys.ts        → core.keys（KeyService：generate/get/importKey）
 server/routes/migration.ts   → core.migration（exportBundle/importBundle）
                                + core.exposeModuleRegistry().listManifests（在场性报告）
                                + ws.replayAll()
-server/relay/relay-app.ts    createRelayApp()——独立进程（VPS）；RelayStore 内存暂存，
-                               复用 core 纯函数（computePullPlan/类型），不装配 OneCore
-server/relay/relay-client.ts runRelayRound：hello → push(计划/分页/seal)
-                               → pull(计划/分页/unseal) → applyRemote → replayAll
-                               → core.sync.eventsFor（分页读本地）、core.sync.applyRemote（摄入）
-                               → core.keys（工作区密钥）
 ```
 
 ## 测试策略
@@ -372,7 +326,6 @@ server/relay/relay-client.ts runRelayRound：hello → push(计划/分页/seal)
 - **服务层测试**（oplog.test.ts / fields.test.ts / tools.test.ts / profile.test.ts + patch/validate/impact 纯函数测试）：经 facade 走公共 API，验证内核行为契约；纯函数（patch/校验/报告）直接单测。
 - **模块系统测试**（modules.test.ts）：manifest 校验纯函数直测（合法全景 + 逐项非法）；install 全流程（字段/modules 段/settings 默认值/审计事件/贡献合并）；幂等（同版本重装零事件）；依赖缺失/slot 冲突/状态冲突/贡献目标不存在/requires 缺失/异版本/工具不在场逐项拒绝；uninstall 逆操作（字段移交与隐藏、workflows 摘除、modules 移除）；replay 重建一致；**老库收敛**（先手写种子再 install——字段 DO NOTHING + base 守卫 + modules 登记，行为与 M4 库升级一致）。
 - **同步测试**（sync.test.ts）：computePullPlan 纯函数直测（含「水位持平 + 指纹不同 → 全量区间」）；双 OneCore 实例互拉收敛（水位/计数/全序序列一致、幂等重拉零 accepted、分页、profileVersion 随握手可见、ingest 后 replay 投影一致）；actor 节点唯一防线（双实例同 actor 落账 → UNIQUE 约束拒绝摄入）。
-- **加密与密钥测试**（crypto.test.ts）：seal→unseal 往返（含中文/嵌套 payload）；错钥解密 → CryptoError；密文篡改 → CryptoError；nonce 随机性（同事件两次密封密文不同）；keyFingerprint 稳定；KeyService 生成/导入/已存在拒绝/格式校验/跨库持久（重开库仍在）。
 - **迁移测试**（migration.test.ts）：exportBundle 元信息（nodeId/profileVersion/eventCount/全序）；importBundle 全量恢复（重放后注册表 + profile_state 投影与源一致）；幂等（重复导入 accepted=0）；workspaceId 不一致拒绝；坏 bundle（kind/bundleVersion/非数组 events）拒绝；空账本导出导入（元信息照常、零事件）。
 - **集成测试**（workspace.test.ts）：多工作区并存、replay 重建（含 profile_state）、端到端链路。
 - **稳定性守则**：公共 API 变更 = index.ts 导出变更 = 必须同步更新 DESIGN.md 对应章节。
@@ -382,7 +335,7 @@ server/relay/relay-client.ts runRelayRound：hello → push(计划/分页/seal)
 | 生长点 | 落点 | 备注 |
 |---|---|---|
 | 同步投影增量追账（M5 遗留优化） | sync/ + 各投影持有方 | 复合游标 (lamport,actor) + registry.* 增量投影路径，替代回合后全量重放；量级变大时再做 |
-| 同步传输增强 | server/sync/ + server/relay/ | mDNS 发现、WebSocket 推送（§8.8 消息目录，含中继实时转发替代暂存）；端到端加密已随 M7 落地（中继密文通道），节点直连仍明文（局域网可信段） |
+| 同步传输增强 | server/sync/ | mDNS 发现、WebSocket 推送（§8.8 消息目录）；跨互联网 = VPN 组网（v1 使用纪律）或锚点节点公网暴露（需 TLS+鉴权，随服务器模式演进） |
 | 插件仓库拉包（迁移闭环完整版） | modules/ + 插件仓库 | §6.4：新节点按 modules id+version 拉代码包并验签；v1 由 manifest 在场性报告替代（缺代码不阻塞、只报告） |
 | 流程 `when` 条件求值 | wms state/order-state-machine.ts | 转移级条件（如「库存不足禁发货」）成为 DSL 一等公民；M8 已落地无条件的 states/transitions 权威化（见 @one/wms「流程引擎行为闭环」），`when` 是其上的一等扩展 |
 | 库存真预占 | wms state/inventory-effect.ts + views | picking 时落预占事件（reserved 字段 / 预占-释放事件对），消除「拣货后被挪用靠 shipped 硬守卫兜底」的窗口（M9 已落地 fail-fast 预检 + 硬守卫） |
@@ -664,17 +617,10 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 │  routes/chat.ts        AI 会话 SSE（M12：消息流 +      │
 │                        ui.ask 应答端点，见下）           │
 │  routes/sync.ts        同步三端点（M5，见下）            │
-│  routes/keys.ts        工作区密钥四端点（M7，见下）      │
 │  routes/migration.ts   迁移导出/导入两端点（M7，见下）   │
-│  routes/relay.ts       中继回合触发端点（M7，见下）      │
 ├─ 同步层（节点间传输编排，M5）────────────────────────────┤
 │  sync/sync-client.ts   runSyncRound：hello → 拉取计划 → │
 │                        分页拉取 → 摄入 → replayAll      │
-├─ 中继层（节点↔中继传输编排 + 中继本体，M7）──────────────┤
-│  relay/relay-app.ts    createRelayApp：中继四端点 +     │
-│                        RelayStore 内存密文暂存（VPS 部署）│
-│  relay/relay-client.ts runRelayRound：push（seal）→     │
-│                        pull（unseal）→ 摄入 → replayAll │
 ├─ 支撑层 ──────────────────────────────────────────────┤
 │  errors.ts         core 错误 code → HTTP 状态码映射    │
 │  ai-config.ts      环境变量 → AiProviderConfig         │
@@ -694,11 +640,7 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 | `errors.ts` | 错误映射中间件：CoreError.code → HTTP 状态 + `{ code, message }` 响应体 | 不吞错（未知错误 500 带原文） |
 | `sync/sync-client.ts` | runSyncRound(peer)：hello 握手（校验 workspaceId 一致 + 自拉防护）→ computePullPlan → 分页拉取 → core.sync.applyRemote → accepted>0 时 ws.replayAll；fetchImpl 可注入（测试零网络） | 不解析事件内容（摄入幂等在 core）、不做发现/推送/加密（v1 裁剪） |
 | `routes/sync.ts` | 同步 HTTP 契约：`GET /api/sync/hello`（握手）、`GET /api/sync/events/:actor?fromSeq=&limit=`（区间供事件 + 分页游标）、`POST /api/sync/run`（body `{ peers? }`，缺省 env `ONE_SYNC_PEERS`；逐 peer 跑回合，单 peer 失败不炸整轮） | 不做协议计算（在 core）、不持有状态 |
-| `routes/keys.ts` | 工作区密钥 HTTP 契约（M7）：`POST /api/keys`（生成）、`GET /api/keys`（存在性/指纹/时间）、`GET /api/keys/export`（明文密钥出库——人工交换）、`POST /api/keys/import`（64 位 hex 校验） | 不做密钥运算（在 core.keys）、export 不做权限控制（本地可信域定位，v1 无角色） |
 | `routes/migration.ts` | 迁移 HTTP 契约（M7）：`GET /api/migration/export`（全量事件包）、`POST /api/migration/import`（幂等导入 + replayAll + manifest 在场性报告——对照 exposeModuleRegistry().listManifests 扫描 module.installed 事件） | 不做包结构校验（在 core.migration）、不阻塞缺失 manifest（报告语义） |
-| `routes/relay.ts` | 中继回合触发（M7）：`POST /api/relay/run`（body `{ relay? }`，缺省 env `ONE_RELAY_URL`；密钥预检缺失 → 400 `RELAY_NO_KEY`） | 不做传输编排（在 relay-client）、不持有中继状态 |
-| `relay/relay-app.ts` | 中继 HTTP 契约 + 内存存储（M7）：`createRelayApp()`——hello / events（与节点 sync 同构的分页契约）/ push（幂等 + 冲突拒收 + 目录刷新）/ directory 四端点；独立进程入口（relay-main.ts） | 不装配 OneCore、不持久化任何数据（重启即清，节点水位差额自动重推）、不解释密文（信封元数据照转） |
-| `relay/relay-client.ts` | runRelayRound（节点侧中继回合，M7）：hello → push（computePullPlan 反向 + eventsFor 分页 + seal）→ pull（computePullPlan + 密文分页 + unseal）→ applyRemote → replayAll；fetchImpl 可注入（测试零网络） | 不管理密钥（core.keys 取用）、不碰中继存储（那是 relay-app 的事） |
 | `ai-config.ts` | 读 env（`ONE_AI_*` / `OLLAMA_*`）→ AiProviderConfig；未配置时 chat 路由返回 503 明示 | 不做 provider 构建以外的任何事 |
 | `static.ts` | SPA 静态托管：app/dist 存在则挂载 + history 回退到 index.html | dist 不存在时静默跳过（纯 API 模式可独立运行） |
 
@@ -729,29 +671,22 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
   - `GET /api/sync/events/:actor?fromSeq=0&limit=500` → `{ actor, events, nextFromSeq, hasMore }`（limit 上限 1000；fromSeq/limit 非法 → 400）；
   - `POST /api/sync/run` body `{ peers?: string[] }` → `{ rounds: SyncRoundResult[] }`（peers 缺省取 env `ONE_SYNC_PEERS` 逗号分隔；两者皆空 → 400 提示配置）；
   - **定时轮询**：start() 里 `ONE_SYNC_PEERS` 非空时按 `ONE_SYNC_INTERVAL_MS`（默认 30000）周期跑回合，关闭时清定时器；
-  - **v1 安全边界**：局域网明文、无鉴权（个人可信网段定位）；跨互联网同步走 M7 中继密文通道（payload E2E 加密，中继只见密文）——节点直连上公网仍不安全，属使用纪律。
-- **M7 API（密钥 / 迁移 / 中继——协议与决策见「云中继与迁移导出」章节）**：
-  - `POST /api/keys` → `{ key?, fingerprint, createdAt }`（生成 256-bit 工作区密钥；已存在 → 409 `KEY_EXISTS`）；
-  - `GET /api/keys` → `{ exists, fingerprint?, createdAt? }`（不回密钥本体）；
-  - `GET /api/keys/export` → `{ key }`（明文本体，人工交给新节点——本地可信域）；
-  - `POST /api/keys/import` body `{ key }`（64 位 hex；已有 → 409）；
+  - **v1 安全边界**：局域网明文、无鉴权（个人可信网段定位）；跨互联网同步 = 先用 VPN 组虚拟局域网（Tailscale/WireGuard，隧道层加密）再走既有同步通道——节点直连上公网不安全，属使用纪律（中继已移除，见「迁移导出」章节变更记录）。
+- **M7 API（迁移——协议与决策见「迁移导出」章节）**：
   - `GET /api/migration/export` → `MigrationBundle`（全量事件 + 元信息，明文 JSON 文件）；
-  - `POST /api/migration/import` body `{ bundle }` → `{ accepted, skipped, replayed, missingManifests: [{ id, version }] }`；
-  - `POST /api/relay/run` body `{ relay?: string }` → push+pull 一轮结果（缺省 env `ONE_RELAY_URL`；皆空 → 400；无密钥 → 400 `RELAY_NO_KEY`）；
-  - **中继定时**：start() 里 `ONE_RELAY_URL` 非空时按 `ONE_RELAY_INTERVAL_MS`（默认 60000）周期跑中继回合；
-  - **中继独立部署**：`npm run start:relay`（env `ONE_RELAY_PORT` 默认 3900）——VPS 零状态进程，内存暂存密文。
+  - `POST /api/migration/import` body `{ bundle }` → `{ accepted, skipped, replayed, missingManifests: [{ id, version }] }`。
 
 ## 测试策略（server）——不起端口、不碰真实 LLM
 
 - **路由级直测**：`createApp(ctx).request(url, init)` 走 hono 内建测试口——内存库 + mock provider（脚本化 LlmProvider，同 @one/ai 测试手法）。
 - 覆盖：proposals 全流程（propose 经真工具总线 → list → confirm → 409 新鲜度）、chat SSE 流式（事件序、多轮历史回传、error 事件后会话可继续、并发 409 CHAT_SESSION_BUSY）与 ui.ask 挂起/唤醒（SseReader 增量读流：ask 事件 → answer 注入续流 → 回答回传模型、挂起期间新消息 409、ui.ask 不落 oplog 的审计豁免断言、5 分钟超时按 declined 结算、404/409 分支）、错误映射表逐 code 断言、AI 未配置 503、管理端点（建 SKU → 列表含 extData、建单 → 明细联查、流转 → 状态变化、库存调整 → 清单更新、`WMS_SKU_EXISTS` / `WMS_INVALID_TRANSITION` / `WMS_INSUFFICIENT_STOCK` 护栏 400）、效期看板（M14：SKU×批次聚合、跨库位余量合计与库位清单、五层分级与边界天数（-3/0/7/30/31）、零余量桶过滤、效期升序未登记殿后、空库存空板）、同步端点（vi.stubGlobal 转发 fetch 到对端 app.request，双 AppContext 模拟双节点零网络：双向互拉收敛、参数非法 400、同步组不一致 error、自拉防护 skipped-self、无 peers 400）。
-- **中继与迁移测试**（relay.test.ts / migration.test.ts，M7）：中继 app 直测（push 幂等 skipped、异 eventId 冲突 conflicted、hello 水位与通道指纹、events 分页与参数校验、directory 心跳刷新、workspaceId 缺失 400）；**三方零网络集成**（双 AppContext + createRelayApp，fetch 转发）：A 生成密钥 → export → B import 密钥 → A 经中继 push → B 经中继 pull 收敛（水位/计数/投影一致、密文往返无感）、**中继存储无明文断言**（序列化中继状态不含业务字符串）、错钥节点拉取 → CRYPTO_ERROR 400；迁移端点（export → 新节点 import → replay → SKU/库存/配置一致、重复导入幂等、manifest 在场性报告、无密钥 relay/run 400）。
+- **迁移测试**（migration.test.ts，M7）：迁移端点（export → 新节点 import → replay → SKU/库存/配置一致、重复导入幂等、manifest 在场性报告）。
 
 ---
 
 # @one/app 前端包架构（UI 里程碑）
 
-> React 18 + Vite + TS + Ant Design 5 + TanStack Query。v1 范围 = 管理界面四页（SKU 动态列表 / 出入库单 / 库存 / 效期看板，DESIGN §2.2「无 AI 也能用」的落地）+ 慢通道闭环（AI 对话面板 + 提议列表 + 影响报告渲染 + 确认/拒绝，§7.3 确认 UI 的落地）+ 设置页（M8：节点名片 / 局域网同步 / 云中继 / 工作区密钥 / 迁移——M5/M7 全部运维能力的用户面收口）。
+> React 18 + Vite + TS + Ant Design 5 + TanStack Query。v1 范围 = 管理界面四页（SKU 动态列表 / 出入库单 / 库存 / 效期看板，DESIGN §2.2「无 AI 也能用」的落地）+ 慢通道闭环（AI 对话面板 + 提议列表 + 影响报告渲染 + 确认/拒绝，§7.3 确认 UI 的落地）+ 设置页（M8：节点名片 / 局域网同步 / 迁移——M5/M7 运维能力的用户面收口）。
 
 ## 分层地图
 
@@ -774,8 +709,7 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 │  pages/ChatPage.tsx        对话面板（消息流 + 输入 +   │
 │                            工具调用过程卡片）           │
 │  pages/ProposalsPage.tsx   pending 提议列表 + 详情抽屉 │
-│  pages/SettingsPage.tsx    设置（节点/同步/中继/密钥/ │
-│                            迁移，M8）                  │
+│  pages/SettingsPage.tsx    设置（节点/同步/迁移，M8）  │
 ├─ 组件层 ──────────────────────────────────────────────┤
 │  components/ImpactReportView.tsx   影响报告渲染        │
 │  components/ToolInvocationCard.tsx 工具调用过程展示    │
@@ -820,9 +754,9 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 | `components/ToolInvocationCard.tsx` | 工具调用过程卡（M12）：流式落卡/回填终态、参数与结果摘要、ui.ask 分流（AskCard / 问答回显）、成功工具的后置动作按钮（如「去确认提议」「去库存页查看」） | 不执行工具、不直接跳页（onNavigate 回调注入） |
 | `components/ToolResultView.tsx` | 查询结果按 toolId + payload 形态渲染表格（inventory.query 三形态 / expiring / location.list，超 50 行截断），其余 JSON 兜底 | 不做数据拉取（渲染传入的 payload 快照） |
 | `components/AskCard.tsx` | ui.ask 挂起态的回答输入（提交/跳过，提交后锁定） | 不提交请求（onAnswer 回调注入） |
-| `pages/SettingsPage.tsx` | 设置五分区（M8）：节点名片（只读）/ 局域网同步（peers + 手动回合）/ 云中继（URL + 手动回合）/ 工作区密钥（生成/导入/导出指纹）/ 迁移（导出下载 + 导入上传） | 不持久化任何配置（peers/relay 每次随请求发送，服务端 env 是唯一持久位）；不展示中继侧目录（那是中继进程的视角） |
+| `pages/SettingsPage.tsx` | 设置三分区（M8）：节点名片（只读）/ 局域网同步（peers + 手动回合）/ 迁移（导出下载 + 导入上传） | 不持久化任何配置（peers 每次随请求发送，服务端 env 是唯一持久位） |
 | `api/client.ts` | fetch 封装：JSON 序列化、非 2xx 抛 `ApiError{code,message}`；chat 事件契约手写镜像（不依赖 @one/ai）+ SSE 流消费（streamChatMessage）+ ui.ask 应答（answerChatAsk）+ 效期看板契约（ExpiryBoard/ExpiryBatchRow/ExpiryLevel 镜像 + expiryBoard()，M14） | 不缓存（Query 的职责） |
-| `api/hooks.ts` | useSkus / useCreateSku / useOrders / useCreateOrder / useTransitionOrder / useInventory / useAdjustInventory / useProfileSnapshot / useProposals / useConfirmProposal / useRejectProposal + useExpiryBoard（M14）+ M8 设置页组（useNodeHello / useSyncRun / useRelayRun / useKeyStatus / useGenerateKey / useImportKey / useExportKey / useMigrationExport / useMigrationImport）；adjust 与单据流转的 onSuccess 一并失效 expiry-board（桶余量变化 → 看板随之新鲜） | 不做 UI 判断 |
+| `api/hooks.ts` | useSkus / useCreateSku / useOrders / useCreateOrder / useTransitionOrder / useInventory / useAdjustInventory / useProfileSnapshot / useProposals / useConfirmProposal / useRejectProposal + useExpiryBoard（M14）+ M8 设置页组（useNodeHello / useSyncRun / useMigrationExport / useMigrationImport）；adjust 与单据流转的 onSuccess 一并失效 expiry-board（桶余量变化 → 看板随之新鲜） | 不做 UI 判断 |
 
 ## 关键机制
 
@@ -834,11 +768,11 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 - **AI 聊天 = SSE 流式 + 会话化（M12）**：ChatProvider（App 级 context，切页不丢对话）消费 `/api/chat/sessions/:id/message` 的 SSE 流，事件归约到 turn——工具卡先落「执行中」、tool-result 回填终态、助手文本逐 delta 增长；ui.ask 挂起渲染 AskCard（回答走 answer 端点，终态沿原流回填）；多轮历史由 server 会话持有（见 @one/server「AI 会话与 ui.ask」）。
 - **跳转后置动作（M12 步骤4）**：成功的工具卡带「去对应管理页」按钮（profile.propose → 配置确认；SKU/单据/库存操作 → 对应页，携单号或 SKU 过滤）。经 app-nav 的 `navigate(page, filter?)` 跳转——目标页挂载时 `takeInitialFilter` 一次性消费预填过滤框（库存页按编码/名称、单据页按单号）；`inventory.query` 平铺/全量清单形态不出按钮（结果已在卡内成表，无单一落点）。
 - **效期看板 = 后端算好、前端纯展示（M14）**：`useExpiryBoard()` 消费 `GET /api/inventory/expiry` 的 `{ today, rows }`——daysLeft/level 由 server 算（与 M13 拦截同界：今天到期 = 临期未过期），页面只做三件事：五层统计卡（reduce 计数 + 语义色）、着色表格（分层 Tag、剩余天数分形渲染——负数「已过期 N 天」/ 0「今天到期」/ null 弱化 —、库位清单合并）、层下拉 + 关键词过滤（编码/名称/批次）。数据新鲜度靠 mutation 失效联动：adjust 与单据流转的 onSuccess 一并 invalidate `['expiry-board']`（桶余量变化 → 聚合与分层随之刷新）。让 M11（效期登记）/ M12（批次分配）/ M13（过期拦截）沉淀的效期数据在管理界面可见——「AI 经 wms.inventory.expiring 工具查询」之外的常驻用户面。
-- **设置页 = 触发器 + 状态显示器，不引入新服务端状态**（M8）：五个分区全部消费既有端点——节点名片（GET /api/sync/hello：nodeId/workspaceId/profileVersion/eventCount）、局域网同步（peers 表单 → POST /api/sync/run）、云中继（URL 表单 → POST /api/relay/run，回合结果直出）、密钥（GET /api/keys 状态 + POST /api/keys 生成（**明文只展示一次**）+ /export 导出 + /import 导入，409 KEY_EXISTS 按 code 提示）、迁移（/export 下载 JSON 文件 + /import 上传，accepted/skipped/missingManifests 直出）。peers 与 relay URL 不持久化在前端——每次随请求体发送，服务端 env（ONE_SYNC_PEERS / ONE_RELAY_URL）仍是唯一持久位；密钥生成后的明文仅一次性展示（指纹才是常态展示物，M7 安全边界的前端配合）。
+- **设置页 = 触发器 + 状态显示器，不引入新服务端状态**（M8）：三个分区全部消费既有端点——节点名片（GET /api/sync/hello：nodeId/workspaceId/profileVersion/eventCount）、局域网同步（peers 表单 → POST /api/sync/run）、迁移（/export 下载 JSON 文件 + /import 上传，accepted/skipped/missingManifests 直出）。peers 不持久化在前端——每次随请求体发送，服务端 env（ONE_SYNC_PEERS）仍是唯一持久位。
 - **v2+ 接缝（本次不做）**：编辑 SKU（改名/改扩展字段）、库存流水展示页、扫码界面、冲突队列页。
 
 ## 测试策略（app）——jsdom + @testing-library/react
 
 - **组件级**：ImpactReportView（severity 分色、items 直出）、ProposalDetail（确认按钮 → mock client 成功/409 两分支）、ToolInvocationCard（过程三态、查询结果三形态表格、ui.ask 挂起/回填、后置动作按钮——失败/执行中/无 onNavigate 不出按钮）、SkuFormModal（type→控件映射、json 校验）。
-- **页面 smoke**：ChatPage 走真实 ChatProvider + mock streamChatMessage（SSE 事件脚本化：工具卡回填、流式文本、error 落卡、ui.ask 挂起→回答/跳过 gate 时序、propose 后置按钮）；app-nav（navigate 切页、initialFilter 一次性消费）；ProposalsPage 列表 → 详情 → 确认后列表清空；SkusPage **动态列核心机制**（snapshot 含可见 spec + 隐藏 category → 表头有「规格」无「分类」）；OrdersPage / InventoryPage 列表渲染 + 提交 + 过滤框（关键字命中 + AI 跳转预填）；ExpiryPage（M14）mock useExpiryBoard——五层统计卡计数、剩余天数分形渲染（已过期 N 天 / 今天到期 / —）、库位合并、层过滤收敛、关键词过滤与空表；SettingsPage（M8）mock 五组端点——节点名片渲染、同步回合结果、密钥生成（明文一次性展示）与导入 409 提示、迁移导入结果。
+- **页面 smoke**：ChatPage 走真实 ChatProvider + mock streamChatMessage（SSE 事件脚本化：工具卡回填、流式文本、error 落卡、ui.ask 挂起→回答/跳过 gate 时序、propose 后置按钮）；app-nav（navigate 切页、initialFilter 一次性消费）；ProposalsPage 列表 → 详情 → 确认后列表清空；SkusPage **动态列核心机制**（snapshot 含可见 spec + 隐藏 category → 表头有「规格」无「分类」）；OrdersPage / InventoryPage 列表渲染 + 提交 + 过滤框（关键字命中 + AI 跳转预填）；ExpiryPage（M14）mock useExpiryBoard——五层统计卡计数、剩余天数分形渲染（已过期 N 天 / 今天到期 / —）、库位合并、层过滤收敛、关键词过滤与空表；SettingsPage（M8）mock 三组端点——节点名片渲染、同步回合结果、迁移导入结果。
 - 不测 AntD 内部行为；不断言样式细节（只断语义角色与文本）。

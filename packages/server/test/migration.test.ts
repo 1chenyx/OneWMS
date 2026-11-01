@@ -3,8 +3,7 @@ import { createApp, createAppContext, type AppContext } from '../src/index.js';
 import type { MigrationBundle } from '@one/core';
 
 /**
- * 密钥与迁移端点测试（DESIGN §8.5 传输安全 / §6.4 迁移闭环，里程碑 7）：
- *  - /api/keys：生成 / 查询 / 导出 / 导入（幂等拒绝、格式校验）；
+ * 迁移端点测试（DESIGN §6.4 迁移闭环，里程碑 7）：
  *  - /api/migration：export → 新节点 import → replay → 数据一致；
  *    幂等、跨工作区拒绝、manifest 在场性报告。
  */
@@ -23,49 +22,6 @@ function setup(workspaceId: string) {
 const json = { 'content-type': 'application/json' };
 const post = (app: ReturnType<typeof createApp>, url: string, body: unknown) =>
   app.request(url, { method: 'POST', body: JSON.stringify(body), headers: json });
-
-describe('密钥端点（/api/keys）', () => {
-  it('生成 → 查询（不含本体）→ 导出（含本体）；重复生成 → 409 KEY_EXISTS', async () => {
-    const { app } = setup('ws-keys');
-    const gen = await post(app, '/api/keys', {});
-    expect(gen.status).toBe(201);
-    const genBody = (await gen.json()) as { key: string; fingerprint: string };
-    expect(genBody.key).toMatch(/^[0-9a-f]{64}$/);
-
-    const info = (await (await app.request('/api/keys')).json()) as {
-      exists: boolean;
-      fingerprint: string;
-      createdAt?: string;
-    };
-    expect(info.exists).toBe(true);
-    expect(info.fingerprint).toBe(genBody.fingerprint);
-    expect(info.createdAt).toBeTypeOf('string');
-
-    const exported = (await (await app.request('/api/keys/export')).json()) as { key: string };
-    expect(exported.key).toBe(genBody.key);
-
-    const again = await post(app, '/api/keys', {});
-    expect(again.status).toBe(409);
-    expect(((await again.json()) as { code: string }).code).toBe('KEY_EXISTS');
-  });
-
-  it('未生成时：查询 exists=false；导出 404；导入非法格式 → 400 CRYPTO_ERROR', async () => {
-    const { app } = setup('ws-keys-2');
-    expect(((await (await app.request('/api/keys')).json()) as { exists: boolean }).exists).toBe(false);
-    expect((await app.request('/api/keys/export')).status).toBe(404);
-    const bad = await post(app, '/api/keys/import', { key: 'not-a-key' });
-    expect(bad.status).toBe(400);
-    expect(((await bad.json()) as { code: string }).code).toBe('CRYPTO_ERROR');
-  });
-
-  it('导入（人工交换的落点）→ 成功后重复导入 → 409', async () => {
-    const { app } = setup('ws-keys-3');
-    const ok = await post(app, '/api/keys/import', { key: 'c'.repeat(64) });
-    expect(ok.status).toBe(200);
-    const again = await post(app, '/api/keys/import', { key: 'd'.repeat(64) });
-    expect(again.status).toBe(409);
-  });
-});
 
 describe('迁移端点（/api/migration）', () => {
   it('export → 新节点 import → replay：SKU/库存/配置与源一致；重复导入幂等', async () => {

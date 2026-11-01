@@ -58,11 +58,8 @@ export { buildEnvelope, rowToEnvelope } from './oplog/envelope.js';
 export { computePullPlan } from './sync/sync-protocol.js';
 export type { ActorWatermark, PullRange, SyncHandshake, Watermarks } from './sync/sync-protocol.js';
 
-// 加密与迁移（M7）：密封纯函数 + 密钥/迁移服务经 OneCore.keys / OneCore.migration 提供
+// 迁移（M7）：迁移服务经 OneCore.migration 提供
 // （出口纪律与 SyncService 一致——实例唯一入口是 OneCore）
-export { isValidKeyHex, keyFingerprint, sealEnvelope, unsealEnvelope } from './crypto/seal.js';
-export type { SealedEvent } from './crypto/seal.js';
-export type { WorkspaceKey, WorkspaceKeyInfo } from './crypto/key-service.js';
 export { MIGRATION_BUNDLE_KIND, MIGRATION_BUNDLE_VERSION } from './migration/migration-service.js';
 export type { MigrationBundle } from './migration/migration-service.js';
 
@@ -86,11 +83,9 @@ export { migrate, SCHEMA_VERSION } from './db/migrations.js';
 
 export {
   CoreError,
-  CryptoError,
   EventError,
   FieldConflictError,
   FieldNotFoundError,
-  KeyExistsError,
   MigrationError,
   ModuleConflictError,
   ModuleDependencyError,
