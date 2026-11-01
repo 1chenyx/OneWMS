@@ -1,4 +1,4 @@
-import { generateText, isStepCount, jsonSchema, tool as sdkTool } from 'ai';
+import { generateText, isStepCount, jsonSchema, streamText, tool as sdkTool } from 'ai';
 import type {
   AssistantContent,
   JSONSchema7,
@@ -12,6 +12,7 @@ import type {
   AgentMessage,
   AgentToolMeta,
   LlmProvider,
+  LlmStreamChunk,
   LlmTurnRequest,
   LlmTurnResponse,
   ToolCallRequest,
@@ -46,6 +47,41 @@ export function createVercelLlmProvider(model: LanguageModel): LlmProvider {
           args: (c.input ?? {}) as Record<string, unknown>,
         })),
       };
+    },
+
+    /**
+     * 流式单轮补全：fullStream 边到边翻——text-delta 分片直译为我们的
+     * text-delta 分片；tool-call 分片累积，流尽后以一条 tool-calls 终片收尾。
+     * 与 completeTurn 同样不挂 execute、stopWhen 单步——循环主权在编排层。
+     */
+    async *streamTurn(req: LlmTurnRequest): AsyncGenerator<LlmStreamChunk> {
+      const result = streamText({
+        model,
+        system: req.system,
+        messages: toModelMessages(req.messages),
+        tools: toToolSet(req.tools),
+        stopWhen: isStepCount(1),
+      });
+
+      let text = '';
+      const calls: ToolCallRequest[] = [];
+      for await (const part of result.fullStream) {
+        if (part.type === 'text-delta') {
+          text += part.text;
+          yield { type: 'text-delta', text: part.text };
+        } else if (part.type === 'tool-call') {
+          calls.push({
+            callId: part.toolCallId,
+            toolId: part.toolName,
+            args: (part.input ?? {}) as Record<string, unknown>,
+          });
+        } else if (part.type === 'error') {
+          throw part.error;
+        }
+      }
+      if (calls.length > 0) {
+        yield { type: 'tool-calls', text: text || undefined, calls };
+      }
     },
   };
 }

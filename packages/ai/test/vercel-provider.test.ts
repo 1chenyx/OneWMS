@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { MockLanguageModelV4 } from 'ai/test';
-import type { LanguageModelV4GenerateResult } from '@ai-sdk/provider';
+import type { LanguageModelV4GenerateResult, LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { createVercelLlmProvider } from '../src/index.js';
-import type { AgentMessage, AgentToolMeta, LlmTurnRequest } from '../src/index.js';
+import type { AgentMessage, AgentToolMeta, LlmStreamChunk, LlmTurnRequest } from '../src/index.js';
 
 /**
  * Vercel 适配层测试：MockLanguageModelV4 模拟模型响应（不打真实 API）。
@@ -44,6 +44,28 @@ function toolCallResult(callId: string, toolName: string, input: unknown): Langu
 
 function baseRequest(messages: AgentMessage[]): LlmTurnRequest {
   return { system: 'SYS-PROMPT', messages, tools: demoTools };
+}
+
+/** doStream 结果：分片序列包装成 ReadableStream */
+function streamResult(parts: LanguageModelV4StreamPart[]): { stream: ReadableStream<LanguageModelV4StreamPart> } {
+  return {
+    stream: new ReadableStream({
+      start(controller) {
+        for (const p of parts) controller.enqueue(p);
+        controller.close();
+      },
+    }),
+  };
+}
+
+const FINISH_STOP = { type: 'finish', usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } }, finishReason: { unified: 'stop', raw: 'stop' } } as LanguageModelV4StreamPart;
+const FINISH_TOOLS = { type: 'finish', usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } }, finishReason: { unified: 'tool-calls', raw: 'tool_calls' } } as LanguageModelV4StreamPart;
+
+/** 收集 streamTurn 的全部分片 */
+async function collectChunks(provider: ReturnType<typeof createVercelLlmProvider>, req: LlmTurnRequest): Promise<LlmStreamChunk[]> {
+  const out: LlmStreamChunk[] = [];
+  for await (const chunk of provider.streamTurn!(req)) out.push(chunk);
+  return out;
 }
 
 describe('createVercelLlmProvider：响应解析', () => {
@@ -132,5 +154,67 @@ describe('createVercelLlmProvider：请求翻译', () => {
     expect(second.toolCalls).toEqual([]);
     const secondPrompt = JSON.stringify(mock.doGenerateCalls[1].prompt);
     expect(secondPrompt).toContain('quantity');
+  });
+});
+
+describe('createVercelLlmProvider：streamTurn（流式互译）', () => {
+  it('文本分片逐段透传（text-start/delta/end）', async () => {
+    const mock = new MockLanguageModelV4({
+      doStream: async () =>
+        streamResult([
+          { type: 'text-start', id: 't1' },
+          { type: 'text-delta', id: 't1', delta: '你' },
+          { type: 'text-delta', id: 't1', delta: '好' },
+          { type: 'text-end', id: 't1' },
+          FINISH_STOP,
+        ]),
+    });
+    const provider = createVercelLlmProvider(mock as never);
+
+    const chunks = await collectChunks(provider, baseRequest([{ role: 'user', text: 'hi' }]));
+
+    expect(chunks).toEqual([
+      { type: 'text-delta', text: '你' },
+      { type: 'text-delta', text: '好' },
+    ]);
+  });
+
+  it('工具调用：input JSON 串解为 args，收敛成 tool-calls 终片', async () => {
+    const mock = new MockLanguageModelV4({
+      doStream: async () =>
+        streamResult([
+          { type: 'text-start', id: 't1' },
+          { type: 'text-delta', id: 't1', delta: '我来入库' },
+          { type: 'text-end', id: 't1' },
+          { type: 'tool-call', toolCallId: 'call_1', toolName: 'wms.inventory.adjust', input: JSON.stringify({ skuCode: 'A-1', delta: 10 }) },
+          FINISH_TOOLS,
+        ]),
+    });
+    const provider = createVercelLlmProvider(mock as never);
+
+    const chunks = await collectChunks(provider, baseRequest([{ role: 'user', text: '入库 10 个 A-1' }]));
+
+    expect(chunks).toEqual([
+      { type: 'text-delta', text: '我来入库' },
+      { type: 'tool-calls', text: '我来入库', calls: [{ callId: 'call_1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: 10 } }] },
+    ]);
+  });
+
+  it('请求翻译与 completeTurn 一致（system/历史/工具定义透传）', async () => {
+    const mock = new MockLanguageModelV4({
+      doStream: async () => streamResult([FINISH_STOP]),
+    });
+    const provider = createVercelLlmProvider(mock as never);
+
+    await collectChunks(
+      provider,
+      baseRequest([{ role: 'user', text: '入库 10 个 A-1' }]),
+    );
+
+    const call = mock.doStreamCalls[0];
+    const prompt = JSON.stringify(call.prompt);
+    expect(prompt).toContain('SYS-PROMPT');
+    expect(prompt).toContain('入库 10 个 A-1');
+    expect(JSON.stringify(call.tools ?? [])).toContain('wms.inventory.adjust');
   });
 });

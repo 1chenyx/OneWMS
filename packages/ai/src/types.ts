@@ -59,9 +59,22 @@ export interface LlmTurnResponse {
 }
 
 /**
+ * 流式单轮补全的分片序列（streamTurn 的产出）。
+ *  - text-delta：增量旁白文本（可能有多片）；
+ *  - tool-calls：本轮流到的全部工具调用（终片——模型决定调用工具时，
+ *    分片以一条完整调用清单收尾，供编排层去执行）。
+ */
+export type LlmStreamChunk =
+  | { type: 'text-delta'; text: string }
+  | { type: 'tool-calls'; text?: string; calls: ToolCallRequest[] };
+
+/**
  * LLM 通信的 Provider 抽象（IO 边界的唯一口子）。
  * 实现：provider/vercel.ts（OpenAI 兼容 / Ollama）；测试：脚本化 mock。
+ * streamTurn 是可选增强：未实现时编排层回退到 completeTurn（整轮文本
+ * 作为单个 text-delta 事件发出）——老 mock 与非流式实现无需改动。
  */
 export interface LlmProvider {
   completeTurn(req: LlmTurnRequest): Promise<LlmTurnResponse>;
+  streamTurn?(req: LlmTurnRequest): AsyncGenerator<LlmStreamChunk>;
 }

@@ -100,11 +100,15 @@ describe('createWmsAgent：端到端（快通道全链路）', () => {
     expect(req.system).toContain('螺丝');
     expect(req.system).toContain('SKU 总数：1');
     expect(req.system).toContain('库存总量：5');
-    // 工具元数据全部注入 function calling 通道：内核慢通道入口 + wms 六件套
+    // 工具元数据全部注入 function calling 通道：内核慢通道入口 + wms 十件套（M10 增 location.create/list、inventory.move；M11 增 inventory.expiring）
     expect(req.tools.map((t) => t.id).sort()).toEqual([
       'profile.propose',
       'wms.inventory.adjust',
+      'wms.inventory.expiring',
+      'wms.inventory.move',
       'wms.inventory.query',
+      'wms.location.create',
+      'wms.location.list',
       'wms.order.create',
       'wms.order.transition',
       'wms.sku.create',

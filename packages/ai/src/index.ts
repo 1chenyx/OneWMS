@@ -8,8 +8,16 @@
  *
  * 分层纪律与每文件职责见 docs/ARCHITECTURE.md 的 @one/ai 章节。
  */
-export { runAgent, AgentStepLimitError } from './agent.js';
-export type { AgentInvocation, AgentRunResult, RunAgentDeps } from './agent.js';
+export { runAgent, streamAgent, AgentStepLimitError } from './agent.js';
+export type {
+  AgentInvocation,
+  AgentRunResult,
+  RunAgentDeps,
+  AgentStreamEvent,
+  AgentTurnResult,
+  AskReply,
+  StreamAgentDeps,
+} from './agent.js';
 
 export { createWmsAgent } from './wms-agent.js';
 export type { CreateWmsAgentOptions, WmsAgent } from './wms-agent.js';
@@ -24,6 +32,7 @@ export type {
   AgentMessage,
   AgentToolMeta,
   LlmProvider,
+  LlmStreamChunk,
   LlmTurnRequest,
   LlmTurnResponse,
   ToolCallRequest,
