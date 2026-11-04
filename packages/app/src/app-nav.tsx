@@ -12,7 +12,7 @@ export type Page = 'skus' | 'orders' | 'inventory' | 'expiry' | 'chat' | 'propos
 
 /** navigate 携带给目标页的一次性初始过滤（目标页按需取字段） */
 export interface InitialFilter {
-  /** 库存页：SKU 编码过滤（AI 查询/调整库存后的跳转落点） */
+  /** 库存/效期页：SKU 编码过滤（AI 查询/调整库存、单 SKU 临期查询后的跳转落点） */
   skuCode?: string;
   /** 单据页：单号过滤（AI 建单后的跳转定位） */
   orderNo?: string;

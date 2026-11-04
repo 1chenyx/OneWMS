@@ -10,7 +10,8 @@ import ToolInvocationCard from '../components/ToolInvocationCard';
  *  - 状态在 ChatProvider（App 级 context）——切页不丢对话；
  *  - 流式渲染：工具卡先落「执行中」态、tool-result 回填，助手文本逐 delta 增长；
  *  - 工具调用过程可见（可审计）；成功的工具卡带后置动作按钮（步骤4）：
- *    profile.propose → 去配置确认、库存/单据操作 → 去对应管理页（带过滤）。
+ *    profile.propose → 去配置确认、库存/单据操作 → 去对应管理页（带过滤）、
+ *    临期查询 → 去效期看板（单 SKU 结果带过滤预填，M15）。
  */
 export default function ChatPage() {
   const chat = useChatSession();

@@ -137,6 +137,7 @@ function str(v: unknown): string | undefined {
  *  - profile.propose → 配置确认页（慢通道闭环：提议等人工拍板）；
  *  - SKU 写操作 → SKU 管理页；建单 → 单据页（带单号过滤）；
  *  - 库存调整/移库/单 SKU 查询 → 库存页（带 SKU 过滤）；
+ *  - 临期查询（M15）→ 效期看板：结果全部同一 SKU 时带过滤，多 SKU 不带；
  *  - inventory.query 平铺/全量清单形态不出（结果已在卡内成表，无单一落点）。
  * payload 结构是 @one/wms / @one/core 工具返回的手写镜像（前端不依赖后端包类型）。
  */
@@ -163,6 +164,18 @@ function followUpAction(invocation: ChatInvocation): FollowUpAction | undefined 
         return { label: '去库存页查看', page: 'inventory', filter: { skuCode: str(payload.skuCode) } };
       }
       return undefined;
+    case 'wms.inventory.expiring': {
+      // 结果行集合：全部同一 SKU（如「A-1 有什么临期」）→ 带 SKU 过滤预填；
+      // 多 SKU / 空结果不带（看板全量即落点）
+      const items = Array.isArray(payload) ? payload : [];
+      const codes = new Set(
+        items
+          .map((r) => str((r as { skuCode?: unknown })?.skuCode))
+          .filter((c): c is string => c !== undefined),
+      );
+      const filter = codes.size === 1 ? { skuCode: [...codes][0] } : undefined;
+      return { label: '去效期看板', page: 'expiry', filter };
+    }
     default:
       return undefined;
   }

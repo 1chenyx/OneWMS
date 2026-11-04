@@ -92,15 +92,15 @@ const ordersFixture = [
 
 const inventoryFixture = [{ skuId: 's-1', skuCode: 'A-1', name: '螺丝', quantity: 30 }];
 
-/** 效期看板 fixture：五层各一行（后端算好 level/daysLeft，前端只排版） */
+/** 效期看板 fixture：五层各一行（后端算好 level/daysLeft/buckets，前端只排版） */
 const expiryFixture = {
   today: '2026-11-01',
   rows: [
-    { skuId: 's-1', skuCode: 'A-1', name: '螺丝', batchNo: 'B-OLD', batchExpiryDate: '2026-10-29', daysLeft: -3, level: 'expired', quantity: 8, locations: ['DEFAULT', 'LOC-01'] },
-    { skuId: 's-1', skuCode: 'A-1', name: '螺丝', batchNo: 'B-NOW', batchExpiryDate: '2026-11-01', daysLeft: 0, level: 'critical', quantity: 4, locations: ['DEFAULT'] },
-    { skuId: 's-2', skuCode: 'B-2', name: '螺母', batchNo: 'B-MID', batchExpiryDate: '2026-11-20', daysLeft: 19, level: 'warning', quantity: 20, locations: ['LOC-01'] },
-    { skuId: 's-2', skuCode: 'B-2', name: '螺母', batchNo: 'B-LATE', batchExpiryDate: '2027-05-01', daysLeft: 181, level: 'safe', quantity: 30, locations: ['LOC-01'] },
-    { skuId: 's-1', skuCode: 'A-1', name: '螺丝', batchNo: 'DEFAULT', batchExpiryDate: null, daysLeft: null, level: 'unknown', quantity: 2, locations: ['DEFAULT'] },
+    { skuId: 's-1', skuCode: 'A-1', name: '螺丝', batchNo: 'B-OLD', batchExpiryDate: '2026-10-29', daysLeft: -3, level: 'expired', quantity: 8, buckets: [{ locationCode: 'DEFAULT', quantity: 5 }, { locationCode: 'LOC-01', quantity: 3 }] },
+    { skuId: 's-1', skuCode: 'A-1', name: '螺丝', batchNo: 'B-NOW', batchExpiryDate: '2026-11-01', daysLeft: 0, level: 'critical', quantity: 4, buckets: [{ locationCode: 'DEFAULT', quantity: 4 }] },
+    { skuId: 's-2', skuCode: 'B-2', name: '螺母', batchNo: 'B-MID', batchExpiryDate: '2026-11-20', daysLeft: 19, level: 'warning', quantity: 20, buckets: [{ locationCode: 'LOC-01', quantity: 20 }] },
+    { skuId: 's-2', skuCode: 'B-2', name: '螺母', batchNo: 'B-LATE', batchExpiryDate: '2027-05-01', daysLeft: 181, level: 'safe', quantity: 30, buckets: [{ locationCode: 'LOC-01', quantity: 30 }] },
+    { skuId: 's-1', skuCode: 'A-1', name: '螺丝', batchNo: 'DEFAULT', batchExpiryDate: null, daysLeft: null, level: 'unknown', quantity: 2, buckets: [{ locationCode: 'DEFAULT', quantity: 2 }] },
   ],
 };
 
@@ -131,7 +131,7 @@ function NavigateThenMount({
   filter,
   children,
 }: {
-  page: 'inventory' | 'orders';
+  page: 'inventory' | 'orders' | 'expiry';
   filter?: InitialFilter;
   children: React.ReactNode;
 }) {
@@ -287,8 +287,8 @@ describe('ExpiryPage：效期看板（M14 临期分层预警）', () => {
     expect(screen.getByText('今天到期')).toBeInTheDocument();
     expect(screen.getByText('19 天')).toBeInTheDocument();
     expect(screen.getByText('—')).toBeInTheDocument();
-    // 库位清单合并展示 + today 进标题
-    expect(screen.getByText('DEFAULT、LOC-01')).toBeInTheDocument();
+    // 库位列收敛为计数（明细在行展开，M15）+ today 进标题
+    expect(screen.getByText('2 库位')).toBeInTheDocument();
     expect(screen.getByText(/截至 2026-11-01/)).toBeInTheDocument();
     // 分层 Tag 与统计卡标题同文案 → 各出现 2 次（1 卡 + 1 Tag）
     expect(screen.getAllByText('已过期')).toHaveLength(2);
@@ -317,5 +317,35 @@ describe('ExpiryPage：效期看板（M14 临期分层预警）', () => {
     await user.clear(screen.getByPlaceholderText('按编码/名称/批次过滤'));
     await user.type(screen.getByPlaceholderText('按编码/名称/批次过滤'), '幽灵批次');
     expect(await screen.findByText('还没有批次库存（入库声明批次后出现）')).toBeInTheDocument();
+  });
+
+  it('行展开：点开过期批 → 库位×余量明细（余量降序，M15）', async () => {
+    const user = userEvent.setup();
+    const { container } = render(wrap(<ExpiryPage />));
+
+    // 首行（B-OLD，效期最早）的展开按钮
+    const expand = container.querySelector('.ant-table-row-expand-icon');
+    expect(expand).toBeTruthy();
+    await user.click(expand!);
+
+    // 展开表：LOC-01 明细 + 两库位余量（DEFAULT 5 在前、LOC-01 3 在后——降序）
+    expect(await screen.findByText('LOC-01')).toBeInTheDocument();
+    expect(screen.getByText('5')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
+    // 展开表与主表列头并存（「库位」「余量」各 2 处）
+    expect(screen.getAllByText('库位')).toHaveLength(2);
+  });
+
+  it('AI 跳转携带的 skuCode 预填关键词框（M15，挂载时一次性消费）', () => {
+    render(
+      wrap(
+        <NavigateThenMount page="expiry" filter={{ skuCode: 'A-1' }}>
+          <ExpiryPage />
+        </NavigateThenMount>,
+      ),
+    );
+    expect((screen.getByPlaceholderText('按编码/名称/批次过滤') as HTMLInputElement).value).toBe('A-1');
+    expect(screen.getByText('B-OLD')).toBeInTheDocument(); // A-1 的批次仍可见
+    expect(screen.queryByText('B-MID')).not.toBeInTheDocument(); // B-2 的批次被过滤
   });
 });

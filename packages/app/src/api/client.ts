@@ -41,7 +41,7 @@ export interface InventoryRow {
   quantity: number;
 }
 
-// ── 效期看板（M14：临期分层预警）──────────────────────
+// ── 效期看板（M14：临期分层预警；M15：库位明细 + 阈值 settings 化）──
 
 /** 与 server 的 ExpiryLevel 同形（前端镜像 HTTP 契约，不依赖 server 包类型） */
 export type ExpiryLevel = 'expired' | 'critical' | 'warning' | 'safe' | 'unknown';
@@ -57,7 +57,8 @@ export interface ExpiryBatchRow {
   daysLeft: number | null;
   level: ExpiryLevel;
   quantity: number;
-  locations: string[];
+  /** 库位 × 余量明细（后端按余量降序）——行展开直出 */
+  buckets: { locationCode: string; quantity: number }[];
 }
 
 /** GET /api/inventory/expiry 响应（today 供前端展示「截至」语境） */

@@ -85,10 +85,12 @@ function countEvents(): number {
 }
 
 describe('设置种子与兜底（M13）', () => {
-  it('新库种子：settings 两键 = manifest default（strict / false）', () => {
+  it('新库种子：settings 四键 = manifest default（strict / false / 7 / 30）', () => {
     expect(ws.profile.getSnapshot().modules['core.wms']?.settings).toEqual({
       defaultAllocation: 'strict',
       blockExpiredOutbound: false,
+      expiryCriticalDays: 7,
+      expiryWarningDays: 30,
     });
   });
 

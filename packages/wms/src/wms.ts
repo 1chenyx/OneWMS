@@ -241,10 +241,11 @@ function defaultWorkflows(): Record<string, WorkflowDef> {
  *  - tools 从工具定义派生（detachHandler 剥离 handler）：声明与事实零重复维护；
  *  - workflows.base 消费 defaultWorkflows()（与 M2 硬编码转移表一致，逐流程守卫）；
  *  - fields.provides 三个 shared 扩展字段（规格/分类/单位）——M4 手写种子的 manifest 化；
- *  - settings 两键（M13）：defaultAllocation 全局缺省批次分配策略（仅出库单）/
- *    blockExpiredOutbound 过期出库拦截。新库由 install 从 default 种子；老库
- *    （0.1.0 已装，install 幂等短路）不补种子——工具层 readSettings 兜底缺省，
- *    保证「未配置 = 旧行为」。改值走 profile 慢通道（propose → confirm）。
+ *  - settings 四键：defaultAllocation / blockExpiredOutbound（M13，分配策略与过期
+ *    出库拦截）+ expiryCriticalDays / expiryWarningDays（M15，效期看板分层阈值）。
+ *    新库由 install 从 default 种子；老库（0.1.0 已装，install 幂等短路）不补种子
+ *    ——读取方兜底缺省，保证「未配置 = 旧行为」。改值走 profile 慢通道
+ *    （propose → confirm）。
  */
 function wmsManifest(tools: Omit<ToolDefinition, 'handler'>[]): ModuleManifest {
   return {
@@ -279,6 +280,20 @@ function wmsManifest(tools: Omit<ToolDefinition, 'handler'>[]): ModuleManifest {
             description:
               '过期批次出库拦截：开启后单据出库（拣货预检与发货扣减）拒绝效期早于今日的批次（今天到期=临期可出），fifo/fefo 分配自动跳过过期桶；库存调整/移库不受影响',
             default: false,
+          },
+          expiryCriticalDays: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              '效期看板紧急层阈值（天）：剩余天数 ≤ 此值的批次标 critical。必须小于 expiryWarningDays，否则两键一起回落缺省（7/30）。仅影响看板分层展示，不改变过期拦截判定',
+            default: 7,
+          },
+          expiryWarningDays: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              '效期看板预警层阈值（天）：剩余天数 ≤ 此值且 > 紧急阈值的批次标 warning。必须大于 expiryCriticalDays，否则两键一起回落缺省（7/30）。仅影响看板分层展示',
+            default: 30,
           },
         },
       },

@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import type { PatchOp } from '@one/core';
 import { createApp, createAppContext, type AppContext } from '../src/index.js';
 
 /**
@@ -232,7 +233,7 @@ describe('效期看板端点（M14：临期分层预警）', () => {
         daysLeft: number | null;
         level: string;
         quantity: number;
-        locations: string[];
+        buckets: { locationCode: string; quantity: number }[];
       }>;
     };
     expect(body.today).toBe(today);
@@ -248,14 +249,17 @@ describe('效期看板端点（M14：临期分层预警）', () => {
     ]);
 
     const [old, todayRow, soon, mid, late, unknown] = body.rows;
-    // 过期批：daysLeft 负、余量跨库位合计、库位清单（虚拟默认兜底直出 id）
+    // 过期批：daysLeft 负、余量跨库位合计、库位明细（余量降序；虚拟默认兜底直出 id）
     expect(old).toMatchObject({
       skuCode: 'A-1',
       level: 'expired',
       daysLeft: -3,
       quantity: 8,
     });
-    expect([...old.locations].sort()).toEqual(['DEFAULT', 'LOC-01']);
+    expect(old.buckets).toEqual([
+      { locationCode: 'DEFAULT', quantity: 5 },
+      { locationCode: 'LOC-01', quantity: 3 },
+    ]);
     // 今天到期 → critical（0 天）
     expect(todayRow).toMatchObject({ level: 'critical', daysLeft: 0, quantity: 4 });
     // critical 上界 +7；warning 上界 +30；safe 下界 +31
@@ -278,6 +282,77 @@ describe('效期看板端点（M14：临期分层预警）', () => {
     const body = (await res.json()) as { today: string; rows: unknown[] };
     expect(body.today).toBe(today);
     expect(body.rows).toEqual([]);
+  });
+
+  // ── M15：阈值 settings 化（慢通道改值 → 看板分层即时变化）──
+
+  /** 慢通道改 core.wms 设置（propose → confirm——配置变更的唯一路径，§7.3） */
+  function setWmsSettings(patch: PatchOp[]): void {
+    const { proposalId } = ctx!.ws.profile.propose('user:tester', patch, 'M15 阈值测试');
+    ctx!.ws.profile.confirm(proposalId, 'user:tester');
+  }
+
+  /** 拉看板并解析成 batchNo → level 映射（阈值用例只关心分层归属） */
+  async function boardLevels(
+    app: ReturnType<typeof createApp>,
+  ): Promise<Record<string, string>> {
+    const res = await app.request('/api/inventory/expiry');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { rows: Array<{ batchNo: string; level: string }> };
+    return Object.fromEntries(body.rows.map((r) => [r.batchNo, r.level]));
+  }
+
+  it('慢通道改阈值（critical=2 / warning=10）→ 分层即时变化', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await seedBatch(app, 'A-1', 'B-5', dateOffset(5), 10); // 缺省：5 ≤ 7 → critical
+    await seedBatch(app, 'A-1', 'B-15', dateOffset(15), 10); // 缺省：15 ≤ 30 → warning
+
+    expect(await boardLevels(app)).toEqual({ 'B-5': 'critical', 'B-15': 'warning' });
+
+    setWmsSettings([
+      { op: 'replace', path: '/modules/core.wms/settings/expiryCriticalDays', value: 2 },
+      { op: 'replace', path: '/modules/core.wms/settings/expiryWarningDays', value: 10 },
+    ]);
+    // 5 > 2 且 ≤ 10 → warning；15 > 10 → safe（边界含等号：+2 仍 critical、+10 仍 warning）
+    await seedBatch(app, 'A-1', 'B-2', dateOffset(2), 10);
+    await seedBatch(app, 'A-1', 'B-10', dateOffset(10), 10);
+    expect(await boardLevels(app)).toEqual({
+      'B-2': 'critical',
+      'B-10': 'warning',
+      'B-5': 'warning',
+      'B-15': 'safe',
+    });
+  });
+
+  it('脏值 / 次序不合法 → 阈值联动回落缺省 7/30（分层与缺省一致）', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await seedBatch(app, 'A-1', 'B-7', dateOffset(7), 10); // critical 上界（7 ≤ 7）
+    await seedBatch(app, 'A-1', 'B-8', dateOffset(8), 10); // warning（8 ≤ 30）
+    await seedBatch(app, 'A-1', 'B-31', dateOffset(31), 10); // safe（31 > 30）
+
+    // 字符串脏值（慢通道不校验类型）→ 非 number 整体回落
+    setWmsSettings([
+      { op: 'replace', path: '/modules/core.wms/settings/expiryCriticalDays', value: '2' },
+      { op: 'replace', path: '/modules/core.wms/settings/expiryWarningDays', value: 10 },
+    ]);
+    expect(await boardLevels(app)).toEqual({
+      'B-7': 'critical',
+      'B-8': 'warning',
+      'B-31': 'safe',
+    });
+
+    // 次序不合法（critical=20 > warning=10）→ 联动回落，不出交叉边界
+    setWmsSettings([
+      { op: 'replace', path: '/modules/core.wms/settings/expiryCriticalDays', value: 20 },
+      { op: 'replace', path: '/modules/core.wms/settings/expiryWarningDays', value: 10 },
+    ]);
+    expect(await boardLevels(app)).toEqual({
+      'B-7': 'critical',
+      'B-8': 'warning',
+      'B-31': 'safe',
+    });
   });
 });
 

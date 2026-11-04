@@ -2,13 +2,18 @@ import { useState } from 'react';
 import { Card, Input, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useExpiryBoard } from '../api/hooks';
+import { useAppNav } from '../app-nav';
 import type { ExpiryBatchRow, ExpiryLevel } from '../api/client';
 
 /**
- * 效期看板（M14：临期分层预警）——让 M12/M13 沉淀的批次效期数据可见。
+ * 效期看板（M14：临期分层预警；M15：库位明细下钻 + 阈值可配）。
  * 数据全由后端算好（GET /api/inventory/expiry：SKU×批次聚合 + daysLeft/level
- * 分级 + 效期升序）；本页只做三件事：分层统计卡、着色表格、层/关键词过滤。
- * 分层语义与 M13 拦截同界：今天到期 = 临期（critical），未过期；< 今天才 expired。
+ * 分级 + 效期升序 + 库位×余量明细）；本页只做四件事：分层统计卡、着色表格、
+ * 层/关键词过滤、行展开看库位分布。分层语义与 M13 拦截同界：今天到期 =
+ * 临期（critical），未过期；< 今天才 expired。阈值天数由 core.wms settings
+ * 控制（expiryCriticalDays / expiryWarningDays，慢通道改值即生效）——统计卡
+ * 副标题按缺省 7/30 展示语义边界。
+ * AI 跳转携带的 skuCode 预填关键词框（M15，挂载时一次性消费）。
  */
 
 /** 分层展示元数据：统计卡标题 / Tag 语义色（与统计卡 valueStyle 同源） */
@@ -22,7 +27,7 @@ const LEVEL_META: Record<ExpiryLevel, { label: string; color: string }> = {
 
 const LEVEL_ORDER: ExpiryLevel[] = ['expired', 'critical', 'warning', 'safe', 'unknown'];
 
-/** 统计卡副标题：层的语义边界（天数为 server 常量，此处仅展示） */
+/** 统计卡副标题：层的语义边界（缺省阈值 7/30，改 settings 后分层随动） */
 const LEVEL_HINT: Record<ExpiryLevel, string> = {
   expired: '效期早于今天',
   critical: '今天到期 ~ 7 天内',
@@ -41,9 +46,10 @@ function DaysLeft({ value }: { value: number | null }) {
 }
 
 export default function ExpiryPage() {
+  const { takeInitialFilter } = useAppNav();
   const { data, isLoading } = useExpiryBoard();
   const [level, setLevel] = useState<ExpiryLevel | 'all'>('all');
-  const [keyword, setKeyword] = useState('');
+  const [keyword, setKeyword] = useState(() => takeInitialFilter()?.skuCode ?? '');
 
   const rows = data?.rows ?? [];
   const counts = Object.fromEntries(
@@ -83,9 +89,9 @@ export default function ExpiryPage() {
     },
     {
       title: '库位',
-      dataIndex: 'locations',
-      key: 'locations',
-      render: (v: string[]) => v.join('、'),
+      dataIndex: 'buckets',
+      key: 'buckets',
+      render: (v: ExpiryBatchRow['buckets']) => `${v.length} 库位`,
     },
   ];
 
@@ -136,6 +142,28 @@ export default function ExpiryPage() {
           loading={isLoading}
           pagination={false}
           locale={{ emptyText: '还没有批次库存（入库声明批次后出现）' }}
+          expandable={{
+            rowExpandable: (r) => r.buckets.length > 0,
+            expandedRowRender: (r) => (
+              <Table
+                size="small"
+                rowKey={(b) => b.locationCode}
+                columns={[
+                  { title: '库位', dataIndex: 'locationCode', key: 'locationCode', width: 160 },
+                  {
+                    title: '余量',
+                    dataIndex: 'quantity',
+                    key: 'quantity',
+                    align: 'right',
+                    render: (v: number) => <Typography.Text strong>{v}</Typography.Text>,
+                  },
+                ]}
+                dataSource={r.buckets}
+                pagination={false}
+                style={{ maxWidth: 360 }}
+              />
+            ),
+          }}
         />
       </Card>
     </Space>

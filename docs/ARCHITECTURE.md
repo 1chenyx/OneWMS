@@ -348,8 +348,8 @@ server/routes/migration.ts   → core.migration（exportBundle/importBundle）
 | 跨库位批次分配 | wms tools/wms-tools.ts | v1 分配只在行库位内；跨库位智能分拣（含上架策略）需要库位优先级/容量模型，待真实场景出现 |
 | 批次主数据实体 | wms events/catalog.ts + views | 批次号附加属性（供应商/生产日期/质检状态）；v1 批次只是库存维度（入库声明的自由文本），无实体表、无生命周期事件 |
 | 过期拦截进阶 | wms tools/wms-tools.ts | M13 已落地 blockExpiredOutbound 开关（单据出库预检/扣减同拦、分配跳过过期桶、adjust/move 不拦）；生长点：拦截白名单（特定 SKU / 单据类型豁免）、临期天数阈值（到期前 N 天即拒）、过期自动冻结/隔离库位 |
-| 前端批次维度展示 | app + server/routes/wms.ts | 临期看板已随 M14 落地（GET /api/inventory/expiry + ExpiryPage 五层预警）；生长点：批次明细下钻（query 树形已备，从看板行点入） |
-| 效期看板进阶 | server/routes/wms.ts + app | M14 分层阈值（critical ≤7 / warning ≤30 天）是 server 展示常量、前端纯展示；生长点：阈值进 core.wms settings（readSettings 同模式扩键，M13 管道复用）、按层导出 CSV、AI 查询 expiring 后跳转看板预填层过滤 |
+| 前端批次维度展示 | app + server/routes/wms.ts | 临期看板已随 M14 落地（GET /api/inventory/expiry + ExpiryPage 五层预警），M15 起看板行可展开库位×余量明细；生长点：库存页分桶明细界面与移库操作面板（/api/inventory 仍按 SKU 求和） |
+| 效期看板进阶 | server/routes/wms.ts + app | M15 已落地：分层阈值进 core.wms settings（expiryCriticalDays / expiryWarningDays，readWmsSettings 同源读取 + 联动兜底 7/30，慢通道改值即时生效）+ 行展开库位明细 + AI 临期查询后跳转看板（单 SKU 结果预填过滤）；生长点：按层导出 CSV、看板内嵌阈值编辑表单（当前改值走慢通道提议确认） |
 | AI 模块目录上下文（§6.4 闭环 ② 完整版） | ai/system-prompt.ts + modules 目录 | 已装模块的 description/settings.schema/tools 注入 System Prompt，支撑「自然语言 ↔ 模块匹配」；第二个模块出现时做 |
 | 外部插件包与运行时沙箱 | modules/ + manifest 的 entry | 动态 import / WASM（Extism）、signature 校验链、capabilities 运行时供给；v1 模块全部是编译期静态装载 |
 | 模块运行时管理端点 | server/routes | GET /api/modules、install/uninstall 端点（当前唯一模块 core.wms 由领域包装配期自动安装，无运行时装卸消费方） |
@@ -486,6 +486,15 @@ type AgentScope = 'readonly' | 'standard' | 'proposable';
 - **过期判定（D3）**：`batchExpiryDate < today`（UTC，today 运行时取当日）；**今天到期 = 临期可出**（与 `wms.inventory.expiring` 的 `≤ today+days` 语义衔接）。效期以流水首个非空登记为准（expiryOfBatch 同源——出库行自身不声明效期）。
 - **拦截语义（D4）**：只拦**单据出库**——order.transition 的 decrease/预检守卫段逐行校验，显式行与分配行同拦（新错误 `WMS_BATCH_EXPIRED`，零事件 fail-fast）；分配器（fifo/fefo）开启拦截时**跳过过期桶**（不让过期货堵死整单，可用桶凑不齐走 AllocationInsufficientError）；`inventory.adjust` / `move` 不拦（盘点、报损、移库是库存管理操作，不是订单履约）。
 
+## 效期看板阈值配置化（里程碑 15）
+
+> M14 的效期看板分层阈值（critical ≤7 / warning ≤30 天）是 server 展示常量。M15 把两键接进 **core.wms 模块设置**：`expiryCriticalDays`（integer，default 7）+ `expiryWarningDays`（default 30）——与 M13 两键同管道（manifest 声明 → install 种子 → 慢通道改值 → 读取方兜底），缺省值 = M14 现状，**未配置 = 零行为变化**。
+
+- **读取单一真相（D1）**：M13 的模块私有 `readSettings` 升为包级 API `readWmsSettings`（index.ts 导出），server 端点与 AI 工具层消费**同一实现**——阈值语义在两处消费方之间不可能漂移。工具层自身的分配/拦截逻辑不读这两键（与阈值无关）。
+- **联动兜底（D2）**：阈值是**一对**语义（critical 必须 ≥1 且严格小于 warning）——任一键缺失/脏值/次序不合法，两键**一起**回落缺省 7/30。宁可整体回落，不出「warning < critical」的交叉边界（分层语义成立的前提）。
+- **边界不动（D3）**：`wms.inventory.expiring` 工具的 days 参数（AI 查询参数）与 M13 过期拦截判定（< 今天）均不看这两键——它们是**看板展示阈值**，不是业务拦截参数。
+- **版本不 bump（与 M13 同决策）**：老库（0.1.0 已装，install 幂等短路）不补种子，靠 readWmsSettings 兜底。
+
 ## 模块化种子（M4 手写 → M6 manifest 驱动）
 
 WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MANIFEST)` 替代——种子不再是领域包手写的两段动作，而是走内核受管管线（预检 → 双轨落事件 → 审计事件）：
@@ -500,12 +509,12 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 
 | 文件 | 职责 | 不做什么 |
 |---|---|---|
-| `wms.ts` | WmsDomain：attach 建领域表 + 注册工具 + 派生 core.wms manifest（registerManifest，M13 起 settings 两键 defaultAllocation/blockExpiredOutbound）+ workspace 工厂（同 id 缓存实例）；WmsWorkspace：五内核视图 + 四领域投影（M10 增 locations）+ sync/replay/replayAll + runAtomic 多事件原子落账（M9）+ 构造期 modules.install 种子（M6） | 不含业务校验（在工具 handler）、不手写字段/流程种子（manifest 驱动） |
+| `wms.ts` | WmsDomain：attach 建领域表 + 注册工具 + 派生 core.wms manifest（registerManifest，settings 四键：defaultAllocation/blockExpiredOutbound（M13）+ expiryCriticalDays/expiryWarningDays（M15 效期看板阈值））+ workspace 工厂（同 id 缓存实例）；WmsWorkspace：五内核视图 + 四领域投影（M10 增 locations）+ sync/replay/replayAll + runAtomic 多事件原子落账（M9）+ 构造期 modules.install 种子（M6） | 不含业务校验（在工具 handler）、不手写字段/流程种子（manifest 驱动） |
 | `views/sku-view.ts` | wms_sku 投影：applyEvent 幂等（id 查重早退，code 冲突显式炸）+ 查询 | 不解释非 wms.sku.* 事件 |
 | `views/location-view.ts` | wms_location 投影（M10）：applyEvent 幂等 + byCode/byId/list 查询；DEFAULT 虚拟桶不落本表 | 不解释非 wms.location.* 事件 |
 | `views/order-view.ts` | wms_order/order_line 投影：state_changed 的 from 一致性检查（冲突即抛）+ 查询；行 id 按 orderId:skuId:locationId:batchNo 四段派生（M11，重放幂等键） | 不做命令侧校验（那是工具的事） |
 | `views/inventory-view.ts` | 流水（event_id 主键幂等，M11 起带批次/效期列）+ 汇总 UPSERT（主键 (workspace, sku, location, batch) 四列；效期 COALESCE 保首个非空）+ 查询（quantityOf 缺省查 DEFAULT 桶/DEFAULT 批次——M10 调用点语义等价；expiryOfBatch 首个非空效期；listExpiring 临期清单；batchesOf 批次桶清单含 firstSeenAt——M12 分配排序数据源，联 ledger MIN(created_at)） | 无任何「直接改库存」入口 |
-| `tools/wms-tools.ts` | 十工具：sku.create/update、location.create/list、order.create/transition、inventory.adjust/move/query/expiring（M11 增一）；`def()` 包装器集中处理 handler 参数逆变；transition 从 Profile workflows 取流程定义校验（M8 行为闭环）+ 库存联动发射段 runAtomic 原子包裹（M9，move 双流水同此）；order.create 挡同单同 SKU 同库位同批次重复行（M9 守卫的 M11 精化）；locationCode/batchNo 统一解析护栏（未建库位拒绝、DEFAULT 直通；批次缺省归 DEFAULT、DEFAULT 拒效期）；assertExpiryConsistent 同批次效期一致性（M11，入库 fail-fast / adjust / move 权威校验）；expandAllocatedLines 批次分配（M12：order.create 出库 allocation strict/fifo/fefo——M13 扩加 strict，未指定批次的行按策略拆分为具体批次行，合计不足抛 AllocationInsufficientError）；readSettings 模块设置窄化读取 + isExpired 过期判定 + 出库守卫过期拦截（M13：defaultAllocation 全局缺省策略 / blockExpiredOutbound 开关，老库缺键与脏值一律兜底代码缺省） | schema 之外不碰总线内部 |
+| `tools/wms-tools.ts` | 十工具：sku.create/update、location.create/list、order.create/transition、inventory.adjust/move/query/expiring（M11 增一）；`def()` 包装器集中处理 handler 参数逆变；transition 从 Profile workflows 取流程定义校验（M8 行为闭环）+ 库存联动发射段 runAtomic 原子包裹（M9，move 双流水同此）；order.create 挡同单同 SKU 同库位同批次重复行（M9 守卫的 M11 精化）；locationCode/batchNo 统一解析护栏（未建库位拒绝、DEFAULT 直通；批次缺省归 DEFAULT、DEFAULT 拒效期）；assertExpiryConsistent 同批次效期一致性（M11，入库 fail-fast / adjust / move 权威校验）；expandAllocatedLines 批次分配（M12：order.create 出库 allocation strict/fifo/fefo——M13 扩加 strict，未指定批次的行按策略拆分为具体批次行，合计不足抛 AllocationInsufficientError）；readWmsSettings 模块设置窄化读取（M13 私有 readSettings，M15 升包级导出——四键：分配/拦截两键 + 效期阈值两键联动兜底 7/30，server 效期看板端点同源消费）+ isExpired 过期判定 + 出库守卫过期拦截（M13：defaultAllocation 全局缺省策略 / blockExpiredOutbound 开关，老库缺键与脏值一律兜底代码缺省） | schema 之外不碰总线内部 |
 | `events/catalog.ts` | 事件名常量 + payload 类型（M11 起 adjusted/order 行 payload 带可选 batchNo/batchExpiryDate）+ isWmsEventType 分发过滤 + DEFAULT_LOCATION_ID / DEFAULT_BATCH_NO 保留词（migrations 插值的单一来源） | 无状态 |
 | `state/order-state-machine.ts` | 转移纯函数校验（canTransition/assertTransition/transitionsFrom，M8 起接受调用方传入的 transitions）+ ORDER_TRANSITIONS 种子誊写源（仅供 defaultWorkflows 消费） | 不落库、不读库、不读任何全局配置 |
 | `state/inventory-effect.ts` | 单据→库存联动纯策略（M9）：stockEffectOf（received +/shipped -）+ requiresAvailabilityCheck（out+picking 预检）；仅命令侧消费 | 不落库、不读库；投影层不消费（投影不埋业务策略） |
@@ -530,7 +539,7 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 - **库位管理（M10）**：location.test.ts——创建 / 唯一 / 保留字 / 引用未建库位拒绝；inventory-location.test.ts——分桶入账 + query 三形态 / 入库行分桶上架 / 出库按行库位守卫 / 移库全家桶（余量与同库位拒绝）/ replay 重建一致 / **老库收敛**（文件库跑 M9 流量 → 模拟旧表结构（缺库位列与批次列）→ 重开断言 DEFAULT 桶与流水重建——M11 收敛语义）。
 - **批次/效期（M11）**：batch.test.ts——批次分桶与效期一致性（同批次异效期拒绝 / DEFAULT 拒效期 / 出库行带效期拒绝）/ 批次出库严格桶守卫 / 单据行批次（入库声明批次与效期、同单同 SKU 同库位分批次多行、四段行键查重）/ 移库带批次 / query 树形下钻 + 临期查询 / replay 重建一致 / **老库收敛**（M10 结构 → 六表 DROP 重建）/ **混合版本**（无批次字段的 M10 事件 → 投影兜底 DEFAULT）；不带批次的 M10 流量等价性由既有测试机械补断言全绿保证。
 - **批次分配策略（M12）**：batch.test.ts——fifo 首笔时间序拆行（跨桶凑数、事件行已是具体批次）/ fefo 效期升序 + 无期批次最后（DEFAULT 参与）/ 缺省不传 allocation 的 M11 严格桶回归 / 显式批次行不参与分配 / 合计不足 AllocationInsufficientError 零事件 / 分配行与手动行同键查重 / 入库 + allocation 拒 / 非法策略值 schema 拒 / 全流程（picking 预检 → shipped 逐批次扣减 → replay 一致）。
-- **分配/拦截设置（M13）**：allocation-settings.test.ts——新库种子两键缺省 / 老库空 settings（remove 模拟）兜底 strict / 脏值兜底（非法策略值回落 strict、非 true 回落 false）/ 全局 fefo 不传参按 fefo 拆行 / 参数 strict·fifo 覆盖全局 / 全局策略对入库单无感 / 慢通道改值即时生效 / 拦截全家桶（显式过期批次 picking 拒 WMS_BATCH_EXPIRED 零事件、今天到期边界可出、fefo 分配跳过过期桶、全过滤凑不齐走 WMS_ALLOCATION_INSUFFICIENT、picking 后开启拦截 shipped 仍拒且库存不动、缺省 false 过期照常出的 M12 回归、adjust/move 不拦）。
+- **分配/拦截设置（M13）**：allocation-settings.test.ts——新库种子四键缺省（M15 起含效期阈值 7/30）/ 老库空 settings（remove 模拟）兜底 strict / 脏值兜底（非法策略值回落 strict、非 true 回落 false）/ 全局 fefo 不传参按 fefo 拆行 / 参数 strict·fifo 覆盖全局 / 全局策略对入库单无感 / 慢通道改值即时生效 / 拦截全家桶（显式过期批次 picking 拒 WMS_BATCH_EXPIRED 零事件、今天到期边界可出、fefo 分配跳过过期桶、全过滤凑不齐走 WMS_ALLOCATION_INSUFFICIENT、picking 后开启拦截 shipped 仍拒且库存不动、缺省 false 过期照常出的 M12 回归、adjust/move 不拦）。阈值两键的行为级验证（慢通道改阈值分层变化 / 脏值与次序不合法联动回落）在 server 的 wms-routes.test.ts（端点消费同一 readWmsSettings）。
 - **manifest 迁移回归（M6）**：构造期 install 与 M4 手写种子行为等价（字段/流程/幂等/文件库重开零膨胀——现有 e2e 全绿即证明）；老库收敛场景在 core 的 modules.test.ts 覆盖。
 - **端到端**（end-to-end.test.ts）：字段注册 → AI 工具链 → replay 重建一致；投影篡改被 replay 修正；多工作区隔离；文件库重开身份保持。
 
@@ -613,7 +622,8 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 │                        POST /api/proposals/:id/confirm │
 │                        POST /api/proposals/:id/reject  │
 │  routes/wms.ts         管理界面业务端点（读视图/写工具，│
-│                        M14 增效期看板读端点）           │
+│                        M14 效期看板读端点，M15 阈值      │
+│                        settings 化 + 库位明细）          │
 │  routes/chat.ts        AI 会话 SSE（M12：消息流 +      │
 │                        ui.ask 应答端点，见下）           │
 │  routes/sync.ts        同步三端点（M5，见下）            │
@@ -635,7 +645,7 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 | `index.ts` | createApp(context) 组装 Hono 应用 + start() 监听端口（唯一进程入口） | 不含业务逻辑 |
 | `context.ts` | AppContext 装配：OneCore.open(数据库路径) + WmsDomain.attach + createWmsAgent(provider) + 工作区选择 | 不认识 HTTP（可被任何宿主复用——含未来 Tauri sidecar） |
 | `routes/*.ts` | HTTP 契约：参数提取 → 调用 workspace 视图/agent → JSON 序列化 | 不做业务校验（在工具 handler / ProfileService）、不碰 SQL |
-| `routes/wms.ts` | 管理界面业务端点：读操作直查投影（skus/orders/inventory 视图，明细行联查经 `ws.skus.byId` 组装 skuCode/name），写操作一律 `ws.tools.invoke('wms.*', body, actorOf(ctx))`（actor=`user:local@{nodeId}`）并透传工具返回值；效期看板读端点（M14）`GET /api/inventory/expiry`——inventory.list() 桶行按 (SKU, 批次) 聚合（余量跨库位合计 + 库位编码清单联查）+ daysLeft/level 五层分级 + 效期升序，全在路由层组装 | 不做业务校验（工具 handler 的职责）、不碰 SQL（联查走视图 API） |
+| `routes/wms.ts` | 管理界面业务端点：读操作直查投影（skus/orders/inventory 视图，明细行联查经 `ws.skus.byId` 组装 skuCode/name），写操作一律 `ws.tools.invoke('wms.*', body, actorOf(ctx))`（actor=`user:local@{nodeId}`）并透传工具返回值；效期看板读端点（M14，M15 进阶）`GET /api/inventory/expiry`——inventory.list() 桶行按 (SKU, 批次) 聚合（余量跨库位合计 + 库位×余量明细 buckets 按余量降序）+ daysLeft/level 五层分级（阈值读 readWmsSettings(ctx.ws)——core.wms settings 同源，缺省 7/30）+ 效期升序，全在路由层组装 | 不做业务校验（工具 handler 的职责）、不碰 SQL（联查走视图 API） |
 | `routes/chat.ts` | AI 会话端点（M12）：内存会话 Map（生命周期/并发约束见「AI 会话与 ui.ask」）+ SSE 流式消息 + ui.ask 应答注入 | 不做事件归约（前端的事）、不落会话到磁盘（会话是交互态不是事实） |
 | `errors.ts` | 错误映射中间件：CoreError.code → HTTP 状态 + `{ code, message }` 响应体 | 不吞错（未知错误 500 带原文） |
 | `sync/sync-client.ts` | runSyncRound(peer)：hello 握手（校验 workspaceId 一致 + 自拉防护）→ computePullPlan → 分页拉取 → core.sync.applyRemote → accepted>0 时 ws.replayAll；fetchImpl 可注入（测试零网络） | 不解析事件内容（摄入幂等在 core）、不做发现/推送/加密（v1 裁剪） |
@@ -654,7 +664,7 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
   - `POST /api/chat/sessions/:id/message` body `{ message }` → **SSE 流式**（M12 会话化）：AgentStreamEvent 直译为 SSE 事件名（`text-delta` / `tool-call` / `ask` / `tool-result` / `turn-done` / `error`），前端逐事件渲染（工具卡先落「执行中」、结果回填、助手文本逐 delta 增长）；
   - `POST /api/chat/sessions/:id/answer` body `{ callId?, answer }`（或 `{ declined: true }`）→ ui.ask 挂起流的用户应答（M12 步骤3，见下「AI 会话与 ui.ask」）。
 - **管理界面业务 API（读写分治）**：
-  - **读 = 直查投影视图**（投影是缓存，只读安全）：`GET /api/skus` → `SkuRecord[]`；`GET /api/orders?direction=in|out`（query 可选）→ 订单数组，每单附 `lines`（`ws.orders.lines` + `ws.skus.byId` 联查补 skuCode/name——组装在路由层完成，不碰 SQL）；`GET /api/inventory` → 库存清单（`ws.inventory.list` 按 SKU 跨库位跨批次求和 + SKU 联查，响应形态与 M9 一致——M10/M11 前端零改动；分桶明细走 `wms.inventory.query` 工具）；`GET /api/inventory/expiry` → **效期看板**（M14）`{ today, rows }`——rows 按 (SKU, 批次) 聚合（余量跨库位合计、库位编码清单、SKU 联查），每行携带后端算好的 `daysLeft`（UTC 日期差，null = 未登记）与 `level` 五层分级：`expired`（< 今天）/ `critical`（≤7 天）/ `warning`（≤30 天）/ `safe`（>30 天）/ `unknown`（效期 null，含 DEFAULT 虚拟批次）——**「今天」判定与 M13 拦截同界**（今天到期 = 临期未过期）；零余量桶不上板（出清批次无预警意义）；排序效期升序（最紧急在上、未登记殿后）。分层阈值是 server 展示常量（7/30 天）而非 settings 键——阈值配置化是生长点。
+  - **读 = 直查投影视图**（投影是缓存，只读安全）：`GET /api/skus` → `SkuRecord[]`；`GET /api/orders?direction=in|out`（query 可选）→ 订单数组，每单附 `lines`（`ws.orders.lines` + `ws.skus.byId` 联查补 skuCode/name——组装在路由层完成，不碰 SQL）；`GET /api/inventory` → 库存清单（`ws.inventory.list` 按 SKU 跨库位跨批次求和 + SKU 联查，响应形态与 M9 一致——M10/M11 前端零改动；分桶明细走 `wms.inventory.query` 工具）；`GET /api/inventory/expiry` → **效期看板**（M14，M15 进阶）`{ today, rows }`——rows 按 (SKU, 批次) 聚合（余量跨库位合计、`buckets` 库位×余量明细按余量降序、SKU 联查），每行携带后端算好的 `daysLeft`（UTC 日期差，null = 未登记）与 `level` 五层分级：`expired`（< 今天）/ `critical`（≤ 阈值）/ `warning`（≤ 阈值）/ `safe` / `unknown`（效期 null，含 DEFAULT 虚拟批次）——**「今天」判定与 M13 拦截同界**（今天到期 = 临期未过期）；零余量桶不上板（出清批次无预警意义）；排序效期升序（最紧急在上、未登记殿后）。**分层阈值读 core.wms settings**（M15：`readWmsSettings(ctx.ws)`，键 expiryCriticalDays / expiryWarningDays，缺省 7/30，与 AI 工具层同一读取实现——改值走慢通道即对看板生效，脏值/次序不合法联动回落缺省）。
   - **写 = 全部经工具总线**（人与 AI 走同一条命令通道，护栏 + 审计免费）：`POST /api/skus` body `{ skuCode, name, extData? }` → `wms.sku.create`；`POST /api/orders` body `{ direction, lines, orderNo?, note? }` → `wms.order.create`；`POST /api/orders/:orderNo/transition` body `{ to }` → `wms.order.transition`；`POST /api/inventory/adjust` body `{ skuCode, delta, reason?, orderNo? }` → `wms.inventory.adjust`。actor 固定 `user:local@{nodeId}`（同步通道节点唯一，见 @one/core「同步回合」决策 5；与 confirm 默认值一致：人类本地界面操作，审计可辨）。
   - 工具返回值原样透传为 2xx 响应体；`WMS_*` 领域错误经映射表统一 400 + code（前端按 code 分支提示）。
 - **错误映射表**：`PROPOSAL_NOT_FOUND` → 404；`PROPOSAL_STALE` / `PROPOSAL_STATE` → 409；`PROFILE_VALIDATION` → 422；`TOOL_*` / 领域错误 → 400（快通道护栏语义：错误回传前端展示，不落事件）。前端按 `code` 分支提示文案，不 parse message。
@@ -679,7 +689,7 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 ## 测试策略（server）——不起端口、不碰真实 LLM
 
 - **路由级直测**：`createApp(ctx).request(url, init)` 走 hono 内建测试口——内存库 + mock provider（脚本化 LlmProvider，同 @one/ai 测试手法）。
-- 覆盖：proposals 全流程（propose 经真工具总线 → list → confirm → 409 新鲜度）、chat SSE 流式（事件序、多轮历史回传、error 事件后会话可继续、并发 409 CHAT_SESSION_BUSY）与 ui.ask 挂起/唤醒（SseReader 增量读流：ask 事件 → answer 注入续流 → 回答回传模型、挂起期间新消息 409、ui.ask 不落 oplog 的审计豁免断言、5 分钟超时按 declined 结算、404/409 分支）、错误映射表逐 code 断言、AI 未配置 503、管理端点（建 SKU → 列表含 extData、建单 → 明细联查、流转 → 状态变化、库存调整 → 清单更新、`WMS_SKU_EXISTS` / `WMS_INVALID_TRANSITION` / `WMS_INSUFFICIENT_STOCK` 护栏 400）、效期看板（M14：SKU×批次聚合、跨库位余量合计与库位清单、五层分级与边界天数（-3/0/7/30/31）、零余量桶过滤、效期升序未登记殿后、空库存空板）、同步端点（vi.stubGlobal 转发 fetch 到对端 app.request，双 AppContext 模拟双节点零网络：双向互拉收敛、参数非法 400、同步组不一致 error、自拉防护 skipped-self、无 peers 400）。
+- 覆盖：proposals 全流程（propose 经真工具总线 → list → confirm → 409 新鲜度）、chat SSE 流式（事件序、多轮历史回传、error 事件后会话可继续、并发 409 CHAT_SESSION_BUSY）与 ui.ask 挂起/唤醒（SseReader 增量读流：ask 事件 → answer 注入续流 → 回答回传模型、挂起期间新消息 409、ui.ask 不落 oplog 的审计豁免断言、5 分钟超时按 declined 结算、404/409 分支）、错误映射表逐 code 断言、AI 未配置 503、管理端点（建 SKU → 列表含 extData、建单 → 明细联查、流转 → 状态变化、库存调整 → 清单更新、`WMS_SKU_EXISTS` / `WMS_INVALID_TRANSITION` / `WMS_INSUFFICIENT_STOCK` 护栏 400）、效期看板（M14：SKU×批次聚合、跨库位余量合计、五层分级与边界天数（-3/0/7/30/31）、零余量桶过滤、效期升序未登记殿后、空库存空板；M15：库位×余量明细 buckets 按余量降序、慢通道改阈值分层即时变化、脏值/次序不合法联动回落缺省 7/30）、同步端点（vi.stubGlobal 转发 fetch 到对端 app.request，双 AppContext 模拟双节点零网络：双向互拉收敛、参数非法 400、同步组不一致 error、自拉防护 skipped-self、无 peers 400）。
 - **迁移测试**（migration.test.ts，M7）：迁移端点（export → 新节点 import → replay → SKU/库存/配置一致、重复导入幂等、manifest 在场性报告）。
 
 ---
@@ -704,8 +714,10 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 │  pages/SkusPage.tsx       SKU 列表（动态列）+ 新建表单  │
 │  pages/OrdersPage.tsx     单据列表 + 建单 + 状态流转    │
 │  pages/InventoryPage.tsx  库存清单 + 过滤 + 手工调整   │
-│  pages/ExpiryPage.tsx     效期看板（M14：分层统计卡 + │
-│                            着色表格 + 层/关键词过滤）  │
+│  pages/ExpiryPage.tsx     效期看板（M14 分层统计卡 +   │
+│                            着色表格 + 层/关键词过滤；  │
+│                            M15 行展开库位明细 + 跳转    │
+│                            预填）                       │
 │  pages/ChatPage.tsx        对话面板（消息流 + 输入 +   │
 │                            工具调用过程卡片）           │
 │  pages/ProposalsPage.tsx   pending 提议列表 + 详情抽屉 │
@@ -744,18 +756,18 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 | `pages/SkusPage.tsx` | SKU 列表（动态列，见关键机制）+ 新建入口 | 不做字段元数据管理（那是慢通道提议的事） |
 | `pages/OrdersPage.tsx` | 单据列表（方向筛选 + 单号过滤——AI 跳转预填）+ 建单表单（明细行）+ 状态流转按钮（候选目标状态由 Profile workflows 计算） | 不做转移合法性裁决（工具 handler 的 400 是兜底） |
 | `pages/InventoryPage.tsx` | 库存清单（联查 SKU 信息 + 编码/名称过滤——AI 跳转预填）+ 手工调整表单（delta 正负 + 原因；行内预填 / 顶部自选 SKU 两种入口——空库存可录期初） | 不展示流水明细（审计走事件账本，v2 接缝） |
-| `pages/ExpiryPage.tsx` | 效期看板（M14）：五层统计卡（已过期/紧急/预警/安全/未登记效期——前端 reduce 计数）+ 着色表格（分层 Tag、剩余天数分形渲染、库位合并展示）+ 层下拉与关键词过滤；消费后端算好的 daysLeft/level，纯展示零计算 | 不做分层/日期计算（server 的职责——单一真相）；不提供改阈值入口（常量在 server，配置化是生长点） |
+| `pages/ExpiryPage.tsx` | 效期看板（M14，M15 进阶）：五层统计卡（已过期/紧急/预警/安全/未登记效期——前端 reduce 计数）+ 着色表格（分层 Tag、剩余天数分形渲染、库位列显「N 库位」）+ **行展开库位×余量明细**（消费后端 buckets，余量降序直出）+ 层下拉与关键词过滤（AI 跳转 skuCode 预填——M15）；消费后端算好的 daysLeft/level/buckets，纯展示零计算 | 不做分层/日期计算（server 的职责——单一真相）；不提供改阈值入口（settings 改值走慢通道提议确认，v1 不在看板内嵌表单） |
 | `components/SkuFormModal.tsx` | 新建 SKU 表单：固定字段（skuCode/name）+ 可见扩展字段按 type 动态渲染输入控件 | 不解释字段语义（只按 type 映射控件） |
 | `components/OrderFormModal.tsx` | 建单表单：方向 + 明细行（SKU 下拉来自投影 + 数量）+ 备注 | 不做明细校验（工具 handler 的职责） |
 | `pages/ChatPage.tsx` | 对话面板（M12）：消息流渲染、发送（isStreaming 串行）、工具卡 + AskCard + 后置动作按钮（onAnswer/onNavigate 注入） | 不管理会话状态与 SSE 消费（ChatProvider 的事） |
 | `pages/ProposalsPage.tsx` | pending 列表 + 轮询刷新（Query refetchInterval）+ 详情抽屉 | 不做确认逻辑（在 ProposalDetail） |
 | `components/ImpactReportView.tsx` | 影响报告渲染：summary 统计 + items 按 severity 分色（warning 黄 / info 蓝）+ 中文 description 直出 | 不做裁决（人确认） |
 | `components/ProposalDetail.tsx` | note/patch 摘要 + ImpactReportView + 确认/拒绝按钮（409/422 按 code 提示） | 不直接调 ProfileService（只走 HTTP） |
-| `components/ToolInvocationCard.tsx` | 工具调用过程卡（M12）：流式落卡/回填终态、参数与结果摘要、ui.ask 分流（AskCard / 问答回显）、成功工具的后置动作按钮（如「去确认提议」「去库存页查看」） | 不执行工具、不直接跳页（onNavigate 回调注入） |
+| `components/ToolInvocationCard.tsx` | 工具调用过程卡（M12）：流式落卡/回填终态、参数与结果摘要、ui.ask 分流（AskCard / 问答回显）、成功工具的后置动作按钮（如「去确认提议」「去库存页查看」「去效期看板」（M15）） | 不执行工具、不直接跳页（onNavigate 回调注入） |
 | `components/ToolResultView.tsx` | 查询结果按 toolId + payload 形态渲染表格（inventory.query 三形态 / expiring / location.list，超 50 行截断），其余 JSON 兜底 | 不做数据拉取（渲染传入的 payload 快照） |
 | `components/AskCard.tsx` | ui.ask 挂起态的回答输入（提交/跳过，提交后锁定） | 不提交请求（onAnswer 回调注入） |
 | `pages/SettingsPage.tsx` | 设置三分区（M8）：节点名片（只读）/ 局域网同步（peers + 手动回合）/ 迁移（导出下载 + 导入上传） | 不持久化任何配置（peers 每次随请求发送，服务端 env 是唯一持久位） |
-| `api/client.ts` | fetch 封装：JSON 序列化、非 2xx 抛 `ApiError{code,message}`；chat 事件契约手写镜像（不依赖 @one/ai）+ SSE 流消费（streamChatMessage）+ ui.ask 应答（answerChatAsk）+ 效期看板契约（ExpiryBoard/ExpiryBatchRow/ExpiryLevel 镜像 + expiryBoard()，M14） | 不缓存（Query 的职责） |
+| `api/client.ts` | fetch 封装：JSON 序列化、非 2xx 抛 `ApiError{code,message}`；chat 事件契约手写镜像（不依赖 @one/ai）+ SSE 流消费（streamChatMessage）+ ui.ask 应答（answerChatAsk）+ 效期看板契约（ExpiryBoard/ExpiryBatchRow/ExpiryLevel 镜像 + expiryBoard()，M14；M15 起 ExpiryBatchRow 携带 buckets 库位×余量明细） | 不缓存（Query 的职责） |
 | `api/hooks.ts` | useSkus / useCreateSku / useOrders / useCreateOrder / useTransitionOrder / useInventory / useAdjustInventory / useProfileSnapshot / useProposals / useConfirmProposal / useRejectProposal + useExpiryBoard（M14）+ M8 设置页组（useNodeHello / useSyncRun / useMigrationExport / useMigrationImport）；adjust 与单据流转的 onSuccess 一并失效 expiry-board（桶余量变化 → 看板随之新鲜） | 不做 UI 判断 |
 
 ## 关键机制
@@ -766,13 +778,13 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 - **提议确认的乐观刷新**：confirm 成功后 invalidate `['proposals']` + 弹出成功结果（newVersion）；409 时提示重新提议并刷新列表。
 - **对话面板的工具过程可见**：invocations 渲染为过程卡（工具名、参数摘要、成败、查询结果表格），让「AI 经工具总线操作」对用户可见可审计（§9.3 透明度）。
 - **AI 聊天 = SSE 流式 + 会话化（M12）**：ChatProvider（App 级 context，切页不丢对话）消费 `/api/chat/sessions/:id/message` 的 SSE 流，事件归约到 turn——工具卡先落「执行中」、tool-result 回填终态、助手文本逐 delta 增长；ui.ask 挂起渲染 AskCard（回答走 answer 端点，终态沿原流回填）；多轮历史由 server 会话持有（见 @one/server「AI 会话与 ui.ask」）。
-- **跳转后置动作（M12 步骤4）**：成功的工具卡带「去对应管理页」按钮（profile.propose → 配置确认；SKU/单据/库存操作 → 对应页，携单号或 SKU 过滤）。经 app-nav 的 `navigate(page, filter?)` 跳转——目标页挂载时 `takeInitialFilter` 一次性消费预填过滤框（库存页按编码/名称、单据页按单号）；`inventory.query` 平铺/全量清单形态不出按钮（结果已在卡内成表，无单一落点）。
-- **效期看板 = 后端算好、前端纯展示（M14）**：`useExpiryBoard()` 消费 `GET /api/inventory/expiry` 的 `{ today, rows }`——daysLeft/level 由 server 算（与 M13 拦截同界：今天到期 = 临期未过期），页面只做三件事：五层统计卡（reduce 计数 + 语义色）、着色表格（分层 Tag、剩余天数分形渲染——负数「已过期 N 天」/ 0「今天到期」/ null 弱化 —、库位清单合并）、层下拉 + 关键词过滤（编码/名称/批次）。数据新鲜度靠 mutation 失效联动：adjust 与单据流转的 onSuccess 一并 invalidate `['expiry-board']`（桶余量变化 → 聚合与分层随之刷新）。让 M11（效期登记）/ M12（批次分配）/ M13（过期拦截）沉淀的效期数据在管理界面可见——「AI 经 wms.inventory.expiring 工具查询」之外的常驻用户面。
+- **跳转后置动作（M12 步骤4）**：成功的工具卡带「去对应管理页」按钮（profile.propose → 配置确认；SKU/单据/库存操作 → 对应页，携单号或 SKU 过滤；临期查询 → 效期看板（M15）——结果全部同一 SKU 时携 SKU 过滤预填，多 SKU 清单不带）。经 app-nav 的 `navigate(page, filter?)` 跳转——目标页挂载时 `takeInitialFilter` 一次性消费预填过滤框（库存页/效期页按编码/名称、单据页按单号）；`inventory.query` 平铺/全量清单形态不出按钮（结果已在卡内成表，无单一落点）。
+- **效期看板 = 后端算好、前端纯展示（M14；M15 行展开下钻 + 跳转预填）**：`useExpiryBoard()` 消费 `GET /api/inventory/expiry` 的 `{ today, rows }`——daysLeft/level/buckets 由 server 算（与 M13 拦截同界：今天到期 = 临期未过期；阈值读 core.wms settings，见 @one/server），页面只做四件事：五层统计卡（reduce 计数 + 语义色）、着色表格（分层 Tag、剩余天数分形渲染——负数「已过期 N 天」/ 0「今天到期」/ null 弱化 —、库位列显「N 库位」）、**行展开库位×余量明细**（Table expandable 嵌套小表，消费 buckets 余量降序）、层下拉 + 关键词过滤（编码/名称/批次——AI 跳转 skuCode 预填）。数据新鲜度靠 mutation 失效联动：adjust 与单据流转的 onSuccess 一并 invalidate `['expiry-board']`（桶余量变化 → 聚合与分层随之刷新）。让 M11（效期登记）/ M12（批次分配）/ M13（过期拦截）沉淀的效期数据在管理界面可见——「AI 经 wms.inventory.expiring 工具查询」之外的常驻用户面。
 - **设置页 = 触发器 + 状态显示器，不引入新服务端状态**（M8）：三个分区全部消费既有端点——节点名片（GET /api/sync/hello：nodeId/workspaceId/profileVersion/eventCount）、局域网同步（peers 表单 → POST /api/sync/run）、迁移（/export 下载 JSON 文件 + /import 上传，accepted/skipped/missingManifests 直出）。peers 不持久化在前端——每次随请求体发送，服务端 env（ONE_SYNC_PEERS）仍是唯一持久位。
 - **v2+ 接缝（本次不做）**：编辑 SKU（改名/改扩展字段）、库存流水展示页、扫码界面、冲突队列页。
 
 ## 测试策略（app）——jsdom + @testing-library/react
 
 - **组件级**：ImpactReportView（severity 分色、items 直出）、ProposalDetail（确认按钮 → mock client 成功/409 两分支）、ToolInvocationCard（过程三态、查询结果三形态表格、ui.ask 挂起/回填、后置动作按钮——失败/执行中/无 onNavigate 不出按钮）、SkuFormModal（type→控件映射、json 校验）。
-- **页面 smoke**：ChatPage 走真实 ChatProvider + mock streamChatMessage（SSE 事件脚本化：工具卡回填、流式文本、error 落卡、ui.ask 挂起→回答/跳过 gate 时序、propose 后置按钮）；app-nav（navigate 切页、initialFilter 一次性消费）；ProposalsPage 列表 → 详情 → 确认后列表清空；SkusPage **动态列核心机制**（snapshot 含可见 spec + 隐藏 category → 表头有「规格」无「分类」）；OrdersPage / InventoryPage 列表渲染 + 提交 + 过滤框（关键字命中 + AI 跳转预填）；ExpiryPage（M14）mock useExpiryBoard——五层统计卡计数、剩余天数分形渲染（已过期 N 天 / 今天到期 / —）、库位合并、层过滤收敛、关键词过滤与空表；SettingsPage（M8）mock 三组端点——节点名片渲染、同步回合结果、迁移导入结果。
+- **页面 smoke**：ChatPage 走真实 ChatProvider + mock streamChatMessage（SSE 事件脚本化：工具卡回填、流式文本、error 落卡、ui.ask 挂起→回答/跳过 gate 时序、propose 后置按钮）；app-nav（navigate 切页、initialFilter 一次性消费）；ProposalsPage 列表 → 详情 → 确认后列表清空；SkusPage **动态列核心机制**（snapshot 含可见 spec + 隐藏 category → 表头有「规格」无「分类」）；OrdersPage / InventoryPage 列表渲染 + 提交 + 过滤框（关键字命中 + AI 跳转预填）；ExpiryPage（M14，M15 进阶）mock useExpiryBoard——五层统计卡计数、剩余天数分形渲染（已过期 N 天 / 今天到期 / —）、库位列计数「N 库位」、行展开库位×余量明细（余量降序）、层过滤收敛、关键词过滤与空表、AI 跳转 skuCode 预填；SettingsPage（M8）mock 三组端点——节点名片渲染、同步回合结果、迁移导入结果。
 - 不测 AntD 内部行为；不断言样式细节（只断语义角色与文本）。

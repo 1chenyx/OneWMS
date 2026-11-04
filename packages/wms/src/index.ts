@@ -47,7 +47,8 @@ export type {
 
 export { migrateWms } from './db/migrations.js';
 
-export { createWmsTools } from './tools/wms-tools.js';
+export { createWmsTools, readWmsSettings } from './tools/wms-tools.js';
+export type { WmsSettings } from './tools/wms-tools.js';
 
 export {
   SkuAlreadyExistsError,
