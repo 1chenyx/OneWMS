@@ -10,6 +10,7 @@ import { mountStatic } from './static.js';
 import { profileRoutes } from './routes/profile.js';
 import { proposalRoutes } from './routes/proposals.js';
 import { chatRoutes } from './routes/chat.js';
+import { agentRoutes } from './routes/agents.js';
 import { wmsRoutes } from './routes/wms.js';
 import { syncRoutes } from './routes/sync.js';
 import { migrationRoutes } from './routes/migration.js';
@@ -30,6 +31,7 @@ export function createApp(ctx: AppContext): Hono {
   app.route('/api/profile', profileRoutes(ctx));
   app.route('/api/proposals', proposalRoutes(ctx));
   app.route('/api/chat', chatRoutes(ctx));
+  app.route('/api/agents', agentRoutes(ctx));
   app.route('/api/sync', syncRoutes(ctx));
   app.route('/api/migration', migrationRoutes(ctx));
   app.route('/api', wmsRoutes(ctx));
@@ -48,7 +50,7 @@ export function start(): void {
   }
   const ai = readAiConfig();
   const provider = ai ? createVercelLlmProvider(resolveLanguageModel(ai)) : undefined;
-  const ctx = createAppContext({ dbPath, workspaceId, provider, model: ai?.model });
+  const ctx = createAppContext({ dbPath, workspaceId, provider, aiConfig: ai });
   const app = createApp(ctx);
 
   const server = serve({ fetch: app.fetch, port }, (info) => {

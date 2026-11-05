@@ -355,22 +355,11 @@ server/routes/migration.ts   → core.migration（exportBundle/importBundle）
 | 模块运行时管理端点 | server/routes | GET /api/modules、install/uninstall 端点（当前唯一模块 core.wms 由领域包装配期自动安装，无运行时装卸消费方） |
 | 权限中间件 | ToolsView.invoke 的 handler 前插一层 | ctx.actor 已备（§10 预留） |
 | 预演关增强 | profile/impact.ts | 字段隐藏时统计受影响业务行数（需领域消费方提供计数回调） |
-| AI 工具集分级（AgentScope） | ai/agent.ts 的 createWmsAgent 加 scope 参数 | 详见下文 |
+| AI 工具集分级（AgentScope） | M16 已以更强形态落地：AgentDefinition（见 @one/ai「多实例助手」）——per-agent 工具授权清单取代三档枚举 | 详见下文 |
 
-### AI 工具集分级（AgentScope，v2 接缝——多入口多信任等级需求出现时实现）
+### AI 工具集分级（AgentScope）——M16 已演进为多实例助手
 
-**设计立场**：权限的正确位置在工具层，不在模型层——不拆「查询 AI / 配置 AI」两个对话入口（体验割裂），而是**一个 agent 工厂 + 按入口裁剪工具集**。现有慢通道已使「动配置」成为最弱权限档（profile.propose 只能写提案，confirm 永不注册为工具），真正的演进点是按入口差异化：
-
-```ts
-type AgentScope = 'readonly' | 'standard' | 'proposable';
-// readonly:   仅 permission='read' 的工具（wms.inventory.query 等）
-// standard:   + 业务写六件套（现状，快通道：handler 校验 + 全审计）
-// proposable: + profile.propose（慢通道入口）
-```
-
-- **actor 携带等级**：`ai:{model}:{scope}`（如 `ai:glm-4:standard`），审计事件一眼可辨操作来自什么权限的入口。
-- **消费方（触发条件）**：车间平板只留查询、本地小模型不给提议权、多成员不同权限、不同 API key 等多入口场景。单入口下无消费方，不预实现。
-- **实现位置**：`ai/agent.ts` 工厂参数 + server 侧按入口选 scope（env 或入口配置）。工具的 `permission` 元数据是裁剪依据（read/write 分级已存在）。
+**原设想**（v2 接缝）：`createWmsAgent` 加 scope 参数，按入口裁剪三档工具集（readonly / standard / proposable），actor 携带等级。**M16 落地了更强形态**：助手定义化（AgentDefinition）+ Profile 配置层存储（core.ai settings.agents，慢通道可写）+ 每条消息现场装配——内置三件套 general/readonly/config 即原三档（且 general 移除了 profile.propose：「改配置」成为独立助手而非默认权限），自定义助手可按需勾选工具。actor = `ai:{agentId}@{nodeId}`（助手为单位可审计）。**仍预留的生长点**：多 AI 协作（`tools` 元素的 `agent:<id>` 委托形态——v1 装配抛错）、按角色分配助手（`allowedRoles` 字段 v1 仅透传，消费方是 server/routes/agents.ts 的权限收敛点与前端切换器过滤）。
 
 ---
 
@@ -556,6 +545,8 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 │  index.ts              公共 API 唯一出口              │
 ├─ 组合层 ─────────────────────────────────────────────┤
 │  wms-agent.ts          WmsAgent 工厂（绑工作区/actor）│
+│  agent-defs.ts         Agent 定义契约 + 内置三件套 +  │
+│                        core.ai 模块 manifest（M16）   │
 ├─ 编排层（纯逻辑，零 SDK 依赖）───────────────────────┤
 │  agent.ts              runAgent 循环（run 一次性）； │
 │                        streamAgent 生成器（M12 流式，│
@@ -573,7 +564,8 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 
 - **循环主权在编排层**：`generateText` 以 `stopWhen: isStepCount(1)` 做单轮补全，工具不挂 execute——步间循环（结果回传后再调模型）在 `agent.ts`，是纯逻辑、可单测；SDK 只负责一次网络往返与格式互译。
 - **错误回传不中断**（§4.2 快通道护栏语义）：invoke 的任何异常（ToolRejectedError 族、领域错误）转为 `ok: false` 的工具结果回传模型，由它向用户解释；被拒操作本来就不落事件（审计免费）。
-- **审计绑定**：`createWmsAgent` 把 actor 固定为 `ai:模型名`——AI 经工具总线的每次操作都落 oplog（`oplog.actor` 即审计日志）。
+- **审计绑定**：`createAgentFromDef` 把 actor 固定为 `ai:{助手id}`（M16 起——助手 id 替代模型名，「谁干的」以助手为单位可审计）——AI 经工具总线的每次操作都落 oplog（`oplog.actor` 即审计日志）。
+- **多实例助手（M16，「使用 AI」与「配置 AI」分离）**：`AgentDefinition = { id, name, description, systemPrompt, tools, model?, allowedRoles? }` 存 core.ai 模块 settings.agents（Profile 配置层，改动走慢通道 propose → confirm），`readAgentDefs` 读配置面 + 脏面窄化，未配置/清空/全非法回退内置三件套（general=全量−profile.propose / readonly=仅 read / config=read+propose——工具矩阵按总线现状展开，新工具自动进内置）。`createAgentFromDef` 按定义现场装配：tools 过滤总线在场项、system=人设前缀+全局纪律后缀（人设可定制、纪律不删减）。`tools` 元素预留 `agent:<id>` 委托形态（多 AI 协作 v2 生长点，v1 装配抛错）；`allowedRoles`（按角色分配助手）v1 仅透传。
 - **System Prompt v2（M4）**：行为规则 + 库存快照（SKU 跨库位求和——M10 修正多桶静默丢失；超 20 条截断引导用查询工具）+ 库位清单上下文（M10：实体库位编码 + DEFAULT 提示，分桶余量引导用查询工具）+ 批次引导（M11：SKU×库位×批次分桶、DEFAULT 虚拟批次、入库声明批次与效期、临期用 wms.inventory.expiring）+ **Profile 摘要**（§6.4 闭环 ②：可见扩展字段清单、流程概要、模块开关）+ **慢通道规则**（改配置必须走 profile.propose 工具提交 JSON Patch，把影响报告转述用户等待确认，禁止声称已应用）。工具清单走 function calling 的 tools 参数（原生通道，不在 prompt 文本重复）。
 - **maxSteps 保护**：默认 8 步，超限抛 `AgentStepLimitError`（防模型无限循环）。
 - **streamAgent 流式生成器（M12）**：`AsyncGenerator<AgentStreamEvent, AgentTurnResult, AskReply>`——事件流（text-delta / tool-call / ask / tool-result / turn-done）由驱动方逐个消费（server 直译为 SSE）；ui.ask 在编排层拦截（不进 invoke、不落 oplog = 审计豁免），`yield ask 事件` 后挂起，驱动方经 `next(reply)` 注入回答续流（`{answer}` 或 `{declined:true}` 跳过/超时）。
@@ -586,7 +578,8 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 | `agent.ts` | 编排循环：`runAgent`（run 一次性返回）+ `streamAgent`（M12 流式生成器：事件流逐个 yield、ui.ask 挂起经 next() 唤醒）；maxSteps 保护 | 不做任何 IO（provider 注入）、不认识 SDK 类型、不持有会话状态（驱动方的事） |
 | `types.ts` | LlmProvider / AgentMessage / ToolCallRequest/Result / AgentStreamEvent / AskReply 等接缝类型 | 无运行时 |
 | `system-prompt.ts` | 快照（SKU 总数/总量/明细前 20，跨库位求和）+ 库位清单（M10）+ 批次引导（M11：分桶/DEFAULT/效期/临期工具；M12：出库单 allocation 策略；M13：全局缺省策略与过期拦截是模块设置，改值走慢通道）+ Profile 摘要（可见扩展字段/流程概要/模块开关）+ 慢通道行为规则 + **ui.ask 提问规则**（M12：缺必要信息时一次问一个具体问题；用户未回答不重复追问）+ 当前时间 | 不注入工具清单（走 tools 参数） |
-| `wms-agent.ts` | 便利工厂：绑定 WmsWorkspace、actor=`ai:模型名`、tools.list() 快照、每次 run/stream 重组 system；stream() 附加 ui.ask 工具（M12） | 不做编排逻辑（委托 runAgent/streamAgent） |
+| `wms-agent.ts` | 便利工厂 `createAgentFromDef`（M16）：按 AgentDefinition 装配——工具授权过滤总线在场项、actor=`ai:{助手id}`、system=人设前缀+buildSystemPrompt 后缀、每次 run/stream 重组；stream() 附加 ui.ask 工具（M12）；`agent:<id>` 委托形态抛错（v2 预留） | 不做编排逻辑（委托 runAgent/streamAgent）、不读配置（定义由调用方给） |
+| `agent-defs.ts` | Agent 定义契约（M16）：`AgentDefinition` + 内置三件套（general/readonly/config，工具矩阵按总线现状展开）+ `readAgentDefs`（settings.agents 配置面读取 + 脏面窄化 + 内置兜底）+ `aiModuleManifest`（core.ai 模块 manifest，settings.agents 声明 default:[] 使慢通道 replace 路径可用） | 不装配 agent（wms-agent 的事）、不做 HTTP |
 | `provider/vercel.ts` | 单轮 generateText + 消息/工具双向翻译（含 `error-json` 错误输出、不可序列化返回值降级） | 不做多步循环、不执行工具（无 execute） |
 | `provider/config.ts` | AiProviderConfig → LanguageModel；Ollama 走原生 OpenAI 兼容端点（默认 `http://localhost:11434/v1`，`@ai-sdk/ollama` 已从 registry 移除） | 不读环境变量/配置文件（调用方给配置） |
 
@@ -594,7 +587,8 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 
 - **编排循环**（agent.test.ts）：脚本化 mock provider 驱动——多轮循环、同轮多工具、错误回传不中断、maxSteps、旁白保留；streamAgent 流式（事件序）与 ui.ask 挂起/唤醒（answer/declined 注入、非法应答兜底 declined、与普通工具混排时 ui.ask 不进 invoke）。
 - **适配层**（vercel-provider.test.ts）：`MockLanguageModelV4`（ai/test）锁定行为契约——toolCalls 解析（input JSON 串 → args 对象）、消息/工具翻译、**无 execute 的工具被调用时 SDK 正常返回**。
-- **端到端**（wms-agent.test.ts）：mock provider + 真实内核/wms——actor 落审计、护栏在 AI 通道照常生效（超量出库被拒 + 零事件 + 错误回传）、快照注入。
+- **端到端**（wms-agent.test.ts）：mock provider + 真实内核/wms——actor 落审计（`ai:{助手id}`）、护栏在 AI 通道照常生效（超量出库被拒 + 零事件 + 错误回传）、快照注入与 prompt 组合（人设前缀 + 全局纪律）、工具授权过滤与委托形态抛错。
+- **定义契约**（agent-defs.test.ts）：内置三件套工具矩阵、readAgentDefs 配置面/脏面窄化/内置兜底、慢通道整体 replace 闭环（install 种子 default:[] 的意义验证）。
 
 ## 环境备注：workspace 链接不可用时的解析兜底
 
@@ -615,7 +609,8 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 │  index.ts          createApp() + start()（进程入口）   │
 ├─ 组装层 ──────────────────────────────────────────────┤
 │  context.ts        AppContext：OneCore + WmsDomain +   │
-│                    WmsAgent + 配置（进程级单例装配）    │
+│                    core.ai 登记 + provider/aiConfig    │
+│                    （进程级单例装配，M16 去固化 agent） │
 ├─ 路由层（HTTP 边界）──────────────────────────────────┤
 │  routes/profile.ts     GET  /api/profile/snapshot      │
 │  routes/proposals.ts   GET  /api/proposals             │
@@ -625,7 +620,10 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 │                        M14 效期看板读端点，M15 阈值      │
 │                        settings 化 + 库位明细）          │
 │  routes/chat.ts        AI 会话 SSE（M12：消息流 +      │
-│                        ui.ask 应答端点，见下）           │
+│                        ui.ask 应答端点，见下；M16 按    │
+│                        agentId 现场装配助手）            │
+│  routes/agents.ts      助手目录 + 定义提议端点（M16，   │
+│                        见下）                            │
 │  routes/sync.ts        同步三端点（M5，见下）            │
 │  routes/migration.ts   迁移导出/导入两端点（M7，见下）   │
 ├─ 同步层（节点间传输编排，M5）────────────────────────────┤
@@ -643,10 +641,11 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 | 文件 | 职责 | 不做什么 |
 |---|---|---|
 | `index.ts` | createApp(context) 组装 Hono 应用 + start() 监听端口（唯一进程入口） | 不含业务逻辑 |
-| `context.ts` | AppContext 装配：OneCore.open(数据库路径) + WmsDomain.attach + createWmsAgent(provider) + 工作区选择 | 不认识 HTTP（可被任何宿主复用——含未来 Tauri sidecar） |
+| `context.ts` | AppContext 装配：OneCore.open(数据库路径) + WmsDomain.attach + **core.ai 模块登记**（registerManifest 进程目录 + install 落账，M16）+ provider/aiConfig 注入（不再启动时固化 agent——chat 路由按消息现场装配） | 不认识 HTTP（可被任何宿主复用——含未来 Tauri sidecar） |
 | `routes/*.ts` | HTTP 契约：参数提取 → 调用 workspace 视图/agent → JSON 序列化 | 不做业务校验（在工具 handler / ProfileService）、不碰 SQL |
 | `routes/wms.ts` | 管理界面业务端点：读操作直查投影（skus/orders/inventory 视图，明细行联查经 `ws.skus.byId` 组装 skuCode/name），写操作一律 `ws.tools.invoke('wms.*', body, actorOf(ctx))`（actor=`user:local@{nodeId}`）并透传工具返回值；效期看板读端点（M14，M15 进阶）`GET /api/inventory/expiry`——inventory.list() 桶行按 (SKU, 批次) 聚合（余量跨库位合计 + 库位×余量明细 buckets 按余量降序）+ daysLeft/level 五层分级（阈值读 readWmsSettings(ctx.ws)——core.wms settings 同源，缺省 7/30）+ 效期升序，全在路由层组装 | 不做业务校验（工具 handler 的职责）、不碰 SQL（联查走视图 API） |
-| `routes/chat.ts` | AI 会话端点（M12）：内存会话 Map（生命周期/并发约束见「AI 会话与 ui.ask」）+ SSE 流式消息 + ui.ask 应答注入 | 不做事件归约（前端的事）、不落会话到磁盘（会话是交互态不是事实） |
+| `routes/chat.ts` | AI 会话端点（M12）：内存会话 Map（生命周期/并发约束见「AI 会话与 ui.ask」）+ SSE 流式消息 + ui.ask 应答注入；M16：每条消息按 body.agentId 读定义现场装配（readAgentDefs + createAgentFromDef，缺省 general，未找到 404 AGENT_NOT_FOUND；def.model 异于进程配置时现场重建轻量 provider=模型覆盖） | 不做事件归约（前端的事）、不落会话到磁盘（会话是交互态不是事实）、不持有助手定义（Profile 配置层的事） |
+| `routes/agents.ts` | 助手管理端点（M16）：`GET /api/agents`（readAgentDefs 清单 + 工具总线目录——管理页勾选授权的数据源）、`POST /api/agents/propose`（以 `user:local@{nodeId}` actor 走 profile.propose，整体 replace `/modules/core.ai/settings/agents`——与 AI 通道同一慢通道，确认权在人） | 不做确认（proposals 路由的事）、不做权限收敛（v2 角色/多用户后在此按 actor 身份收敛——allowedRoles 的消费方） |
 | `errors.ts` | 错误映射中间件：CoreError.code → HTTP 状态 + `{ code, message }` 响应体 | 不吞错（未知错误 500 带原文） |
 | `sync/sync-client.ts` | runSyncRound(peer)：hello 握手（校验 workspaceId 一致 + 自拉防护）→ computePullPlan → 分页拉取 → core.sync.applyRemote → accepted>0 时 ws.replayAll；fetchImpl 可注入（测试零网络） | 不解析事件内容（摄入幂等在 core）、不做发现/推送/加密（v1 裁剪） |
 | `routes/sync.ts` | 同步 HTTP 契约：`GET /api/sync/hello`（握手）、`GET /api/sync/events/:actor?fromSeq=&limit=`（区间供事件 + 分页游标）、`POST /api/sync/run`（body `{ peers? }`，缺省 env `ONE_SYNC_PEERS`；逐 peer 跑回合，单 peer 失败不炸整轮） | 不做协议计算（在 core）、不持有状态 |
@@ -661,8 +660,10 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
   - `GET /api/profile/snapshot` → ProfileSnapshot（确认界面的「现状」数据源）；
   - `GET /api/proposals` → `ProposalSummary[]`（仅 pending，确认/拒绝即从列表消失）；
   - `POST /api/proposals/:id/confirm` body `{ by? }`（缺省 `user:local@{nodeId}`，显式传可覆盖——预留多用户）→ `{ newVersion, appliedOps }`；`PROPOSAL_STALE` → 409（前端提示「配置已变化，请让 AI 重新提议」）；
-  - `POST /api/chat/sessions/:id/message` body `{ message }` → **SSE 流式**（M12 会话化）：AgentStreamEvent 直译为 SSE 事件名（`text-delta` / `tool-call` / `ask` / `tool-result` / `turn-done` / `error`），前端逐事件渲染（工具卡先落「执行中」、结果回填、助手文本逐 delta 增长）；
-  - `POST /api/chat/sessions/:id/answer` body `{ callId?, answer }`（或 `{ declined: true }`）→ ui.ask 挂起流的用户应答（M12 步骤3，见下「AI 会话与 ui.ask」）。
+  - `POST /api/chat/sessions/:id/message` body `{ message, agentId? }`（M16：agentId 选助手，缺省 `general`；未找到 → 404 `AGENT_NOT_FOUND`）→ **SSE 流式**（M12 会话化）：AgentStreamEvent 直译为 SSE 事件名（`text-delta` / `tool-call` / `ask` / `tool-result` / `turn-done` / `error`），前端逐事件渲染（工具卡先落「执行中」、结果回填、助手文本逐 delta 增长）；
+  - `POST /api/chat/sessions/:id/answer` body `{ callId?, answer }`（或 `{ declined: true }`）→ ui.ask 挂起流的用户应答（M12 步骤3，见下「AI 会话与 ui.ask」）；
+  - `GET /api/agents` → `{ agents: AgentDefinition[], tools: {id,label,description,permission}[] }`（M16：readAgentDefs 清单 + 工具总线目录——前端切换器与助手管理页的数据源）；
+  - `POST /api/agents/propose` body `{ agents, note? }` → 提议整体替换 core.ai settings.agents（M16：人通道 actor=`user:local@{nodeId}`，确认走既有 `/api/proposals/:id/confirm`——「配置 AI」是高权限动作，与对话里的「使用 AI」分离）。
 - **管理界面业务 API（读写分治）**：
   - **读 = 直查投影视图**（投影是缓存，只读安全）：`GET /api/skus` → `SkuRecord[]`；`GET /api/orders?direction=in|out`（query 可选）→ 订单数组，每单附 `lines`（`ws.orders.lines` + `ws.skus.byId` 联查补 skuCode/name——组装在路由层完成，不碰 SQL）；`GET /api/inventory` → 库存清单（`ws.inventory.list` 按 SKU 跨库位跨批次求和 + SKU 联查，响应形态与 M9 一致——M10/M11 前端零改动；分桶明细走 `wms.inventory.query` 工具）；`GET /api/inventory/expiry` → **效期看板**（M14，M15 进阶）`{ today, rows }`——rows 按 (SKU, 批次) 聚合（余量跨库位合计、`buckets` 库位×余量明细按余量降序、SKU 联查），每行携带后端算好的 `daysLeft`（UTC 日期差，null = 未登记）与 `level` 五层分级：`expired`（< 今天）/ `critical`（≤ 阈值）/ `warning`（≤ 阈值）/ `safe` / `unknown`（效期 null，含 DEFAULT 虚拟批次）——**「今天」判定与 M13 拦截同界**（今天到期 = 临期未过期）；零余量桶不上板（出清批次无预警意义）；排序效期升序（最紧急在上、未登记殿后）。**分层阈值读 core.wms settings**（M15：`readWmsSettings(ctx.ws)`，键 expiryCriticalDays / expiryWarningDays，缺省 7/30，与 AI 工具层同一读取实现——改值走慢通道即对看板生效，脏值/次序不合法联动回落缺省）。
   - **写 = 全部经工具总线**（人与 AI 走同一条命令通道，护栏 + 审计免费）：`POST /api/skus` body `{ skuCode, name, extData? }` → `wms.sku.create`；`POST /api/orders` body `{ direction, lines, orderNo?, note? }` → `wms.order.create`；`POST /api/orders/:orderNo/transition` body `{ to }` → `wms.order.transition`；`POST /api/inventory/adjust` body `{ skuCode, delta, reason?, orderNo? }` → `wms.inventory.adjust`。actor 固定 `user:local@{nodeId}`（同步通道节点唯一，见 @one/core「同步回合」决策 5；与 confirm 默认值一致：人类本地界面操作，审计可辨）。
@@ -674,6 +675,7 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
   - **ui.ask 的审计豁免**：ui.ask 是「模型向用户提问」的挂起工具——agent 层拦截（不进工具总线、不落 oplog），只附加在会话通道的 stream() 工具清单里（run() 不提供）。挂起语义用生成器实现：`streamAgent` yield `ask` 事件后暂停，server 侧登记 pendingAsk（5 分钟超时按 declined 结算），`answer` 端点收到回答经 `next(reply)` 注入续流；回答随下一轮请求回传模型。
   - **UI 消费**：ask 事件在前端渲染回答输入卡（AskCard），回答走 answer 端点，终态 tool-result 沿原 SSE 连接回来回填。
 - **AI 可选性**（§9.2）：env 未配置 AI 时 server 照常启动，仅 chat 端点返回 503——表单/确认界面不受影响。
+- **多助手装配（M16，「使用 AI」与「配置 AI」分离）**：chat 路由每条消息按 agentId 现场装配（`readAgentDefs` → `createAgentFromDef`）——定义经慢通道确认后下一轮对话即生效（快照新鲜度以消息为粒度）；定义的 actor 语义：AI 通道 `ai:{agentId}@{nodeId}`（谁干的以助手为单位可审计），人通道 `user:local@{nodeId}`（管理页提议）。切换助手由前端负责（换新 sessionId——历史按助手隔离，server 无感知）。
 - **Tauri 接缝（终态预留，本次不实现）**：context.ts 不感知自己被谁托管；Tauri 壳将来 spawn `node packages/server/dist/index.js`（sidecar）+ 内嵌 app/dist 即成桌面节点，零代码改动。
 - **单工作区 v1**：env `ONE_WORKSPACE`（默认 `default`）；多工作区切换是后续演进。
 - **同步 API（M5，拉模型——协议与决策见 @one/core「同步回合」章节）**：
@@ -706,10 +708,11 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 │                       布局（侧导航：对话/配置确认）+    │
 │                       QueryClientProvider              │
 ├─ 会话层（M12）────────────────────────────────────────┤
-│  app-nav.tsx           七页导航 context + 跳转携带     │
+│  app-nav.tsx           八页导航 context + 跳转携带     │
 │                        一次性 initialFilter           │
 │  chat/ChatProvider.tsx AI 对话状态（App 级 context，  │
-│                        切页不丢）+ SSE 事件归约       │
+│                        切页不丢）+ SSE 事件归约 +     │
+│                        agentId 助手切换（M16）        │
 ├─ 页面层 ──────────────────────────────────────────────┤
 │  pages/SkusPage.tsx       SKU 列表（动态列）+ 新建表单  │
 │  pages/OrdersPage.tsx     单据列表 + 建单 + 状态流转    │
@@ -719,7 +722,10 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 │                            M15 行展开库位明细 + 跳转    │
 │                            预填）                       │
 │  pages/ChatPage.tsx        对话面板（消息流 + 输入 +   │
-│                            工具调用过程卡片）           │
+│                            工具调用过程卡片 + 助手      │
+│                            Segmented 切换器，M16）      │
+│  pages/AgentsPage.tsx      助手管理（M16：定义清单 +   │
+│                            编辑器，保存走慢通道提议）   │
 │  pages/ProposalsPage.tsx   pending 提议列表 + 详情抽屉 │
 │  pages/SettingsPage.tsx    设置（节点/同步/迁移，M8）  │
 ├─ 组件层 ──────────────────────────────────────────────┤
@@ -750,16 +756,17 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 
 | 文件 | 职责 | 不做什么 |
 |---|---|---|
-| `App.tsx` | 布局壳 + 路由（v1 七页，AntD Menu 切换：管理四页 + AI 两页 + 设置页）+ 中文 locale；AppNavProvider 包壳（M12 步骤4：AI 后置动作可跳任意页） | 不含业务组件 |
+| `App.tsx` | 布局壳 + 路由（v1 八页，AntD Menu 切换：管理四页 + AI 三页 + 设置页）+ 中文 locale；AppNavProvider 包壳（M12 步骤4：AI 后置动作可跳任意页） | 不含业务组件 |
 | `app-nav.tsx` | 导航 context（M12 步骤4）：`navigate(page, filter?)` 切页 + 携带一次性 initialFilter（目标页挂载时 `takeInitialFilter` 消费，取后即清） | 不渲染页面（App.tsx 消费 page 渲染） |
-| `chat/ChatProvider.tsx` | AI 对话状态壳（M12）：sessionId 前端生命周期唯一、`send()` 消费 SSE 流并归约事件到 turn、`answerAsk()` 提交 ui.ask 应答；App 级 context——切页不丢对话 | 不渲染对话 UI（ChatPage 的事）、不直接碰 fetch 细节（client.ts 封装） |
+| `chat/ChatProvider.tsx` | AI 对话状态壳（M12）：sessionId 前端生命周期唯一、`send()` 消费 SSE 流并归约事件到 turn、`answerAsk()` 提交 ui.ask 应答；M16：`agentId` + `setAgentId`（切换 = 换新 sessionId + 清空 turns——历史按助手隔离，流式中锁定）；App 级 context——切页不丢对话 | 不渲染对话 UI（ChatPage 的事）、不直接碰 fetch 细节（client.ts 封装） |
 | `pages/SkusPage.tsx` | SKU 列表（动态列，见关键机制）+ 新建入口 | 不做字段元数据管理（那是慢通道提议的事） |
 | `pages/OrdersPage.tsx` | 单据列表（方向筛选 + 单号过滤——AI 跳转预填）+ 建单表单（明细行）+ 状态流转按钮（候选目标状态由 Profile workflows 计算） | 不做转移合法性裁决（工具 handler 的 400 是兜底） |
 | `pages/InventoryPage.tsx` | 库存清单（联查 SKU 信息 + 编码/名称过滤——AI 跳转预填）+ 手工调整表单（delta 正负 + 原因；行内预填 / 顶部自选 SKU 两种入口——空库存可录期初） | 不展示流水明细（审计走事件账本，v2 接缝） |
 | `pages/ExpiryPage.tsx` | 效期看板（M14，M15 进阶）：五层统计卡（已过期/紧急/预警/安全/未登记效期——前端 reduce 计数）+ 着色表格（分层 Tag、剩余天数分形渲染、库位列显「N 库位」）+ **行展开库位×余量明细**（消费后端 buckets，余量降序直出）+ 层下拉与关键词过滤（AI 跳转 skuCode 预填——M15）；消费后端算好的 daysLeft/level/buckets，纯展示零计算 | 不做分层/日期计算（server 的职责——单一真相）；不提供改阈值入口（settings 改值走慢通道提议确认，v1 不在看板内嵌表单） |
 | `components/SkuFormModal.tsx` | 新建 SKU 表单：固定字段（skuCode/name）+ 可见扩展字段按 type 动态渲染输入控件 | 不解释字段语义（只按 type 映射控件） |
 | `components/OrderFormModal.tsx` | 建单表单：方向 + 明细行（SKU 下拉来自投影 + 数量）+ 备注 | 不做明细校验（工具 handler 的职责） |
-| `pages/ChatPage.tsx` | 对话面板（M12）：消息流渲染、发送（isStreaming 串行）、工具卡 + AskCard + 后置动作按钮（onAnswer/onNavigate 注入） | 不管理会话状态与 SSE 消费（ChatProvider 的事） |
+| `pages/ChatPage.tsx` | 对话面板（M12）：消息流渲染、发送（isStreaming 串行）、工具卡 + AskCard + 后置动作按钮（onAnswer/onNavigate 注入）；M16：输入区下方 Segmented 助手切换器（选项来自 GET /api/agents，流式中锁定）+「管理助手」入口 | 不管理会话状态与 SSE 消费（ChatProvider 的事）、不做助手定义管理（AgentsPage 的事） |
+| `pages/AgentsPage.tsx` | 助手管理页（M16，「配置 AI」的界面）：清单（GET /api/agents）+ 编辑草稿（id/名称/职责说明/人设/工具勾选按 read-write 分组/模型覆盖；allowedRoles 灰显预留）+ 新建/删除 + 保存（全量清单 POST /api/agents/propose → 跳配置确认页） | 不做确认（ProposalsPage 的事）、不直接写 Profile（经 server 慢通道端点） |
 | `pages/ProposalsPage.tsx` | pending 列表 + 轮询刷新（Query refetchInterval）+ 详情抽屉 | 不做确认逻辑（在 ProposalDetail） |
 | `components/ImpactReportView.tsx` | 影响报告渲染：summary 统计 + items 按 severity 分色（warning 黄 / info 蓝）+ 中文 description 直出 | 不做裁决（人确认） |
 | `components/ProposalDetail.tsx` | note/patch 摘要 + ImpactReportView + 确认/拒绝按钮（409/422 按 code 提示） | 不直接调 ProfileService（只走 HTTP） |
@@ -767,7 +774,7 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 | `components/ToolResultView.tsx` | 查询结果按 toolId + payload 形态渲染表格（inventory.query 三形态 / expiring / location.list，超 50 行截断），其余 JSON 兜底 | 不做数据拉取（渲染传入的 payload 快照） |
 | `components/AskCard.tsx` | ui.ask 挂起态的回答输入（提交/跳过，提交后锁定） | 不提交请求（onAnswer 回调注入） |
 | `pages/SettingsPage.tsx` | 设置三分区（M8）：节点名片（只读）/ 局域网同步（peers + 手动回合）/ 迁移（导出下载 + 导入上传） | 不持久化任何配置（peers 每次随请求发送，服务端 env 是唯一持久位） |
-| `api/client.ts` | fetch 封装：JSON 序列化、非 2xx 抛 `ApiError{code,message}`；chat 事件契约手写镜像（不依赖 @one/ai）+ SSE 流消费（streamChatMessage）+ ui.ask 应答（answerChatAsk）+ 效期看板契约（ExpiryBoard/ExpiryBatchRow/ExpiryLevel 镜像 + expiryBoard()，M14；M15 起 ExpiryBatchRow 携带 buckets 库位×余量明细） | 不缓存（Query 的职责） |
+| `api/client.ts` | fetch 封装：JSON 序列化、非 2xx 抛 `ApiError{code,message}`；chat 事件契约手写镜像（不依赖 @one/ai）+ SSE 流消费（streamChatMessage，M16 起带 agentId）+ ui.ask 应答（answerChatAsk）+ 助手契约（AgentDef/AgentCatalog 镜像 + agents()/proposeAgents()，M16）+ 效期看板契约（ExpiryBoard/ExpiryBatchRow/ExpiryLevel 镜像 + expiryBoard()，M14；M15 起 ExpiryBatchRow 携带 buckets 库位×余量明细） | 不缓存（Query 的职责） |
 | `api/hooks.ts` | useSkus / useCreateSku / useOrders / useCreateOrder / useTransitionOrder / useInventory / useAdjustInventory / useProfileSnapshot / useProposals / useConfirmProposal / useRejectProposal + useExpiryBoard（M14）+ M8 设置页组（useNodeHello / useSyncRun / useMigrationExport / useMigrationImport）；adjust 与单据流转的 onSuccess 一并失效 expiry-board（桶余量变化 → 看板随之新鲜） | 不做 UI 判断 |
 
 ## 关键机制
@@ -778,6 +785,7 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 - **提议确认的乐观刷新**：confirm 成功后 invalidate `['proposals']` + 弹出成功结果（newVersion）；409 时提示重新提议并刷新列表。
 - **对话面板的工具过程可见**：invocations 渲染为过程卡（工具名、参数摘要、成败、查询结果表格），让「AI 经工具总线操作」对用户可见可审计（§9.3 透明度）。
 - **AI 聊天 = SSE 流式 + 会话化（M12）**：ChatProvider（App 级 context，切页不丢对话）消费 `/api/chat/sessions/:id/message` 的 SSE 流，事件归约到 turn——工具卡先落「执行中」、tool-result 回填终态、助手文本逐 delta 增长；ui.ask 挂起渲染 AskCard（回答走 answer 端点，终态沿原流回填）；多轮历史由 server 会话持有（见 @one/server「AI 会话与 ui.ask」）。
+- **助手切换 = 前端换会话（M16）**：ChatPage 的 Segmented 选项来自 GET /api/agents（目录加载失败静默降级为无切换器）；`setAgentId` = 换新 sessionId + 清空 turns（server 每条消息按定义现场装配，历史按助手隔离）；`AGENT_NOT_FOUND` 落友好提示（定义可能已被慢通道修改）。**「使用 AI」（对话里切换）与「配置 AI」（助手管理页 + 配置确认）分离**——改配置是高权限动作，管理页保存只生成提议。
 - **跳转后置动作（M12 步骤4）**：成功的工具卡带「去对应管理页」按钮（profile.propose → 配置确认；SKU/单据/库存操作 → 对应页，携单号或 SKU 过滤；临期查询 → 效期看板（M15）——结果全部同一 SKU 时携 SKU 过滤预填，多 SKU 清单不带）。经 app-nav 的 `navigate(page, filter?)` 跳转——目标页挂载时 `takeInitialFilter` 一次性消费预填过滤框（库存页/效期页按编码/名称、单据页按单号）；`inventory.query` 平铺/全量清单形态不出按钮（结果已在卡内成表，无单一落点）。
 - **效期看板 = 后端算好、前端纯展示（M14；M15 行展开下钻 + 跳转预填）**：`useExpiryBoard()` 消费 `GET /api/inventory/expiry` 的 `{ today, rows }`——daysLeft/level/buckets 由 server 算（与 M13 拦截同界：今天到期 = 临期未过期；阈值读 core.wms settings，见 @one/server），页面只做四件事：五层统计卡（reduce 计数 + 语义色）、着色表格（分层 Tag、剩余天数分形渲染——负数「已过期 N 天」/ 0「今天到期」/ null 弱化 —、库位列显「N 库位」）、**行展开库位×余量明细**（Table expandable 嵌套小表，消费 buckets 余量降序）、层下拉 + 关键词过滤（编码/名称/批次——AI 跳转 skuCode 预填）。数据新鲜度靠 mutation 失效联动：adjust 与单据流转的 onSuccess 一并 invalidate `['expiry-board']`（桶余量变化 → 聚合与分层随之刷新）。让 M11（效期登记）/ M12（批次分配）/ M13（过期拦截）沉淀的效期数据在管理界面可见——「AI 经 wms.inventory.expiring 工具查询」之外的常驻用户面。
 - **设置页 = 触发器 + 状态显示器，不引入新服务端状态**（M8）：三个分区全部消费既有端点——节点名片（GET /api/sync/hello：nodeId/workspaceId/profileVersion/eventCount）、局域网同步（peers 表单 → POST /api/sync/run）、迁移（/export 下载 JSON 文件 + /import 上传，accepted/skipped/missingManifests 直出）。peers 不持久化在前端——每次随请求体发送，服务端 env（ONE_SYNC_PEERS）仍是唯一持久位。

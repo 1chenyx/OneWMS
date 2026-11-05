@@ -122,6 +122,26 @@ export interface MigrationImportResult {
   missingManifests: { id: string; version: string }[];
 }
 
+// ── AI 助手（M16：多实例——定义清单 / 切换 / 管理页）──────────
+
+/** 与 @one/ai 的 AgentDefinition 同形（前端镜像 HTTP 契约，不依赖 ai 包类型） */
+export interface AgentDef {
+  id: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  tools: string[];
+  model?: string;
+  /** v2 预留（管理页灰显）：助手按角色分配 */
+  allowedRoles?: string[];
+}
+
+/** GET /api/agents 响应：定义清单 + 工具总线目录（管理页勾选授权的数据源） */
+export interface AgentCatalog {
+  agents: AgentDef[];
+  tools: { id: string; label: string; description: string; permission: 'read' | 'write' }[];
+}
+
 export class ApiError extends Error {
   constructor(
     readonly code: string,
@@ -147,18 +167,19 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 // ── AI 对话 SSE 流（M12：POST /api/chat/sessions/:id/message）──
 
 /**
- * 发送一条消息并逐事件消费 SSE 流。
- * 非流式错误（503/400/409 等 JSON 响应）统一抛 ApiError——UI 按 code 分支提示。
+ * 发送一条消息并逐事件消费 SSE 流（agentId 选助手，缺省 'general'）。
+ * 非流式错误（503/400/404/409 等 JSON 响应）统一抛 ApiError——UI 按 code 分支提示。
  */
 export async function streamChatMessage(
   sessionId: string,
   message: string,
+  agentId: string,
   onEvent: (ev: ChatStreamEvent) => void,
 ): Promise<void> {
   const res = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/message`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, agentId }),
   });
   if (!res.ok || !res.body) {
     const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string };
@@ -270,5 +291,14 @@ export const api = {
     request<MigrationImportResult>('/api/migration/import', {
       method: 'POST',
       body: JSON.stringify({ bundle }),
+    }),
+  // ── AI 助手（M16）──
+  /** 定义清单 + 工具目录（readAgentDefs 的配置面或内置兜底，server 现算） */
+  agents: () => request<AgentCatalog>('/api/agents'),
+  /** 提议更新助手定义（整体替换 settings.agents；慢通道，需人工确认） */
+  proposeAgents: (agents: AgentDef[], note?: string) =>
+    request<{ proposalId: string }>('/api/agents/propose', {
+      method: 'POST',
+      body: JSON.stringify({ agents, note }),
     }),
 };

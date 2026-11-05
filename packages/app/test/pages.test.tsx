@@ -21,6 +21,7 @@ const confirmMock = vi.fn();
 const rejectMock = vi.fn();
 const streamMock = vi.fn();
 const answerMock = vi.fn();
+const agentsMock = vi.fn();
 
 const proposalFixture = {
   proposalId: 'p-1',
@@ -51,15 +52,21 @@ vi.mock('../src/api/hooks', () => ({
   useProposals: () => ({ isLoading: false, data: [proposalFixture] }),
 }));
 
-// SSE 消费 mock：保留模块其余导出（ApiError 等），只替换流式入口
+// SSE 消费 mock：保留模块其余导出（ApiError 等），替换流式入口 + api.agents
+// （agents 是 api 对象的方法——需覆盖 api 而非顶层导出）
 vi.mock('../src/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/api/client')>();
   return {
     ...actual,
-    streamChatMessage: (sessionId: string, message: string, onEvent: (ev: ChatStreamEvent) => void) =>
-      streamMock(sessionId, message, onEvent),
+    streamChatMessage: (
+      sessionId: string,
+      message: string,
+      agentId: string,
+      onEvent: (ev: ChatStreamEvent) => void,
+    ) => streamMock(sessionId, message, agentId, onEvent),
     answerChatAsk: (sessionId: string, callId: string, answer: string | null) =>
       answerMock(sessionId, callId, answer),
+    api: { ...actual.api, agents: () => agentsMock() },
   };
 });
 
@@ -138,11 +145,19 @@ describe('ChatPage：SSE 流式', () => {
   beforeEach(() => {
     streamMock.mockReset();
     answerMock.mockReset();
+    // 默认目录：内置三件套（Segmented 选项来源；个别用例可覆盖）
+    agentsMock.mockResolvedValue({
+      agents: [
+        { id: 'general', name: '通用助手', description: '', systemPrompt: '', tools: [] },
+        { id: 'readonly', name: '只读助手', description: '', systemPrompt: '', tools: [] },
+      ],
+      tools: [],
+    });
   });
 
   it('发送 → 工具卡（执行中→成功回填）与流式助手回复可见', async () => {
     streamMock.mockImplementationOnce(
-      async (_sid: string, _msg: string, onEvent: (ev: ChatStreamEvent) => void) => {
+      async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
         onEvent({ type: 'tool-call', callId: 'c1', toolId: 'wms.sku.create', args: { skuCode: 'A-1', name: '螺丝' } });
         onEvent({ type: 'tool-result', callId: 'c1', toolId: 'wms.sku.create', ok: true, payload: { skuId: 'x' } });
         onEvent({ type: 'text-delta', text: '已创建 SKU ' });
@@ -160,7 +175,42 @@ describe('ChatPage：SSE 流式', () => {
     expect(await screen.findByText('已创建 SKU A-1。')).toBeInTheDocument();
     expect(screen.getByText('wms.sku.create')).toBeInTheDocument(); // 工具过程可见
     expect(screen.getByText('成功')).toBeInTheDocument(); // tool-result 回填终态
-    expect(streamMock).toHaveBeenCalledWith(expect.any(String), '建一个 SKU', expect.any(Function));
+    expect(streamMock).toHaveBeenCalledWith(expect.any(String), '建一个 SKU', 'general', expect.any(Function));
+  });
+
+  it('助手切换（M16）：Segmented 选项来自目录 → 切换清空历史 → 消息携带新 agentId', async () => {
+    const sids: string[] = [];
+    streamMock.mockImplementation(
+      async (sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
+        sids.push(sid);
+        onEvent({ type: 'text-delta', text: '好的。' });
+        onEvent({ type: 'turn-done', steps: 1 });
+      },
+    );
+    const user = userEvent.setup();
+    render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+
+    // 切换器渲染目录选项
+    expect(await screen.findByText('通用助手')).toBeInTheDocument();
+    expect(screen.getByText('只读助手')).toBeInTheDocument();
+
+    // general 一轮对话
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('查库存');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+    expect(await screen.findByText('好的。')).toBeInTheDocument();
+
+    // 切到只读助手：历史清空（换会话）；新消息携带 readonly + 新 sessionId
+    await user.click(screen.getByText('只读助手'));
+    expect(screen.queryByText('查库存')).not.toBeInTheDocument(); // 旧 turn 已清
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('再查一次');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+    expect(await screen.findByText('好的。')).toBeInTheDocument();
+
+    expect(streamMock).toHaveBeenNthCalledWith(1, sids[0], '查库存', 'general', expect.any(Function));
+    expect(streamMock).toHaveBeenNthCalledWith(2, sids[1], '再查一次', 'readonly', expect.any(Function));
+    expect(sids[0]).not.toBe(sids[1]); // 切换 = 换新会话（历史按助手隔离）
   });
 
   it('未配置 AI（503）→ 友好错误提示落卡片', async () => {
@@ -175,9 +225,21 @@ describe('ChatPage：SSE 流式', () => {
     expect(await screen.findByText(/未配置 AI 服务/)).toBeInTheDocument();
   });
 
+  it('AGENT_NOT_FOUND（404）→ 助手不存在提示（M16：定义可能已被修改）', async () => {
+    streamMock.mockRejectedValueOnce(new ApiError('AGENT_NOT_FOUND', '助手不存在', 404));
+    const user = userEvent.setup();
+    render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('你好');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+
+    expect(await screen.findByText(/该助手不存在/)).toBeInTheDocument();
+  });
+
   it('error 事件（模型层错误）→ 失败提示可见', async () => {
     streamMock.mockImplementationOnce(
-      async (_sid: string, _msg: string, onEvent: (ev: ChatStreamEvent) => void) => {
+      async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
         onEvent({ type: 'error', message: 'LLM_CONNECTION_REFUSED: 连接失败' });
       },
     );
@@ -199,7 +261,7 @@ describe('ChatPage：SSE 流式', () => {
       releaseAsk();
     });
     streamMock.mockImplementationOnce(
-      async (_sid: string, _msg: string, onEvent: (ev: ChatStreamEvent) => void) => {
+      async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
         onEvent({ type: 'ask', callId: 'c1', question: '要入多少个？' });
         await gate; // server 挂起等待 answer 端点
         onEvent({ type: 'tool-result', callId: 'c1', toolId: 'ui.ask', ok: true, payload: { answer: '20 个' } });
@@ -236,7 +298,7 @@ describe('ChatPage：SSE 流式', () => {
       releaseAsk();
     });
     streamMock.mockImplementationOnce(
-      async (_sid: string, _msg: string, onEvent: (ev: ChatStreamEvent) => void) => {
+      async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
         onEvent({ type: 'ask', callId: 'c1', question: '批次是？' });
         await gate;
         onEvent({ type: 'tool-result', callId: 'c1', toolId: 'ui.ask', ok: true, payload: { declined: true } });
@@ -262,7 +324,7 @@ describe('ChatPage：SSE 流式', () => {
 
   it('profile.propose 成功 → 工具卡出现「去确认提议」后置动作按钮（M12 步骤4）', async () => {
     streamMock.mockImplementationOnce(
-      async (_sid: string, _msg: string, onEvent: (ev: ChatStreamEvent) => void) => {
+      async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
         onEvent({ type: 'tool-call', callId: 'c1', toolId: 'profile.propose', args: {} });
         onEvent({
           type: 'tool-result',

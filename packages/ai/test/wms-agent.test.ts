@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { OneCore, type EventEnvelope } from '@one/core';
 import { WmsDomain } from '@one/wms';
-import { createWmsAgent } from '../src/index.js';
-import type { LlmProvider, LlmTurnRequest, LlmTurnResponse } from '../src/index.js';
+import { createAgentFromDef, readAgentDefs } from '../src/index.js';
+import type { AgentDefinition, LlmProvider, LlmTurnRequest, LlmTurnResponse } from '../src/index.js';
 
 /**
- * 端到端：mock provider 驱动 createWmsAgent 的完整链路。
- * 验证三件事：actor='ai:模型名' 落审计、业务护栏在 AI 通道照常生效、
- * System Prompt 携带真实数据快照。
+ * 端到端：mock provider 驱动 createAgentFromDef 的完整链路（M16 多实例装配）。
+ * 验证：actor='ai:{助手id}' 落审计、业务护栏在 AI 通道照常生效、
+ * System Prompt = 人设前缀 + 全局纪律/数据快照、工具授权按定义过滤。
  */
 
 let core: OneCore;
@@ -36,19 +36,26 @@ function scriptedProvider(turns: LlmTurnResponse[]) {
   return { provider, requests };
 }
 
+/** 取内置助手定义（未配置 core.ai 时 readAgentDefs = 内置三件套） */
+const defOf = (id: string): AgentDefinition => {
+  const def = readAgentDefs(ws).find((d) => d.id === id);
+  if (!def) throw new Error(`内置助手 ${id} 缺失`);
+  return def;
+};
+
 const EVENTS = () => {
   const all: EventEnvelope[] = [];
   ws.events.forEach((env) => all.push(env));
   return all;
 };
 
-describe('createWmsAgent：端到端（快通道全链路）', () => {
+describe('createAgentFromDef：端到端（快通道全链路）', () => {
   it('自然语言入库：工具执行 + actor 落审计 + 最终回复', async () => {
     const { provider } = scriptedProvider([
       { text: '好的，马上入库', toolCalls: [{ callId: 'c1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: 10, reason: 'AI 入库' } }] },
       { text: '已为 A-1 入库 10 个，当前库存 15 个。', toolCalls: [] },
     ]);
-    const agent = createWmsAgent(ws, provider, { model: 'test-model' });
+    const agent = createAgentFromDef(ws, provider, defOf('general'));
 
     const result = await agent.run('A-1 入库 10 个');
 
@@ -60,10 +67,10 @@ describe('createWmsAgent：端到端（快通道全链路）', () => {
     const sku = ws.skus.byCode('A-1')!;
     expect(ws.inventory.quantityOf(sku.id)).toBe(15);
 
-    // 审计免费（§9.3）：AI 的操作以 actor='ai:test-model' 落 oplog
+    // 审计免费（§9.3）：AI 的操作以 actor='ai:general' 落 oplog（M16：助手 id 替代模型名）
     const adjusted = EVENTS().filter((e) => e.type === 'wms.inventory.adjusted');
     expect(adjusted).toHaveLength(2); // beforeEach 期初 1 条 + AI 1 条
-    expect(adjusted[1].actor).toBe('ai:test-model');
+    expect(adjusted[1].actor).toBe('ai:general');
     expect(adjusted[1].payload).toMatchObject({ skuCode: 'A-1', delta: 10 });
   });
 
@@ -73,7 +80,7 @@ describe('createWmsAgent：端到端（快通道全链路）', () => {
       { text: '', toolCalls: [{ callId: 'c1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: -999 } }] },
       { text: '出库失败：A-1 库存不足（当前只有 5 个）', toolCalls: [] },
     ]);
-    const agent = createWmsAgent(ws, provider, { model: 'test-model' });
+    const agent = createAgentFromDef(ws, provider, defOf('general'));
 
     const result = await agent.run('A-1 出库 999 个');
 
@@ -89,20 +96,23 @@ describe('createWmsAgent：端到端（快通道全链路）', () => {
     expect(ws.inventory.quantityOf(sku.id)).toBe(5);
   });
 
-  it('System Prompt 携带数据快照；工具清单来自工具总线', async () => {
+  it('System Prompt = 人设前缀 + 全局纪律与数据快照；general 工具不含 profile.propose', async () => {
     const { provider, requests } = scriptedProvider([{ text: '好的', toolCalls: [] }]);
-    const agent = createWmsAgent(ws, provider);
+    const agent = createAgentFromDef(ws, provider, defOf('general'));
 
     await agent.run('现在库存怎么样？');
 
     const req = requests[0];
+    // 人设前缀在前（M16），全局纪律 + 数据快照在后（不因人设删减）
+    expect(req.system.startsWith('你是通用仓库助手')).toBe(true);
+    expect(req.system).toContain('行为规则：');
     expect(req.system).toContain('A-1');
     expect(req.system).toContain('螺丝');
     expect(req.system).toContain('SKU 总数：1');
     expect(req.system).toContain('库存总量：5');
-    // 工具元数据全部注入 function calling 通道：内核慢通道入口 + wms 十件套（M10 增 location.create/list、inventory.move；M11 增 inventory.expiring）
+    // 工具授权按定义过滤：general = 全量 − profile.propose（改配置是高权限，M16 移出默认）
+    expect(req.tools.map((t) => t.id)).not.toContain('profile.propose');
     expect(req.tools.map((t) => t.id).sort()).toEqual([
-      'profile.propose',
       'wms.inventory.adjust',
       'wms.inventory.expiring',
       'wms.inventory.move',
@@ -114,13 +124,13 @@ describe('createWmsAgent：端到端（快通道全链路）', () => {
       'wms.sku.create',
       'wms.sku.update',
     ]);
-    // 默认 actor
-    expect(agent.actor).toBe('ai:assistant');
+    // 默认 actor（无 nodeId 后缀）
+    expect(agent.actor).toBe('ai:general');
   });
 
   it('System Prompt v2：携带 Profile 摘要（扩展字段 / 流程 / 模块）与慢通道规则', async () => {
     const { provider, requests } = scriptedProvider([{ text: '好的', toolCalls: [] }]);
-    const agent = createWmsAgent(ws, provider);
+    const agent = createAgentFromDef(ws, provider, defOf('readonly'));
 
     await agent.run('现在的配置是什么样？');
 
@@ -134,9 +144,11 @@ describe('createWmsAgent：端到端（快通道全链路）', () => {
     expect(system).toContain('sku.category（分类');
     expect(system).toContain('流程 inbound');
     expect(system).toContain('流程 outbound');
+    // readonly 只装配 read 工具（写工具不在 function calling 清单里）
+    expect(requests[0].tools.every((t) => t.id === 'ui.ask' || ws.tools.list().find((x) => x.id === t.id)?.permission === 'read')).toBe(true);
   });
 
-  it('慢通道端到端：AI 经 profile.propose 提议 → 转述报告 → 人工确认后生效', async () => {
+  it('慢通道端到端：config 助手经 profile.propose 提议 → 人工确认后生效', async () => {
     // spec 在快照扩展字段中的索引（listFields 按 key 排序，动态取避免脆断言）
     const extensions = ws.profile.getSnapshot().schema.entities.sku!.extensions;
     const specIdx = extensions.findIndex((f) => f.key === 'spec');
@@ -158,7 +170,7 @@ describe('createWmsAgent：端到端（快通道全链路）', () => {
       },
       { text: '已提交隐藏「规格」字段的提议：字段将从界面隐藏，数据保留。等你确认后生效。', toolCalls: [] },
     ]);
-    const agent = createWmsAgent(ws, provider, { model: 'test-model' });
+    const agent = createAgentFromDef(ws, provider, defOf('config'));
 
     const before = EVENTS().length;
     const result = await agent.run('帮我把规格字段隐藏了');
@@ -167,10 +179,10 @@ describe('createWmsAgent：端到端（快通道全链路）', () => {
     expect(result.invocations[0].ok).toBe(true);
     expect(EVENTS().length).toBe(before);
 
-    // ② 提议登记为 pending，actor 是 AI（可审计）
+    // ② 提议登记为 pending，actor 是 AI（可审计：哪个助手提的）
     const pending = ws.profile.listPending();
     expect(pending).toHaveLength(1);
-    expect(pending[0].proposedBy).toBe('ai:test-model');
+    expect(pending[0].proposedBy).toBe('ai:config');
     expect(pending[0].note).toBe('用户要求隐藏规格字段');
 
     // ③ 人工确认（不走工具总线——确认权不可委托）→ 纯字段轨道：
@@ -184,5 +196,49 @@ describe('createWmsAgent：端到端（快通道全链路）', () => {
 
     // ④ 确认后 pending 清空；再来一次 System Prompt 已反映新状态（快照新鲜度以任务为粒度）
     expect(ws.profile.listPending()).toHaveLength(0);
+  });
+});
+
+describe('createAgentFromDef：授权过滤与委托口子（M16）', () => {
+  it('按定义过滤：只授权的工具进 function calling 清单', async () => {
+    const def: AgentDefinition = {
+      id: 'spot',
+      name: '现货查询',
+      description: '',
+      systemPrompt: '你是现货查询员。',
+      tools: ['wms.sku.create', 'wms.inventory.query'],
+    };
+    const { provider, requests } = scriptedProvider([{ text: '好的', toolCalls: [] }]);
+    const agent = createAgentFromDef(ws, provider, def);
+
+    expect(agent.tools.map((t) => t.id)).toEqual(['wms.sku.create', 'wms.inventory.query']);
+    expect(agent.actor).toBe('ai:spot');
+    await agent.run('查一下');
+    expect(requests[0].tools.map((t) => t.id)).toEqual(['wms.sku.create', 'wms.inventory.query']);
+  });
+
+  it('授权了不在场的工具：静默丢弃（定义是脏面，不炸装配）', () => {
+    const def: AgentDefinition = {
+      id: 'x',
+      name: 'X',
+      description: '',
+      systemPrompt: 'S',
+      tools: ['wms.inventory.query', 'wms.gone.tool'],
+    };
+    const { provider } = scriptedProvider([]);
+    const agent = createAgentFromDef(ws, provider, def);
+    expect(agent.tools.map((t) => t.id)).toEqual(['wms.inventory.query']);
+  });
+
+  it("'agent:<id>' 委托形态（多 AI 协作 v2 预留）→ 装配直接抛错", () => {
+    const def: AgentDefinition = {
+      id: 'lead',
+      name: '主管',
+      description: '',
+      systemPrompt: 'S',
+      tools: ['agent:worker'],
+    };
+    const { provider } = scriptedProvider([]);
+    expect(() => createAgentFromDef(ws, provider, def)).toThrow(/AGENT_DELEGATION_UNSUPPORTED/);
   });
 });

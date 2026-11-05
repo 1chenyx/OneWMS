@@ -1,13 +1,23 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import type { AgentMessage, AskReply } from '@one/ai';
+import {
+  createAgentFromDef,
+  createVercelLlmProvider,
+  readAgentDefs,
+  resolveLanguageModel,
+  type AgentMessage,
+  type AskReply,
+  type LlmProvider,
+} from '@one/ai';
 import type { AppContext } from '../context.js';
 
 /**
- * AI 快通道入口（M12：SSE 流式 + 会话化 + ui.ask 挂起/唤醒）。
+ * AI 快通道入口（M12：SSE 流式 + 会话化 + ui.ask 挂起/唤醒；M16：多助手）。
  *
  *  - 会话是 server 内存态（不持久化）：id 由前端生成（页面生命周期唯一），
  *    首条消息自动建档；会话承载 AgentMessage[] 历史，跨轮次喂给编排层；
+ *  - 每条消息按 body.agentId 读 AgentDefinition 现场装配（缺省 'general'）——
+ *    定义经慢通道确认后下一轮即生效；切助手 = 前端换新会话（历史按助手隔离）；
  *  - POST /sessions/:id/message 逐事件推 SSE（text-delta / tool-call /
  *    tool-result / ask / turn-done / error）；turn-done 后才把完整历史提交
  *    会话——失败或中断的轮次不提交，会话回到上一完整轮；
@@ -39,6 +49,18 @@ interface ChatSession {
   pendingAsk?: PendingAsk;
 }
 
+/**
+ * 解析本条消息的 LLM 通道：agent 定义了 model 且异于进程配置 → 现场重建
+ * 轻量 provider（模型覆盖，M16）；否则用进程级通道。
+ */
+function providerFor(ctx: AppContext, base: LlmProvider, model: string | undefined): LlmProvider {
+  const cfg = ctx.aiConfig;
+  if (model && cfg && model !== cfg.model) {
+    return createVercelLlmProvider(resolveLanguageModel({ ...cfg, model }));
+  }
+  return base;
+}
+
 export function chatRoutes(ctx: AppContext): Hono {
   const sessions = new Map<string, ChatSession>();
 
@@ -66,16 +88,25 @@ export function chatRoutes(ctx: AppContext): Hono {
 
   return new Hono()
     .post('/sessions/:id/message', async (c) => {
-      if (!ctx.agent) {
+      const base = ctx.provider;
+      if (!base) {
         return c.json(
           { code: 'AI_NOT_CONFIGURED', message: '未配置 AI（需设置 ONE_AI_MODEL 等环境变量）' },
           503,
         );
       }
-      const body = await c.req.json().catch(() => ({}) as { message?: unknown });
+      const body = await c.req.json().catch(() => ({}) as { message?: unknown; agentId?: unknown });
       const message = typeof body.message === 'string' ? body.message.trim() : '';
       if (!message) {
         return c.json({ code: 'BAD_REQUEST', message: 'message 不能为空' }, 400);
+      }
+      const agentId = typeof body.agentId === 'string' && body.agentId.trim() ? body.agentId.trim() : 'general';
+      const def = readAgentDefs(ctx.ws).find((d) => d.id === agentId);
+      if (!def) {
+        return c.json(
+          { code: 'AGENT_NOT_FOUND', message: `助手 "${agentId}" 不存在（GET /api/agents 查看可用清单）` },
+          404,
+        );
       }
       const session = getOrCreate(c.req.param('id'));
       if (session.status === 'streaming') {
@@ -85,7 +116,10 @@ export function chatRoutes(ctx: AppContext): Hono {
         );
       }
       session.status = 'streaming';
-      const agent = ctx.agent;
+      // 现场装配（M16）：定义 → 工具授权 + 人设 prompt + 模型覆盖 + actor
+      const agent = createAgentFromDef(ctx.ws, providerFor(ctx, base, def.model), def, {
+        nodeId: ctx.core.nodeId,
+      });
 
       return streamSSE(c, async (stream) => {
         // ask 挂起时收到的用户回答：经 next(reply) 注入生成器（普通恢复时为 undefined）

@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { SendOutlined } from '@ant-design/icons';
-import { Button, Card, Input, Space, Spin, Typography } from 'antd';
+import { Button, Card, Input, Segmented, Space, Spin, Typography } from 'antd';
+import { api } from '../api/client';
+import type { AgentDef } from '../api/client';
 import { useChatSession } from '../chat/ChatProvider';
 import { useAppNav } from '../app-nav';
 import ToolInvocationCard from '../components/ToolInvocationCard';
 
 /**
- * AI 对话面板（M12：SSE 流式 + 会话化）：
+ * AI 对话面板（M12：SSE 流式 + 会话化；M16：多助手切换）：
  *  - 状态在 ChatProvider（App 级 context）——切页不丢对话；
+ *  - 输入区上方 Segmented 切换助手（选项来自 GET /api/agents；「使用 AI」与
+ *    「配置 AI」分离——定义改动走管理页 + 配置确认，聊天里只有切换权）；
+ *    切换 = 换新会话 + 清空历史（流式中锁定）；
  *  - 流式渲染：工具卡先落「执行中」态、tool-result 回填，助手文本逐 delta 增长；
  *  - 工具调用过程可见（可审计）；成功的工具卡带后置动作按钮（步骤4）：
  *    profile.propose → 去配置确认、库存/单据操作 → 去对应管理页（带过滤）、
@@ -17,7 +22,20 @@ export default function ChatPage() {
   const chat = useChatSession();
   const { navigate } = useAppNav();
   const [input, setInput] = useState('');
+  const [agents, setAgents] = useState<AgentDef[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // 助手清单（M16）：挂载拉取；失败静默——仅显示当前 agentId，切换器空态可接受
+  useEffect(() => {
+    let alive = true;
+    api
+      .agents()
+      .then((catalog) => alive && setAgents(catalog.agents))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: 1e9, behavior: 'smooth' });
@@ -94,6 +112,16 @@ export default function ChatPage() {
           发送
         </Button>
       </Space.Compact>
+      {/* 助手切换（M16）：流式中锁定；定义的管理入口在「助手管理」页（高权限分离） */}
+      <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <Segmented
+          value={chat.agentId}
+          onChange={(v) => chat.setAgentId(v as string)}
+          disabled={chat.isStreaming}
+          options={agents.map((a) => ({ label: a.name, value: a.id, title: a.description }))}
+        />
+        <Typography.Link onClick={() => navigate('agents')}>管理助手</Typography.Link>
+      </div>
     </Card>
   );
 }

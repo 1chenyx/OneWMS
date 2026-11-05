@@ -2,13 +2,21 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState } fro
 import type { ReactNode } from 'react';
 
 /**
- * 应用导航壳（M12 步骤4）：七页 state 切换 + 跳转携带一次性 initialFilter。
+ * 应用导航壳（M12 步骤4）：八页 state 切换 + 跳转携带一次性 initialFilter。
  * AI 聊天的「后置动作」经 navigate 跳到对应管理页（profile.propose 成功 →
  * 配置确认、库存操作 → 库存页…），filter 由目标页挂载时消费一次
  * （useState 初始化器里 takeInitialFilter，取后即清）。
  */
 
-export type Page = 'skus' | 'orders' | 'inventory' | 'expiry' | 'chat' | 'proposals' | 'settings';
+export type Page =
+  | 'skus'
+  | 'orders'
+  | 'inventory'
+  | 'expiry'
+  | 'chat'
+  | 'agents'
+  | 'proposals'
+  | 'settings';
 
 /** navigate 携带给目标页的一次性初始过滤（目标页按需取字段） */
 export interface InitialFilter {

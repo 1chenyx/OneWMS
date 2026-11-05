@@ -24,13 +24,33 @@ function scriptedProvider(turns: LlmTurnResponse[]): LlmProvider {
 }
 
 function setup(provider?: LlmProvider): ReturnType<typeof createApp> {
-  ctx = createAppContext({ dbPath: ':memory:', workspaceId: 'ws-server-test', provider, model: 'test-model' });
+  ctx = createAppContext({
+    dbPath: ':memory:',
+    workspaceId: 'ws-server-test',
+    provider,
+    aiConfig: provider ? { baseUrl: 'http://127.0.0.1:11434', model: 'test-model' } : undefined,
+  });
   return createApp(ctx);
 }
 
 const json = { 'content-type': 'application/json' };
 const post = (app: ReturnType<typeof createApp>, url: string, body: unknown) =>
   app.request(url, { method: 'POST', body: JSON.stringify(body), headers: json });
+
+/** 解析 SSE 文本为事件数组（event 名 + data JSON）——chat / agents 用例共用 */
+function parseSse(text: string): Array<{ event: string; data: Record<string, unknown> }> {
+  const out: Array<{ event: string; data: Record<string, unknown> }> = [];
+  for (const block of text.split('\n\n')) {
+    const dataLine = block.split('\n').find((l) => l.startsWith('data:'));
+    if (!dataLine) continue;
+    const eventLine = block.split('\n').find((l) => l.startsWith('event:'));
+    out.push({
+      event: eventLine?.slice(6).trim() ?? '',
+      data: JSON.parse(dataLine.slice(5).trim()) as Record<string, unknown>,
+    });
+  }
+  return out;
+}
 
 describe('GET /api/health 与 /api/profile/snapshot', () => {
   it('health 返回 nodeId', async () => {
@@ -51,7 +71,7 @@ describe('GET /api/health 与 /api/profile/snapshot', () => {
       schema: { entities: Record<string, { extensions: Array<{ key: string }> }> };
       workflows: Record<string, unknown>;
     };
-    expect(snap.version).toBe(1); // 种子 config.change
+    expect(snap.version).toBe(2); // 种子 config.change（core.wms 流程）+ core.ai 模块登记（M16）
     const keys = snap.schema.entities.sku!.extensions.map((f) => f.key).sort();
     expect(keys).toEqual(['category', 'spec', 'unit']);
     expect(Object.keys(snap.workflows).sort()).toEqual(['inbound', 'outbound']);
@@ -59,21 +79,6 @@ describe('GET /api/health 与 /api/profile/snapshot', () => {
 });
 
 describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
-  /** 解析 SSE 文本为事件数组（event 名 + data JSON） */
-  function parseSse(text: string): Array<{ event: string; data: Record<string, unknown> }> {
-    const out: Array<{ event: string; data: Record<string, unknown> }> = [];
-    for (const block of text.split('\n\n')) {
-      const dataLine = block.split('\n').find((l) => l.startsWith('data:'));
-      if (!dataLine) continue;
-      const eventLine = block.split('\n').find((l) => l.startsWith('event:'));
-      out.push({
-        event: eventLine?.slice(6).trim() ?? '',
-        data: JSON.parse(dataLine.slice(5).trim()) as Record<string, unknown>,
-      });
-    }
-    return out;
-  }
-
   it('未配置 AI → 503（AI 可选，其余功能不受影响）', async () => {
     const app = setup();
     const res = await post(app, '/api/chat/sessions/s1/message', { message: '你好' });
@@ -86,6 +91,42 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     const app = setup(scriptedProvider([{ text: '好的', toolCalls: [] }]));
     const res = await post(app, '/api/chat/sessions/s1/message', { message: '   ' });
     expect(res.status).toBe(400);
+  });
+
+  it('agentId 未知 → 404 AGENT_NOT_FOUND（M16）', async () => {
+    const app = setup(scriptedProvider([{ text: '好的', toolCalls: [] }]));
+    const res = await post(app, '/api/chat/sessions/s1/message', {
+      message: '你好',
+      agentId: 'ghost',
+    });
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { code: string }).code).toBe('AGENT_NOT_FOUND');
+  });
+
+  it('agentId=readonly → 只装配读工具 + 人设前缀（M16：按定义现场装配）', async () => {
+    const requests: LlmTurnRequest[] = [];
+    let i = 0;
+    const turns: LlmTurnResponse[] = [{ text: '库存 5 个。', toolCalls: [] }];
+    const provider: LlmProvider = {
+      async completeTurn(req) {
+        requests.push({ ...req, messages: [...req.messages] });
+        return turns[i++] ?? { text: '', toolCalls: [] };
+      },
+    };
+    const app = setup(provider);
+
+    const res = await post(app, '/api/chat/sessions/s1/message', {
+      message: '查库存',
+      agentId: 'readonly',
+    });
+    expect(res.status).toBe(200);
+    expect(parseSse(await res.text()).at(-1)?.event).toBe('turn-done');
+
+    // 只读装配：写工具不进清单（含 ui.ask 会话壳工具）；system 携带只读人设前缀
+    const toolIds = requests[0].tools.map((t) => t.id);
+    expect(toolIds).not.toContain('wms.sku.create');
+    expect(toolIds).not.toContain('profile.propose');
+    expect(requests[0].system.startsWith('你是只读查询助手')).toBe(true);
   });
 
   it('mock provider 驱动：事件序（tool-call → tool-result → text-delta → turn-done）+ actor 审计', async () => {
@@ -106,11 +147,12 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     expect(events[2].data).toEqual({ type: 'text-delta', text: '已创建 SKU A-1。' });
     expect(events[3].data).toEqual({ type: 'turn-done', steps: 2 });
 
-    // 审计免费（§9.3）：AI 的操作以 actor='ai:test-model@nodeId' 落 oplog（通道节点唯一）
+    // 审计免费（§9.3）：AI 的操作以 actor='ai:general@nodeId' 落 oplog
+    // （M16：actor 标识助手 id——默认 general，通道仍按节点唯一）
     expect(ctx!.ws.skus.byCode('A-1')!.name).toBe('螺丝');
     const actors = new Set<string>();
     ctx!.ws.events.forEach((e) => actors.add(e.actor));
-    expect(actors.has(`ai:test-model@${ctx!.core.nodeId}`)).toBe(true);
+    expect(actors.has(`ai:general@${ctx!.core.nodeId}`)).toBe(true);
   });
 
   it('同一会话多轮：turn-done 后历史提交，第二轮请求携带完整上下文', async () => {
@@ -370,7 +412,7 @@ describe('提议确认端点（人类专属，§4.1）', () => {
         patch: [{ op: 'replace', path: `/schema/entities/sku/extensions/${idx}/visible`, value: false }],
         note: '隐藏规格字段',
       },
-      'ai:test-model',
+      'ai:config',
     )) as { proposalId: string };
     return r.proposalId;
   }
@@ -382,7 +424,7 @@ describe('提议确认端点（人类专属，§4.1）', () => {
     const id = await proposeHideSpec(ctx!);
     const list = (await (await app.request('/api/proposals')).json()) as Array<{ proposalId: string; proposedBy: string }>;
     expect(list).toHaveLength(1);
-    expect(list[0]).toMatchObject({ proposalId: id, proposedBy: 'ai:test-model' });
+    expect(list[0]).toMatchObject({ proposalId: id, proposedBy: 'ai:config' });
 
     // 详情端点：确认界面的数据源（patch 全文 + 影响报告）
     const detail = (await (await app.request(`/api/proposals/${id}`)).json()) as {
@@ -429,5 +471,57 @@ describe('提议确认端点（人类专属，§4.1）', () => {
     const res = await post(app, `/api/proposals/${id}/reject`, {});
     expect(res.status).toBe(200);
     expect(await (await app.request('/api/proposals')).json()).toEqual([]);
+  });
+});
+
+describe('AI 助手端点（M16）', () => {
+  it('GET /api/agents：内置三件套（未配置）+ 工具目录（含权限标记）', async () => {
+    const app = setup();
+    const res = await app.request('/api/agents');
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as {
+      agents: Array<{ id: string; name: string; tools: string[] }>;
+      tools: Array<{ id: string; permission: string }>;
+    };
+    expect(data.agents.map((a) => a.id)).toEqual(['general', 'readonly', 'config']);
+    // general 的授权矩阵：全量 − profile.propose
+    expect(data.agents[0].tools).not.toContain('profile.propose');
+    // 工具目录：管理页勾选授权的数据源
+    expect(data.tools.find((t) => t.id === 'wms.sku.create')?.permission).toBe('write');
+    expect(data.tools.find((t) => t.id === 'wms.inventory.query')?.permission).toBe('read');
+  });
+
+  it('POST /api/agents/propose → 人工确认 → chat 用新定义 + GET 反映（慢通道闭环）', async () => {
+    const app = setup(scriptedProvider([{ text: '收到。', toolCalls: [] }]));
+
+    // ① 人通道提议（actor=user:local——与 AI 通道审计可辨）
+    const propose = await post(app, '/api/agents/propose', {
+      agents: [{ id: 'inspector', name: '质检助手', description: '', systemPrompt: '你是质检助手。', tools: ['wms.inventory.expiring'] }],
+    });
+    expect(propose.status).toBe(201);
+    const { proposalId } = (await propose.json()) as { proposalId: string };
+    const pending = (await (await app.request('/api/proposals')).json()) as Array<{ proposedBy: string }>;
+    expect(pending[0].proposedBy).toBe(`user:local@${ctx!.core.nodeId}`);
+
+    // ② 确认前 chat 仍可用旧定义（提议不是事实）；确认后新定义生效
+    const old = await post(app, '/api/chat/sessions/sa/message', { message: '你好', agentId: 'general' });
+    expect(old.status).toBe(200);
+    expect((await post(app, '/api/chat/sessions/sa/message', { message: '你好', agentId: 'inspector' })).status).toBe(404);
+
+    const confirm = await post(app, `/api/proposals/${proposalId}/confirm`, { by: 'user:human' });
+    expect(confirm.status).toBe(200);
+
+    // ③ 确认后：自定义助手可对话（装配成功），内置兜底不再出现（清单已整体替换）
+    const used = await post(app, '/api/chat/sessions/sb/message', { message: '查临期', agentId: 'inspector' });
+    expect(used.status).toBe(200);
+    expect(parseSse(await used.text()).at(-1)?.event).toBe('turn-done');
+    const catalog = (await (await app.request('/api/agents')).json()) as { agents: Array<{ id: string }> };
+    expect(catalog.agents.map((a) => a.id)).toEqual(['inspector']);
+  });
+
+  it('POST /api/agents/propose：agents 非数组 → 400', async () => {
+    const app = setup();
+    const res = await post(app, '/api/agents/propose', { agents: 'nope' });
+    expect(res.status).toBe(400);
   });
 });

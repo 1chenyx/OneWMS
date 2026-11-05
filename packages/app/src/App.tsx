@@ -5,6 +5,7 @@ import {
   FieldTimeOutlined,
   MessageOutlined,
   ProfileOutlined,
+  RobotOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
 import { Layout, Menu, Typography } from 'antd';
@@ -13,6 +14,7 @@ import OrdersPage from './pages/OrdersPage';
 import InventoryPage from './pages/InventoryPage';
 import ExpiryPage from './pages/ExpiryPage';
 import ChatPage from './pages/ChatPage';
+import AgentsPage from './pages/AgentsPage';
 import ProposalsPage from './pages/ProposalsPage';
 import SettingsPage from './pages/SettingsPage';
 import { ChatProvider } from './chat/ChatProvider';
@@ -20,11 +22,12 @@ import { AppNavProvider, useAppNav } from './app-nav';
 import type { Page } from './app-nav';
 
 /**
- * 布局壳：侧导航七页（管理四页 + AI 两页 + 设置）。
+ * 布局壳：侧导航八页（管理四页 + AI 三页 + 设置）。
  * 默认落在 SKU 管理——「无 AI 也能用」是管理界面的主张，AI 是增强不是入口。
- * 不引路由库：七页 state 切换即可，等页面多了再上 react-router。
- * AppNavProvider（M12 步骤4）最外层提供 navigate——AI 聊天的后置动作
- * 可从任意页面跳到目标管理页（携带一次性 initialFilter）。
+ * AI 区三页对照（M16）：AI 对话 = 使用（切换助手）、助手管理 = 配置（高权限，
+ * 慢通道）、配置确认 = 拍板。不引路由库：八页 state 切换即可，等页面多了再上
+ * react-router。AppNavProvider（M12 步骤4）最外层提供 navigate——AI 聊天的
+ * 后置动作可从任意页面跳到目标管理页（携带一次性 initialFilter）。
  */
 export default function App() {
   return (
@@ -55,6 +58,7 @@ function AppShell() {
             { key: 'expiry', icon: <FieldTimeOutlined />, label: '效期看板' },
             { type: 'divider' },
             { key: 'chat', icon: <MessageOutlined />, label: 'AI 对话' },
+            { key: 'agents', icon: <RobotOutlined />, label: '助手管理' },
             { key: 'proposals', icon: <AuditOutlined />, label: '配置确认' },
             { key: 'settings', icon: <SettingOutlined />, label: '设置' },
           ]}
@@ -73,6 +77,8 @@ function AppShell() {
             <ExpiryPage />
           ) : page === 'chat' ? (
             <ChatPage />
+          ) : page === 'agents' ? (
+            <AgentsPage />
           ) : page === 'proposals' ? (
             <ProposalsPage />
           ) : (
