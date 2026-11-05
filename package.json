@@ -11,9 +11,14 @@
     "test": "npm run test -w @one/core -w @one/wms -w @one/ai -w @one/server -w @one/app",
     "typecheck": "npm run typecheck -w @one/core -w @one/wms -w @one/ai -w @one/server -w @one/app",
     "dev:server": "npm run dev -w @one/server",
-    "dev:app": "npm run dev -w @one/app"
+    "dev:app": "npm run dev -w @one/app",
+    "package:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File packages/desktop/build.ps1",
+    "package:desktop:fast": "powershell -NoProfile -ExecutionPolicy Bypass -File packages/desktop/build.ps1 -SkipInstaller"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
   }
 }

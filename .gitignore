@@ -1,9 +1,21 @@
+# 依赖与构建产物
 node_modules/
 dist/
-.env
 *.tsbuildinfo
+
+# 环境与本地数据
+.env
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
+
+# 测试
 .vitest/
+
+# 历史遗留的散落产物（已统一收进 dist/）
+release/
+.screenshots/
+OneWMS-*.zip
+OneWMS-*-setup-win-x64.exe
+OneWMS-*-portable-win-x64/

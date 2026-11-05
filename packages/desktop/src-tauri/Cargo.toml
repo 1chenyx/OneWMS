@@ -1,0 +1,14 @@
+[package]
+name = "onewms-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "OneWMS 桌面壳：内置 Node 服务端 sidecar"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[profile.release]
+strip = true

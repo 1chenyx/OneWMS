@@ -1,0 +1,15 @@
+# Rust 构建产物
+src-tauri/target
+
+# 构建时组装的运行时载荷（由 stage.ps1 生成）
+src-tauri/resources
+
+# Tauri 自动生成的 schema
+src-tauri/gen/schemas
+
+# staging 临时目录
+stage-tmp
+
+# 图标源文件（icons/icon.ico 已入库）
+app-icon.jpg
+app-icon.png
