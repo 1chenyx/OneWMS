@@ -6,11 +6,13 @@ import { createVercelLlmProvider, resolveLanguageModel } from '@one/ai';
 import { createAppContext, type AppContext } from './context.js';
 import { apiErrorHandler } from './errors.js';
 import { readAiConfig } from './ai-config.js';
+import { readAiConfigFile, resolveAiConfigPath } from './ai-config-store.js';
 import { mountStatic } from './static.js';
 import { profileRoutes } from './routes/profile.js';
 import { proposalRoutes } from './routes/proposals.js';
 import { chatRoutes } from './routes/chat.js';
 import { agentRoutes } from './routes/agents.js';
+import { aiConfigRoutes } from './routes/ai-config.js';
 import { wmsRoutes } from './routes/wms.js';
 import { syncRoutes } from './routes/sync.js';
 import { migrationRoutes } from './routes/migration.js';
@@ -32,6 +34,7 @@ export function createApp(ctx: AppContext): Hono {
   app.route('/api/proposals', proposalRoutes(ctx));
   app.route('/api/chat', chatRoutes(ctx));
   app.route('/api/agents', agentRoutes(ctx));
+  app.route('/api/ai-config', aiConfigRoutes(ctx));
   app.route('/api/sync', syncRoutes(ctx));
   app.route('/api/migration', migrationRoutes(ctx));
   app.route('/api', wmsRoutes(ctx));
@@ -48,14 +51,26 @@ export function start(): void {
   if (dbPath !== ':memory:') {
     mkdirSync(dirname(resolve(dbPath)), { recursive: true });
   }
-  const ai = readAiConfig();
+  // AI 配置优先级（M17）：配置页保存的文件 > 启动环境变量；两者皆无 = AI 关闭。
+  const aiConfigPath = resolveAiConfigPath(dbPath);
+  const fileAi = aiConfigPath ? readAiConfigFile(aiConfigPath) : undefined;
+  const envAi = readAiConfig();
+  const ai = fileAi ?? envAi;
   const provider = ai ? createVercelLlmProvider(resolveLanguageModel(ai)) : undefined;
-  const ctx = createAppContext({ dbPath, workspaceId, provider, aiConfig: ai });
+  const ctx = createAppContext({
+    dbPath,
+    workspaceId,
+    provider,
+    aiConfig: ai,
+    aiConfigPath,
+    aiConfigSource: fileAi ? 'file' : envAi ? 'env' : 'none',
+    aiConfigEnv: envAi,
+  });
   const app = createApp(ctx);
 
   const server = serve({ fetch: app.fetch, port }, (info) => {
     console.log(
-      `[one-server] http://localhost:${info.port}  workspace=${workspaceId}  db=${dbPath}  ai=${ai ? ai.model : 'off'}`,
+      `[one-server] http://localhost:${info.port}  workspace=${workspaceId}  db=${dbPath}  ai=${ai ? ai.model : 'off'}${fileAi ? '（页面配置）' : ''}`,
     );
   });
 

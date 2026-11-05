@@ -8,6 +8,7 @@ import SkusPage from '../src/pages/SkusPage';
 import OrdersPage from '../src/pages/OrdersPage';
 import InventoryPage from '../src/pages/InventoryPage';
 import ExpiryPage from '../src/pages/ExpiryPage';
+import ScanInput from '../src/components/ScanInput';
 import { AppNavProvider, useAppNav } from '../src/app-nav';
 import type { InitialFilter } from '../src/app-nav';
 
@@ -70,8 +71,18 @@ const skusFixture = [
   {
     id: 's-1',
     skuCode: 'A-1',
+    barcode: '6901234567892',
     name: '螺丝',
     extData: { spec: '6204-2RS', category: '标准件' },
+    createdAt: '2026-10-30T08:00:00.000Z',
+    updatedAt: '2026-10-30T08:00:00.000Z',
+  },
+  {
+    id: 's-2',
+    skuCode: 'B-2',
+    barcode: null,
+    name: '螺母',
+    extData: {},
     createdAt: '2026-10-30T08:00:00.000Z',
     updatedAt: '2026-10-30T08:00:00.000Z',
   },
@@ -153,15 +164,21 @@ afterEach(() => {
 describe('SkusPage：动态列（Profile 消费闭环）', () => {
   beforeEach(() => createSkuMock.mockReset());
 
-  it('可见字段成列、隐藏字段消失、extData 值进列', () => {
+  it('可见字段成列、隐藏字段消失、extData 值进列；条码列：有码显码、无码显 -', () => {
     render(wrap(<SkusPage />));
     expect(screen.getByText('规格')).toBeInTheDocument(); // 动态列表头
     expect(screen.queryByText('分类')).not.toBeInTheDocument(); // visible:false → 列不渲染
     expect(screen.getByText('6204-2RS')).toBeInTheDocument(); // extData 值
     expect(screen.getByText('A-1')).toBeInTheDocument(); // 固定列
+    expect(screen.getByText('条码')).toBeInTheDocument(); // 固定列（M18）
+    const rowA = screen.getByText('A-1').closest('tr')!; // 有码行
+    expect(within(rowA).getByText('6901234567892')).toBeInTheDocument();
+    const rowB = screen.getByText('B-2').closest('tr')!; // 无码行（扩展列同为 -，条码列也补 -）
+    expect(within(rowB).queryByText('6901234567892')).not.toBeInTheDocument();
+    expect(within(rowB).getAllByText('-').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('新建表单只出现可见扩展字段，提交收集 extData', async () => {
+  it('新建表单只出现可见扩展字段，提交收集 extData 与条码', async () => {
     createSkuMock.mockResolvedValueOnce({ skuId: 's-2', skuCode: 'A-2', name: '轴承' });
     const user = userEvent.setup();
     render(wrap(<SkusPage />));
@@ -170,6 +187,7 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
     await user.type(screen.getByLabelText('SKU 编码'), 'A-2');
     await user.type(screen.getByLabelText('名称'), '轴承');
     await user.type(screen.getByLabelText('规格'), '6204');
+    await user.type(screen.getByLabelText(/条码/), ' 6901234567892 ');
     expect(screen.queryByLabelText('分类')).not.toBeInTheDocument(); // 隐藏字段无输入项
 
     await user.click(screen.getByRole('button', { name: 'OK' })); // Modal 确认（默认 locale）
@@ -177,9 +195,34 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
       expect(createSkuMock).toHaveBeenCalledWith({
         skuCode: 'A-2',
         name: '轴承',
+        barcode: '6901234567892', // trim 后提交；空白条码不提交该字段
         extData: { spec: '6204' },
       }),
     );
+  });
+});
+
+describe('ScanInput：扫码枪输入（M18）', () => {
+  it('回车触发 onScan（trim 后），空值不触发，扫后清空可续扫', async () => {
+    const onScan = vi.fn();
+    const user = userEvent.setup();
+    render(wrap(<ScanInput onScan={onScan} />));
+    const input = screen.getByPlaceholderText(/扫码枪输入/);
+
+    // 空回车不触发
+    await user.type(input, '{enter}');
+    expect(onScan).not.toHaveBeenCalled();
+
+    // 扫码枪输入（两端空白 trim）+ 回车触发
+    await user.type(input, ' 6901234567892 {enter}');
+    expect(onScan).toHaveBeenCalledTimes(1);
+    expect(onScan).toHaveBeenCalledWith('6901234567892');
+
+    // 扫后清空 → 第二枪续扫
+    expect(input).toHaveValue('');
+    await user.type(input, '6901{enter}');
+    expect(onScan).toHaveBeenCalledTimes(2);
+    expect(onScan).toHaveBeenLastCalledWith('6901');
   });
 });
 

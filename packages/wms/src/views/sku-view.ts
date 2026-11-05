@@ -14,6 +14,8 @@ import { WMS_EVENT_TYPES, type SkuCreatedPayload, type SkuUpdatedPayload } from 
 export interface SkuRecord {
   readonly id: string;
   readonly skuCode: string;
+  /** 条码（M18）：null = 未设置；同库唯一（扫码识读的物理标识） */
+  readonly barcode: string | null;
   readonly name: string;
   readonly extData: Record<string, unknown>;
   readonly createdAt: string;
@@ -23,6 +25,7 @@ export interface SkuRecord {
 interface SkuRow {
   id: string;
   sku_code: string;
+  barcode: string | null;
   name: string;
   ext_data: string;
   created_at: string;
@@ -33,6 +36,7 @@ function rowToRecord(row: SkuRow): SkuRecord {
   return {
     id: row.id,
     skuCode: row.sku_code,
+    barcode: row.barcode,
     name: row.name,
     extData: JSON.parse(row.ext_data) as Record<string, unknown>,
     createdAt: row.created_at,
@@ -52,16 +56,17 @@ export class SkuView {
       case WMS_EVENT_TYPES.skuCreated: {
         const p = env.payload as SkuCreatedPayload;
         if (this.#byIdRaw(p.skuId)) return; // 已应用过（幂等）
-        // sku_code 唯一冲突不走 OR IGNORE 静默——那是业务冲突，必须显式炸出来
+        // sku_code / barcode 唯一冲突不走 OR IGNORE 静默——那是业务冲突，必须显式炸出来
         this.db
           .prepare(
-            `INSERT INTO wms_sku (id, workspace_id, sku_code, name, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, ext_data, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             p.skuId,
             this.workspaceId,
             p.skuCode,
+            p.barcode ?? null,
             p.name,
             JSON.stringify(p.extData ?? {}),
             env.createdAt,
@@ -75,12 +80,14 @@ export class SkuView {
           .prepare(
             `UPDATE wms_sku SET
                name = COALESCE(?, name),
+               barcode = COALESCE(?, barcode),
                ext_data = COALESCE(?, ext_data),
                updated_at = ?
              WHERE workspace_id = ? AND id = ?`,
           )
           .run(
             p.name ?? null,
+            p.barcode ?? null,
             p.extData === undefined ? null : JSON.stringify(p.extData),
             env.createdAt,
             this.workspaceId,
@@ -98,6 +105,16 @@ export class SkuView {
         `SELECT * FROM wms_sku WHERE workspace_id = ? AND sku_code = ?`,
       )
       .get(this.workspaceId, skuCode);
+    return row ? rowToRecord(row) : undefined;
+  }
+
+  /** 按条码查（M18：扫码枪识读入口——wms.sku.resolve 工具与唯一校验共用） */
+  byBarcode(barcode: string): SkuRecord | undefined {
+    const row = this.db
+      .prepare<unknown[], SkuRow>(
+        `SELECT * FROM wms_sku WHERE workspace_id = ? AND barcode = ?`,
+      )
+      .get(this.workspaceId, barcode);
     return row ? rowToRecord(row) : undefined;
   }
 

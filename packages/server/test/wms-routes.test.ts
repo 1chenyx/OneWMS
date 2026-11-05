@@ -61,6 +61,42 @@ describe('SKU 端点', () => {
     const res = await post(app, '/api/skus', { name: '没有编码' });
     expect(res.status).toBe(400);
   });
+
+  // ── 条码（M18）──────────────────────────────────────
+
+  it('建 SKU 带条码 → GET ?barcode= 精确命中 / ?q= 三字段模糊', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1001', name: '轴承', barcode: '6901000000018' });
+    await post(app, '/api/skus', { skuCode: 'B-2002', name: '机油' });
+
+    // 条码精确匹配（扫码枪入口）
+    const byBarcode = await app.request('/api/skus?barcode=6901000000018');
+    const hit = (await byBarcode.json()) as Array<{ skuCode: string; barcode: string | null }>;
+    expect(hit).toHaveLength(1);
+    expect(hit[0]!.skuCode).toBe('A-1001');
+    expect(hit[0]!.barcode).toBe('6901000000018');
+
+    // q 模糊：编码 / 名称 / 条码 三字段
+    const byCode = (await (await app.request('/api/skus?q=1001')).json()) as unknown[];
+    const byName = (await (await app.request('/api/skus?q=机')).json()) as unknown[];
+    const byBc = (await (await app.request('/api/skus?q=000018')).json()) as unknown[];
+    expect(byCode).toHaveLength(1);
+    expect(byName).toHaveLength(1);
+    expect(byBc).toHaveLength(1);
+
+    // 无条码 SKU 不命中条码查询
+    const none = (await (await app.request('/api/skus?barcode=9999')).json()) as unknown[];
+    expect(none).toHaveLength(0);
+  });
+
+  it('条码冲突 → 400 WMS_SKU_BARCODE_EXISTS', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝', barcode: '6901' });
+    const res = await post(app, '/api/skus', { skuCode: 'B-2', name: '螺母', barcode: '6901' });
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { code: string };
+    expect(data.code).toBe('WMS_SKU_BARCODE_EXISTS');
+  });
 });
 
 describe('单据端点', () => {
@@ -367,5 +403,140 @@ describe('写操作的审计（人与 AI 同通道的红利）', () => {
     for (const env of events) {
       expect(env.type.startsWith('wms.')).toBe(true);
     }
+  });
+});
+
+describe('盘点端点（M17：清单进度 / 明细联查 / 录实盘 / 关单差异）', () => {
+  /** 灌基础数据：两个 SKU + 一个实体库位 + 三桶库存 */
+  async function seed(app: ReturnType<typeof createApp>) {
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/skus', { skuCode: 'B-2', name: '螺母' });
+    await ctx!.ws.tools.invoke('wms.location.create', { locationCode: 'A-01', name: '一号架' }, 'user:test');
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 10, reason: '期初' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'B-2', delta: 6, reason: '期初', locationCode: 'A-01' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'B-2', delta: 4, reason: '期初' });
+  }
+
+  it('创建（全场）→ 清单携带范围/进度；GET /api/locations 供范围勾选', async () => {
+    const app = setup();
+    await seed(app);
+
+    const locRes = await app.request('/api/locations');
+    const locs = (await locRes.json()) as Array<{ locationCode: string; name: string }>;
+    expect(locs).toEqual([{ id: expect.any(String), locationCode: 'A-01', name: '一号架', createdAt: expect.any(String), updatedAt: expect.any(String) }]);
+
+    const res = await post(app, '/api/stocktakes', { note: '月度大盘' });
+    expect(res.status).toBe(201);
+    const created = (await res.json()) as { stocktakeNo: string; state: string; lineCount: number };
+    expect(created.stocktakeNo).toMatch(/^ST-/);
+    expect(created.state).toBe('created');
+    expect(created.lineCount).toBe(3); // 三个有余量的桶
+
+    const listRes = await app.request('/api/stocktakes');
+    const list = (await listRes.json()) as Array<{
+      stocktakeNo: string;
+      state: string;
+      scope: string[] | '全场';
+      lineCount: number;
+      countedCount: number;
+      note: string | null;
+    }>;
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({
+      state: 'created',
+      scope: '全场',
+      lineCount: 3,
+      countedCount: 0,
+      note: '月度大盘',
+    });
+  });
+
+  it('明细：联查 SKU/库位 + 账面快照 + 差异；范围外录实盘 → 400 WMS_STOCKTAKE_SCOPE_VIOLATION', async () => {
+    const app = setup();
+    await seed(app);
+    await post(app, '/api/stocktakes', { stocktakeNo: 'ST-SCOPED', locationCodes: ['A-01'] });
+
+    const detailRes = await app.request('/api/stocktakes/ST-SCOPED');
+    const detail = (await detailRes.json()) as {
+      scope: string[];
+      lines: Array<{ skuCode: string; name: string; locationCode: string; batchNo: string; expectedQty: number; countedQty: number | null; bookQty: number; delta: number | null }>;
+    };
+    expect(detail.scope).toEqual(['A-01']);
+    expect(detail.lines).toEqual([
+      { skuCode: 'B-2', name: '螺母', locationCode: 'A-01', batchNo: 'DEFAULT', expectedQty: 6, countedQty: null, bookQty: 6, delta: null },
+    ]);
+
+    // 范围外库位（B-2@DEFAULT 桶不在 A-01 范围）→ 拒
+    const bad = await post(app, '/api/stocktakes/ST-SCOPED/count', {
+      skuCode: 'B-2',
+      locationCode: 'DEFAULT',
+      countedQty: 4,
+    });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { code: string }).code).toBe('WMS_STOCKTAKE_SCOPE_VIOLATION');
+  });
+
+  it('录实盘 → 未盘完关单 400 WMS_STOCKTAKE_LINES_UNCOUNTED；盘完关单 → 差异调整库存', async () => {
+    const app = setup();
+    await seed(app);
+    await post(app, '/api/stocktakes', { stocktakeNo: 'ST-1' });
+
+    // 未盘完 → 拒关
+    const early = await post(app, '/api/stocktakes/ST-1/close', {});
+    expect(early.status).toBe(400);
+    expect(((await early.json()) as { code: string }).code).toBe('WMS_STOCKTAKE_LINES_UNCOUNTED');
+
+    // 逐桶录实盘：A-1 亏 3；B-2@A-01 平；B-2@DEFAULT 盘盈 1
+    await post(app, '/api/stocktakes/ST-1/count', { skuCode: 'A-1', countedQty: 7 });
+    await post(app, '/api/stocktakes/ST-1/count', { skuCode: 'B-2', locationCode: 'A-01', countedQty: 6 });
+    await post(app, '/api/stocktakes/ST-1/count', { skuCode: 'B-2', countedQty: 5 });
+
+    const close = await post(app, '/api/stocktakes/ST-1/close', {});
+    expect(close.status).toBe(200);
+    const result = (await close.json()) as {
+      state: string;
+      totalLines: number;
+      adjustedLines: number;
+      adjustments: Array<{ skuCode: string; locationCode: string; delta: number }>;
+    };
+    expect(result.state).toBe('closed');
+    expect(result.adjustedLines).toBe(2);
+    expect(result.adjustments).toEqual([
+      { skuCode: 'A-1', locationCode: 'DEFAULT', batchNo: 'DEFAULT', expectedQty: 10, countedQty: 7, bookQty: 10, delta: -3 },
+      { skuCode: 'B-2', locationCode: 'DEFAULT', batchNo: 'DEFAULT', expectedQty: 4, countedQty: 5, bookQty: 4, delta: 1 },
+    ]);
+
+    // 库存收敛 = 实盘数（清单页即时可见）
+    const inv = (await (await app.request('/api/inventory')).json()) as Array<{ skuCode: string; quantity: number }>;
+    expect(inv).toEqual([
+      { skuId: expect.any(String), skuCode: 'A-1', name: '螺丝', quantity: 7 },
+      { skuId: expect.any(String), skuCode: 'B-2', name: '螺母', quantity: 11 }, // 6 + 5
+    ]);
+  });
+
+  it('取消 → 状态 canceled、库存零调整；终态单再操作 → 400 WMS_STOCKTAKE_NOT_OPEN', async () => {
+    const app = setup();
+    await seed(app);
+    await post(app, '/api/stocktakes', { stocktakeNo: 'ST-1' });
+    await post(app, '/api/stocktakes/ST-1/count', { skuCode: 'A-1', countedQty: 99 }); // 故意盘歪
+
+    const cancel = await post(app, '/api/stocktakes/ST-1/cancel', {});
+    expect(cancel.status).toBe(200);
+    expect(((await cancel.json()) as { state: string }).state).toBe('canceled');
+
+    // 取消不动账面（99 是干扰值——若误调整，库存会变成 99）
+    const inv = (await (await app.request('/api/inventory')).json()) as Array<{ skuCode: string; quantity: number }>;
+    expect(inv.find((r) => r.skuCode === 'A-1')!.quantity).toBe(10);
+
+    const reClose = await post(app, '/api/stocktakes/ST-1/close', {});
+    expect(reClose.status).toBe(400);
+    expect(((await reClose.json()) as { code: string }).code).toBe('WMS_STOCKTAKE_NOT_OPEN');
+  });
+
+  it('明细查不存在的单 → 400 WMS_STOCKTAKE_NOT_FOUND', async () => {
+    const app = setup();
+    const res = await app.request('/api/stocktakes/ST-404');
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe('WMS_STOCKTAKE_NOT_FOUND');
   });
 });

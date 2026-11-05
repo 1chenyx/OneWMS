@@ -20,6 +20,13 @@ export class SkuNotFoundError extends CoreError {
   }
 }
 
+/** SKU 条码已被其他 SKU 占用（M18：同库条码唯一——扫码识读不允许二义） */
+export class SkuBarcodeExistsError extends CoreError {
+  constructor(barcode: string, skuCode: string) {
+    super('WMS_SKU_BARCODE_EXISTS', `条码 ${barcode} 已被 SKU ${skuCode} 使用`);
+  }
+}
+
 /** 单据号已存在 */
 export class OrderAlreadyExistsError extends CoreError {
   constructor(orderNo: string) {
@@ -125,6 +132,50 @@ export class OrderStateConflictError extends CoreError {
     super(
       'WMS_STATE_CONFLICT',
       `单据 ${orderNo} 状态冲突：事件声明 ${eventFrom} → 实际当前 ${actual}（并发状态转移，待人工裁决）`,
+    );
+  }
+}
+
+// ── 盘点（M17）───────────────────────────────────────
+
+/** 盘点单不存在 */
+export class StocktakeNotFoundError extends CoreError {
+  constructor(stocktakeNo: string) {
+    super('WMS_STOCKTAKE_NOT_FOUND', `盘点单不存在: ${stocktakeNo}`);
+  }
+}
+
+/** 盘点单号已存在（业务键唯一） */
+export class StocktakeExistsError extends CoreError {
+  constructor(stocktakeNo: string) {
+    super('WMS_STOCKTAKE_EXISTS', `盘点单号已存在: ${stocktakeNo}`);
+  }
+}
+
+/** 盘点单不在盘点中状态（count/close/cancel 只对 created 态开放） */
+export class StocktakeNotOpenError extends CoreError {
+  constructor(stocktakeNo: string, state: string) {
+    const label = state === 'closed' ? '已关单' : state === 'canceled' ? '已取消' : state;
+    super('WMS_STOCKTAKE_NOT_OPEN', `盘点单 ${stocktakeNo} 已${label}——只有盘点中的单据才能操作`);
+  }
+}
+
+/** 关单时仍有未盘行（全部行录入实盘数后才能关单收敛差异） */
+export class StocktakeLinesUncountedError extends CoreError {
+  constructor(stocktakeNo: string, uncounted: number) {
+    super(
+      'WMS_STOCKTAKE_LINES_UNCOUNTED',
+      `盘点单 ${stocktakeNo} 还有 ${uncounted} 行未录实盘数——全部录完后才能关单（不需要的行请录 0）`,
+    );
+  }
+}
+
+/** 实盘录入的库位不在盘点范围内 */
+export class StocktakeScopeViolationError extends CoreError {
+  constructor(stocktakeNo: string, locationCode: string) {
+    super(
+      'WMS_STOCKTAKE_SCOPE_VIOLATION',
+      `库位 ${locationCode} 不在盘点单 ${stocktakeNo} 的盘点范围内`,
     );
   }
 }

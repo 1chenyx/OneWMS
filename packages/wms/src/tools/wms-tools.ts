@@ -18,7 +18,13 @@ import {
   OrderAlreadyExistsError,
   OrderNotFoundError,
   SkuAlreadyExistsError,
+  SkuBarcodeExistsError,
   SkuNotFoundError,
+  StocktakeExistsError,
+  StocktakeLinesUncountedError,
+  StocktakeNotFoundError,
+  StocktakeNotOpenError,
+  StocktakeScopeViolationError,
   WorkflowNotFoundError,
 } from '../errors.js';
 
@@ -63,6 +69,27 @@ function resolveLocation(
 function codeOfLocation(ws: WmsWorkspace, locationId: string): string {
   if (locationId === DEFAULT_LOCATION_ID) return DEFAULT_LOCATION_ID;
   return ws.locations.byId(locationId)?.locationCode ?? locationId;
+}
+
+/**
+ * 条码规整（M18）：trim 两端空白（扫码枪可能带前缀/后缀符）；trim 后为空 → 拒。
+ * 不约束格式（EAN-13 / Code128 / 自编码皆可）——唯一性才是业务不变量。
+ */
+function normalizeBarcode(raw: string): string {
+  const bc = raw.trim();
+  if (!bc) throw new Error('TOOL_REJECTED: barcode 不能为空白字符串（不设置条码请不传该字段）');
+  return bc;
+}
+
+/**
+ * 条码唯一校验（M18）：同库条码不允许二义（扫码识读必须有唯一解）。
+ * 占用者是当前 SKU 自身时放行（改其他字段不动条码 / 重复声明同码）。
+ */
+function assertBarcodeFree(ws: WmsWorkspace, barcode: string, selfSkuId?: string): void {
+  const holder = ws.skus.byBarcode(barcode);
+  if (holder && holder.id !== selfSkuId) {
+    throw new SkuBarcodeExistsError(barcode, holder.skuCode);
+  }
 }
 
 /**
@@ -241,16 +268,26 @@ export function createWmsTools(
 ): ToolDefinition[] {
   // ── SKU ──────────────────────────────────────────────
 
-  const skuCreate: ToolDefinition<{ skuCode: string; name: string; extData?: Record<string, unknown> }> = {
+  const skuCreate: ToolDefinition<{
+    skuCode: string;
+    name: string;
+    barcode?: string;
+    extData?: Record<string, unknown>;
+  }> = {
     id: 'wms.sku.create',
     label: '创建 SKU',
-    description: '创建一个新的 SKU（库存商品）。skuCode 是全库唯一的商品编码，name 是商品名称；可选 extData 携带自定义扩展字段（如规格、保质期）。',
+    description:
+      '创建一个新的 SKU（库存商品）。skuCode 是全库唯一的商品编码，name 是商品名称；可选 barcode 条码（扫码枪识读用，同库唯一，多个 SKU 不可共用）；可选 extData 携带自定义扩展字段（如规格、保质期）。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
         skuCode: { type: 'string', description: 'SKU 唯一编码，如 A-1001' },
         name: { type: 'string', description: '商品名称' },
+        barcode: {
+          type: 'string',
+          description: '商品条码（可选，如 EAN-13 / Code128；扫码枪识读用，同库唯一）',
+        },
         extData: { type: 'object', description: '扩展字段键值对（字段注册表声明的自定义字段）' },
       },
       required: ['skuCode', 'name'],
@@ -261,28 +298,41 @@ export function createWmsTools(
       if (ws.skus.byCode(params.skuCode)) {
         throw new SkuAlreadyExistsError(params.skuCode);
       }
+      const barcode = params.barcode === undefined ? undefined : normalizeBarcode(params.barcode);
+      if (barcode) assertBarcodeFree(ws, barcode);
       const skuId = randomUUID();
       ctx.appendEvent(WMS_EVENT_TYPES.skuCreated, {
         skuId,
         skuCode: params.skuCode,
         name: params.name,
+        barcode,
         extData: params.extData,
       });
       ws.sync();
-      return { skuId, skuCode: params.skuCode, name: params.name };
+      return { skuId, skuCode: params.skuCode, name: params.name, barcode };
     },
   };
 
-  const skuUpdate: ToolDefinition<{ skuCode: string; name?: string; extData?: Record<string, unknown> }> = {
+  const skuUpdate: ToolDefinition<{
+    skuCode: string;
+    name?: string;
+    barcode?: string;
+    extData?: Record<string, unknown>;
+  }> = {
     id: 'wms.sku.update',
     label: '更新 SKU',
-    description: '更新已有 SKU 的名称或扩展字段。只传需要修改的字段，未传字段保持不变。',
+    description:
+      '更新已有 SKU 的名称、条码或扩展字段。只传需要修改的字段，未传字段保持不变。barcode 条码同库唯一（已绑定其他 SKU 的条码会被拒绝）。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
         skuCode: { type: 'string', description: '要更新的 SKU 编码' },
         name: { type: 'string', description: '新的商品名称（可选）' },
+        barcode: {
+          type: 'string',
+          description: '新的商品条码（可选；不传保持不变，传了即绑定——同库唯一）',
+        },
         extData: { type: 'object', description: '新的扩展字段（可选，整体替换）' },
       },
       required: ['skuCode'],
@@ -292,14 +342,39 @@ export function createWmsTools(
       ws.sync();
       const sku = ws.skus.byCode(params.skuCode);
       if (!sku) throw new SkuNotFoundError(params.skuCode);
+      const barcode = params.barcode === undefined ? undefined : normalizeBarcode(params.barcode);
+      if (barcode) assertBarcodeFree(ws, barcode, sku.id);
       ctx.appendEvent(WMS_EVENT_TYPES.skuUpdated, {
         skuId: sku.id,
         skuCode: sku.skuCode,
         name: params.name,
+        barcode,
         extData: params.extData,
       });
       ws.sync();
-      return { skuId: sku.id, skuCode: sku.skuCode };
+      return { skuId: sku.id, skuCode: sku.skuCode, barcode: barcode ?? sku.barcode };
+    },
+  };
+
+  const skuResolve: ToolDefinition<{ barcode: string }> = {
+    id: 'wms.sku.resolve',
+    label: '条码解析',
+    description:
+      '按条码解析 SKU：给定扫码枪扫出的条码（同库唯一），返回对应的 SKU（skuId、编码、名称、条码）。条码未登记会报 SKU 不存在。纯读操作——幂等，不产生事件。扫码枪录入单据/盘点前先经本工具换算成 SKU 编码。',
+    permission: 'read',
+    parameters: {
+      type: 'object',
+      properties: {
+        barcode: { type: 'string', description: '扫出的商品条码' },
+      },
+      required: ['barcode'],
+    },
+    handler: (params, ctx) => {
+      const ws = resolveWorkspace(ctx.workspaceId);
+      ws.sync();
+      const sku = ws.skus.byBarcode(params.barcode.trim());
+      if (!sku) throw new SkuNotFoundError(params.barcode);
+      return { skuId: sku.id, skuCode: sku.skuCode, name: sku.name, barcode: sku.barcode };
     },
   };
 
@@ -904,9 +979,320 @@ export function createWmsTools(
     },
   };
 
+  // ── 盘点（M17）───────────────────────────────────────
+
+  const stocktakeCreate: ToolDefinition<{
+    locationCodes?: string[];
+    stocktakeNo?: string;
+    note?: string;
+  }> = {
+    id: 'wms.stocktake.create',
+    label: '创建盘点单',
+    description:
+      '创建一张盘点单，对指定范围（缺省全场）的库存做实盘核对。创建时立即按当前账面余量生成待盘明细行——每个有余量的 SKU×库位×批次桶一行，行上记录创建时点的账面快照（expectedQty）。locationCodes 是盘点范围的库位编码列表（可选；缺省或空数组 = 全场盘点，含默认库位 DEFAULT）；stocktakeNo 盘点单号（可选，缺省自动生成 ST-日期-序号）；note 备注（可选）。生命周期：创建后处于盘点中（created）→ wms.stocktake.count 逐桶录实盘数 → 全部录完后 wms.stocktake.close 关单（按差异自动调整库存）→ 或 wms.stocktake.cancel 取消（不调整库存）。范围外库位的录入会被拒绝。',
+    permission: 'write',
+    parameters: {
+      type: 'object',
+      properties: {
+        locationCodes: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '盘点范围库位编码列表（可选；缺省或空数组 = 全场盘点，含默认库位 DEFAULT）',
+        },
+        stocktakeNo: { type: 'string', description: '盘点单号（可选，缺省自动生成）' },
+        note: { type: 'string', description: '备注（可选，如 月度大盘）' },
+      },
+      required: [],
+    },
+    handler: (params, ctx) => {
+      const ws = resolveWorkspace(ctx.workspaceId);
+      ws.sync();
+      // 范围解析：undefined / 空数组 → null（全场）；显式列表逐个校验存在性并去重
+      const codes = params.locationCodes;
+      const locationIds =
+        codes && codes.length > 0
+          ? [...new Set(codes.map((code) => resolveLocation(ws, code).locationId))]
+          : null;
+      const stocktakeNo = params.stocktakeNo ?? generateStocktakeNo();
+      if (ws.stocktakes.byNo(stocktakeNo)) {
+        throw new StocktakeExistsError(stocktakeNo);
+      }
+      const stocktakeId = randomUUID();
+      ctx.appendEvent(WMS_EVENT_TYPES.stocktakeCreated, {
+        stocktakeId,
+        stocktakeNo,
+        locationIds,
+        note: params.note,
+      });
+      ws.sync();
+      return {
+        stocktakeId,
+        stocktakeNo,
+        state: 'created' as const,
+        scope: locationIds ? locationIds.map((id) => codeOfLocation(ws, id)) : '全场',
+        lineCount: ws.stocktakes.stats(stocktakeId).lineCount,
+      };
+    },
+  };
+
+  const stocktakeCount: ToolDefinition<{
+    stocktakeNo: string;
+    skuCode: string;
+    locationCode?: string;
+    batchNo?: string;
+    countedQty: number;
+  }> = {
+    id: 'wms.stocktake.count',
+    label: '录入盘点实盘数',
+    description:
+      '为盘点单录入一个桶（SKU×库位×批次）的实盘数 countedQty（实际清点数量，≥0 的整数；0 表示盘亏到零）。locationCode 缺省为默认库位 DEFAULT，batchNo 缺省为虚拟批次 DEFAULT。同桶可重复录入——后录覆盖先录（重盘修正）。账面没有余量的桶也可以录（货架上真有货而账面为零 = 盘盈，关单时自动补库存）。库位必须在盘点范围内，否则拒绝。',
+    permission: 'write',
+    parameters: {
+      type: 'object',
+      properties: {
+        stocktakeNo: { type: 'string', description: '盘点单号' },
+        skuCode: { type: 'string', description: 'SKU 编码' },
+        locationCode: { type: 'string', description: '库位编码（可选，缺省 DEFAULT）' },
+        batchNo: { type: 'string', description: '批次号（可选，缺省虚拟批次 DEFAULT）' },
+        countedQty: { type: 'integer', minimum: 0, description: '实盘数量（≥0 的整数）' },
+      },
+      required: ['stocktakeNo', 'skuCode', 'countedQty'],
+    },
+    handler: (params, ctx) => {
+      const ws = resolveWorkspace(ctx.workspaceId);
+      ws.sync();
+      const st = ws.stocktakes.byNo(params.stocktakeNo);
+      if (!st) throw new StocktakeNotFoundError(params.stocktakeNo);
+      if (st.state !== 'created') throw new StocktakeNotOpenError(params.stocktakeNo, st.state);
+      if (!Number.isInteger(params.countedQty) || params.countedQty < 0) {
+        throw new Error('TOOL_REJECTED: countedQty 必须是 ≥0 的整数');
+      }
+      const sku = ws.skus.byCode(params.skuCode);
+      if (!sku) throw new SkuNotFoundError(params.skuCode);
+      const loc = resolveLocation(ws, params.locationCode);
+      const batch = resolveBatch(params.batchNo, undefined); // 盘点不带效期（批次属性已在入库登记）
+      if (st.locationIds && !st.locationIds.includes(loc.locationId)) {
+        throw new StocktakeScopeViolationError(params.stocktakeNo, loc.locationCode);
+      }
+      ctx.appendEvent(WMS_EVENT_TYPES.stocktakeCounted, {
+        stocktakeId: st.id,
+        stocktakeNo: st.stocktakeNo,
+        skuId: sku.id,
+        skuCode: sku.skuCode,
+        locationId: loc.locationId,
+        locationCode: loc.locationCode,
+        batchNo: batch.batchNo,
+        countedQty: params.countedQty,
+      });
+      ws.sync();
+      const line = ws.stocktakes
+        .lines(st.id)
+        .find(
+          (l) =>
+            l.skuId === sku.id && l.locationId === loc.locationId && l.batchNo === batch.batchNo,
+        );
+      return {
+        stocktakeNo: st.stocktakeNo,
+        skuCode: sku.skuCode,
+        locationCode: loc.locationCode,
+        batchNo: batch.batchNo,
+        countedQty: params.countedQty,
+        expectedQty: line?.expectedQty ?? 0,
+        bookQty: ws.inventory.quantityOf(sku.id, loc.locationId, batch.batchNo),
+      };
+    },
+  };
+
+  const stocktakeClose: ToolDefinition<{ stocktakeNo: string }> = {
+    id: 'wms.stocktake.close',
+    label: '盘点关单',
+    description:
+      '关闭盘点单并收敛差异：要求全部行已录实盘数（未录完会被拒绝）。对每行按「实盘数 − 关单时账面余量」生成库存调整（流水 reason: stocktake:单号）——实盘多于账面自动补库存（盘盈），少于则扣减（盘亏，扣减后余量=实盘数，恒不为负），零差异行跳过不落流水。状态与全部调整原子落账（同生共死）。范围外新录的桶同样收敛。',
+    permission: 'write',
+    parameters: {
+      type: 'object',
+      properties: {
+        stocktakeNo: { type: 'string', description: '盘点单号' },
+      },
+      required: ['stocktakeNo'],
+    },
+    handler: (params, ctx) => {
+      const ws = resolveWorkspace(ctx.workspaceId);
+      ws.sync();
+      const st = ws.stocktakes.byNo(params.stocktakeNo);
+      if (!st) throw new StocktakeNotFoundError(params.stocktakeNo);
+      if (st.state !== 'created') throw new StocktakeNotOpenError(params.stocktakeNo, st.state);
+      const stats = ws.stocktakes.stats(st.id);
+      const uncounted = stats.lineCount - stats.countedCount;
+      if (uncounted > 0) throw new StocktakeLinesUncountedError(st.stocktakeNo, uncounted);
+
+      // 差异计算（命令侧）：按关单时点账面现值收敛——delta = 实盘 − 现值，跳过零差行。
+      // 盘点期间发生出入库则现值随之走，关单以最终账面为准（快照只作展示参照）。
+      // 差异清单按 (skuCode, 库位, 批次) 稳定排序——展示与断言不依赖 uuid 顺序。
+      const lines = ws.stocktakes.lines(st.id);
+      const diffs = lines
+        .map((line) => {
+          const bookQty = ws.inventory.quantityOf(line.skuId, line.locationId, line.batchNo);
+          return {
+            line,
+            bookQty,
+            skuCode: ws.skus.byId(line.skuId)?.skuCode ?? line.skuId,
+            locationCode: codeOfLocation(ws, line.locationId),
+            delta: (line.countedQty as number) - bookQty,
+          };
+        })
+        .filter((d) => d.delta !== 0)
+        .sort(
+          (a, b) =>
+            a.skuCode.localeCompare(b.skuCode) ||
+            a.locationCode.localeCompare(b.locationCode) ||
+            a.line.batchNo.localeCompare(b.line.batchNo),
+        );
+
+      // 原子落账：状态事实 + 每行差异流水同生共死（savepoint，杜绝半落账）。
+      // 差异不落新事件类型——就是普通 inventory.adjusted（reason 可追溯回盘点单）。
+      ws.runAtomic(() => {
+        ctx.appendEvent(WMS_EVENT_TYPES.stocktakeStateChanged, {
+          stocktakeId: st.id,
+          stocktakeNo: st.stocktakeNo,
+          from: st.state,
+          to: 'closed',
+        });
+        for (const d of diffs) {
+          ctx.appendEvent(WMS_EVENT_TYPES.inventoryAdjusted, {
+            skuId: d.line.skuId,
+            skuCode: d.skuCode,
+            delta: d.delta,
+            reason: `stocktake:${st.stocktakeNo}`,
+            locationId: d.line.locationId,
+            locationCode: d.locationCode,
+            batchNo: d.line.batchNo,
+          });
+        }
+      });
+      ws.sync();
+      return {
+        stocktakeNo: st.stocktakeNo,
+        state: 'closed' as const,
+        totalLines: stats.lineCount,
+        adjustedLines: diffs.length,
+        adjustments: diffs.map((d) => ({
+          skuCode: d.skuCode,
+          locationCode: d.locationCode,
+          batchNo: d.line.batchNo,
+          expectedQty: d.line.expectedQty,
+          countedQty: d.line.countedQty as number,
+          bookQty: d.bookQty,
+          delta: d.delta,
+        })),
+      };
+    },
+  };
+
+  const stocktakeCancel: ToolDefinition<{ stocktakeNo: string }> = {
+    id: 'wms.stocktake.cancel',
+    label: '取消盘点单',
+    description:
+      '取消盘点单（零库存调整——已录的实盘数保留在单上仅作记录，不动账面库存）。只有盘点中（created）的单可取消；已关单/已取消的单再取消会被拒绝。',
+    permission: 'write',
+    parameters: {
+      type: 'object',
+      properties: {
+        stocktakeNo: { type: 'string', description: '盘点单号' },
+      },
+      required: ['stocktakeNo'],
+    },
+    handler: (params, ctx) => {
+      const ws = resolveWorkspace(ctx.workspaceId);
+      ws.sync();
+      const st = ws.stocktakes.byNo(params.stocktakeNo);
+      if (!st) throw new StocktakeNotFoundError(params.stocktakeNo);
+      if (st.state !== 'created') throw new StocktakeNotOpenError(params.stocktakeNo, st.state);
+      ctx.appendEvent(WMS_EVENT_TYPES.stocktakeStateChanged, {
+        stocktakeId: st.id,
+        stocktakeNo: st.stocktakeNo,
+        from: st.state,
+        to: 'canceled',
+      });
+      ws.sync();
+      return { stocktakeNo: st.stocktakeNo, state: 'canceled' as const };
+    },
+  };
+
+  const stocktakeQuery: ToolDefinition<{ stocktakeNo?: string }> = {
+    id: 'wms.stocktake.query',
+    label: '查询盘点单',
+    description:
+      '查询盘点单。不给 stocktakeNo 返回全部盘点单清单（单号、状态、范围、进度=已盘行数/总行数）；给 stocktakeNo 返回单张明细：逐行 SKU×库位×批次的账面快照 expectedQty（创建时点）、实盘数 countedQty（未盘为 null）、当前账面 bookQty 与差异 delta（实盘 − 当前账面；未盘为 null）。',
+    permission: 'read',
+    parameters: {
+      type: 'object',
+      properties: {
+        stocktakeNo: { type: 'string', description: '盘点单号（可选，缺省列出全部）' },
+      },
+      required: [],
+    },
+    handler: (params, ctx) => {
+      const ws = resolveWorkspace(ctx.workspaceId);
+      ws.sync();
+      const scopeOf = (locationIds: string[] | null): string[] | '全场' =>
+        locationIds ? locationIds.map((id) => codeOfLocation(ws, id)) : '全场';
+
+      if (!params.stocktakeNo) {
+        return ws.stocktakes.list().map((st) => {
+          const stats = ws.stocktakes.stats(st.id);
+          return {
+            stocktakeNo: st.stocktakeNo,
+            state: st.state,
+            scope: scopeOf(st.locationIds),
+            note: st.note,
+            createdAt: st.createdAt,
+            lineCount: stats.lineCount,
+            countedCount: stats.countedCount,
+          };
+        });
+      }
+      const st = ws.stocktakes.byNo(params.stocktakeNo);
+      if (!st) throw new StocktakeNotFoundError(params.stocktakeNo);
+      const stats = ws.stocktakes.stats(st.id);
+      // 明细按 (skuCode, 库位, 批次) 稳定排序（投影行序是 uuid 序，不面向展示）
+      const lines = ws.stocktakes
+        .lines(st.id)
+        .map((l) => {
+          const bookQty = ws.inventory.quantityOf(l.skuId, l.locationId, l.batchNo);
+          return {
+            skuCode: ws.skus.byId(l.skuId)?.skuCode ?? l.skuId,
+            locationCode: codeOfLocation(ws, l.locationId),
+            batchNo: l.batchNo,
+            expectedQty: l.expectedQty,
+            countedQty: l.countedQty,
+            bookQty,
+            delta: l.countedQty === null ? null : l.countedQty - bookQty,
+          };
+        })
+        .sort(
+          (a, b) =>
+            a.skuCode.localeCompare(b.skuCode) ||
+            a.locationCode.localeCompare(b.locationCode) ||
+            a.batchNo.localeCompare(b.batchNo),
+        );
+      return {
+        stocktakeNo: st.stocktakeNo,
+        state: st.state,
+        scope: scopeOf(st.locationIds),
+        note: st.note,
+        createdAt: st.createdAt,
+        lineCount: stats.lineCount,
+        countedCount: stats.countedCount,
+        lines,
+      };
+    },
+  };
+
   return [
     def(skuCreate),
     def(skuUpdate),
+    def(skuResolve),
     def(locationCreate),
     def(locationList),
     def(orderCreate),
@@ -915,6 +1301,11 @@ export function createWmsTools(
     def(inventoryMove),
     def(inventoryQuery),
     def(inventoryExpiring),
+    def(stocktakeCreate),
+    def(stocktakeCount),
+    def(stocktakeClose),
+    def(stocktakeCancel),
+    def(stocktakeQuery),
   ];
 }
 
@@ -922,4 +1313,10 @@ export function createWmsTools(
 function generateOrderNo(direction: OrderDirection): string {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   return `${direction === 'in' ? 'IN' : 'OUT'}-${date}-${randomUUID().slice(0, 8)}`;
+}
+
+/** 盘点单号：ST-20261105-a1b2c3d4（ST + 日期 + uuid 片段；与单号生成同模式） */
+function generateStocktakeNo(): string {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  return `ST-${date}-${randomUUID().slice(0, 8)}`;
 }

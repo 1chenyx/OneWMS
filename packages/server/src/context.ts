@@ -3,6 +3,8 @@ import { WmsDomain, type WmsWorkspace } from '@one/wms';
 import {
   AI_MODULE_ID,
   aiModuleManifest,
+  createVercelLlmProvider,
+  resolveLanguageModel,
   type AiProviderConfig,
   type LlmProvider,
 } from '@one/ai';
@@ -11,23 +13,38 @@ import {
  * 宿主装配（AppContext）——把内核/领域/AI 组合成一个进程级单例。
  *
  * 只做组装，不认识 HTTP：任何宿主（Node 进程、未来 Tauri sidecar）都可复用。
- * AI provider 由调用方注入（进程入口读 env 构建；测试注入 mock）——
+ * AI provider 由调用方注入（进程入口读 env / 配置文件构建；测试注入 mock）——
  * 未注入时 /api/chat 返回 503，其余功能不受影响（§9.2 AI 可选）。
  *
  * M16：不再启动时固化单个 agent——chat 路由按消息读 AgentDefinition 现场
  * 装配（readAgentDefs + createAgentFromDef），助手定义改动经慢通道确认后
  * 下一轮对话即生效。此处保留 provider（进程级模型通道）与 aiConfig
  * （per-agent 模型覆盖时现场重建轻量 provider 的原料）。
+ *
+ * M17（AI 模型配置页）：provider/aiConfig 不再启动即固化——applyAiConfig
+ * 保存后现场重建（无需重启进程），chat 路由每条消息读的都是当前值。
  */
+
+/** 当前生效 AI 配置的来源（状态卡的「真相面」） */
+export type AiConfigSource = 'file' | 'env' | 'none';
+
 export interface AppContext {
   readonly core: OneCore;
   readonly ws: WmsWorkspace;
   /** 工作区边界（同步组 = 同 workspaceId，M5 同步的握手校验位） */
   readonly workspaceId: string;
-  /** 进程级 LLM 通道（未配置 AI 时 undefined——/api/chat 503） */
-  readonly provider: LlmProvider | undefined;
+  /** 进程级 LLM 通道（未配置 AI 时 undefined——/api/chat 503；页面保存后热替换） */
+  provider: LlmProvider | undefined;
   /** 进程级 AI 配置（模型覆盖的重建原料；与 provider 同生同灭） */
-  readonly aiConfig: AiProviderConfig | undefined;
+  aiConfig: AiProviderConfig | undefined;
+  /** 生效配置来源：file = 配置页保存（优先）/ env = 启动环境变量 / none = 未配置 */
+  aiConfigSource: AiConfigSource;
+  /** 配置文件持久化位（null = 宿主无落盘位，如 :memory:——页面保存仅进程内生效） */
+  readonly aiConfigPath: string | null;
+  /** 启动时的 env 配置（配置页「关闭 AI」删除文件后的回落面） */
+  readonly aiConfigEnv: AiProviderConfig | undefined;
+  /** 热更新：重建 provider + 切换来源（config=undefined 即关闭 AI） */
+  applyAiConfig(config: AiProviderConfig | undefined, source: AiConfigSource): void;
   close(): void;
 }
 
@@ -36,6 +53,12 @@ export function createAppContext(options: {
   workspaceId: string;
   provider?: LlmProvider;
   aiConfig?: AiProviderConfig;
+  /** 缺省 null（测试宿主不落盘）；真实宿主传 resolveAiConfigPath(dbPath) */
+  aiConfigPath?: string | null;
+  /** 缺省按 aiConfig 推断（给了配置即视为 env 来源——与 M16 前语义兼容） */
+  aiConfigSource?: AiConfigSource;
+  /** 缺省 = aiConfig（启动注入即 env 面） */
+  aiConfigEnv?: AiProviderConfig;
 }): AppContext {
   const core = OneCore.open(options.dbPath);
   const ws = WmsDomain.attach(core).workspace(options.workspaceId);
@@ -46,12 +69,21 @@ export function createAppContext(options: {
   const aiManifest = aiModuleManifest();
   core.exposeModuleRegistry().registerManifest(aiManifest);
   ws.modules.install(aiManifest, { actor: `module:${AI_MODULE_ID}@${core.nodeId}` });
-  return {
+  const ctx: AppContext = {
     core,
     ws,
     workspaceId: options.workspaceId,
     provider: options.provider,
     aiConfig: options.aiConfig,
+    aiConfigSource: options.aiConfigSource ?? (options.aiConfig ? 'env' : 'none'),
+    aiConfigPath: options.aiConfigPath ?? null,
+    aiConfigEnv: options.aiConfigEnv ?? options.aiConfig,
+    applyAiConfig(config, source) {
+      ctx.provider = config ? createVercelLlmProvider(resolveLanguageModel(config)) : undefined;
+      ctx.aiConfig = config;
+      ctx.aiConfigSource = source;
+    },
     close: () => core.close(),
   };
+  return ctx;
 }

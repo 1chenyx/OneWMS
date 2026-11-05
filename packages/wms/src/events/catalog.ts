@@ -19,6 +19,9 @@ export const WMS_EVENT_TYPES = {
   orderCreated: 'wms.order.created',
   orderStateChanged: 'wms.order.state_changed',
   inventoryAdjusted: 'wms.inventory.adjusted',
+  stocktakeCreated: 'wms.stocktake.created',
+  stocktakeCounted: 'wms.stocktake.counted',
+  stocktakeStateChanged: 'wms.stocktake.state_changed',
 } as const;
 
 export type WmsEventType = (typeof WMS_EVENT_TYPES)[keyof typeof WMS_EVENT_TYPES];
@@ -50,6 +53,8 @@ export interface SkuCreatedPayload {
   readonly skuId: string;
   readonly skuCode: string;
   readonly name: string;
+  /** 条码（M18，可选）：扫码枪识读用（EAN/Code128 等）；同库唯一（NULL 互不冲突） */
+  readonly barcode?: string;
   /** 字段注册表驱动的扩展字段（§5.2：核心列固定 + ext_data JSON 列） */
   readonly extData?: Record<string, unknown>;
 }
@@ -58,6 +63,8 @@ export interface SkuUpdatedPayload {
   readonly skuId: string;
   readonly skuCode: string;
   readonly name?: string;
+  /** 条码（M18，可选）：显式传才改（未传保持不变——与 name/extData 同一 LWW 语义） */
+  readonly barcode?: string;
   readonly extData?: Record<string, unknown>;
 }
 
@@ -110,4 +117,47 @@ export interface InventoryAdjustedPayload {
   readonly batchExpiryDate?: string;
   readonly orderId?: string;
   readonly orderNo?: string;
+}
+
+// ── 盘点（M17）payload ─────────────────────────────────────────
+
+/**
+ * 盘点单诞生（M17）。范围是库位 id 列表：null = 全场盘点。
+ * 事件只携带范围声明，不携带账面快照——账面行由投影在应用本事件时
+ * 查库存汇总现值生成（事件是事实，快照是派生缓存，禁冗余）。
+ */
+export interface StocktakeCreatedPayload {
+  readonly stocktakeId: string;
+  readonly stocktakeNo: string;
+  /** 盘点范围：库位 id 列表；null = 全场（所有库位含 DEFAULT 虚拟桶） */
+  readonly locationIds: string[] | null;
+  readonly note?: string;
+}
+
+/**
+ * 一个桶的实盘数（M17）。同桶重盘 = 再落一条 counted 事件，投影 upsert 覆盖
+ * （后到者胜，全序重放天然收敛）。countedQty 允许 0（盘亏到零）。
+ */
+export interface StocktakeCountedPayload {
+  readonly stocktakeId: string;
+  readonly stocktakeNo: string;
+  readonly skuId: string;
+  readonly skuCode: string;
+  readonly locationId: string;
+  readonly locationCode: string;
+  readonly batchNo: string;
+  readonly countedQty: number;
+}
+
+/**
+ * 盘点单生命周期（M17）：created → closed / canceled。
+ * 固定语义词汇（不进 Profile workflows）——盘点的生命周期不因配置而变；
+ * 差异调整不落新事件类型：close 发的就是普通 inventory.adjusted
+ * （reason: stocktake:{单号}），与单据联动共用同一条流水通道。
+ */
+export interface StocktakeStateChangedPayload {
+  readonly stocktakeId: string;
+  readonly stocktakeNo: string;
+  readonly from: string;
+  readonly to: string;
 }

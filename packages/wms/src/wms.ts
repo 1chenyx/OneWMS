@@ -16,6 +16,7 @@ import { SkuView } from './views/sku-view.js';
 import { LocationView } from './views/location-view.js';
 import { OrderView } from './views/order-view.js';
 import { InventoryView } from './views/inventory-view.js';
+import { StocktakeView } from './views/stocktake-view.js';
 import { createWmsTools } from './tools/wms-tools.js';
 import { isWmsEventType } from './events/catalog.js';
 import { ORDER_TRANSITIONS } from './state/order-state-machine.js';
@@ -87,11 +88,12 @@ export class WmsWorkspace {
   readonly profile: ProfileView;
   readonly modules: ModulesView;
 
-  /** 领域四投影 */
+  /** 领域五投影 */
   readonly skus: SkuView;
   readonly locations: LocationView;
   readonly orders: OrderView;
   readonly inventory: InventoryView;
+  readonly stocktakes: StocktakeView;
 
   readonly #facade: WorkspaceFacade;
   readonly #db: Database.Database;
@@ -111,6 +113,9 @@ export class WmsWorkspace {
     this.locations = new LocationView(db, workspaceId);
     this.orders = new OrderView(db, workspaceId);
     this.inventory = new InventoryView(db, workspaceId);
+    // 盘点投影引用库存投影（created 事件生成账面快照行的数据源）——
+    // 同一追账循环里 inventory 先应用、stocktake 后应用，快照时点恒一致
+    this.stocktakes = new StocktakeView(db, workspaceId, this.inventory);
     this.sync();
     this.#installBaseModule(manifest);
   }
@@ -142,6 +147,7 @@ export class WmsWorkspace {
           this.locations.applyEvent(env);
           this.orders.applyEvent(env);
           this.inventory.applyEvent(env);
+          this.stocktakes.applyEvent(env);
           applied++;
         }
         this.#cursor = env.lamport;
@@ -164,6 +170,8 @@ export class WmsWorkspace {
       this.#db.prepare(`DELETE FROM wms_order_line WHERE workspace_id = ?`).run(wsId);
       this.#db.prepare(`DELETE FROM wms_inventory_ledger WHERE workspace_id = ?`).run(wsId);
       this.#db.prepare(`DELETE FROM wms_inventory WHERE workspace_id = ?`).run(wsId);
+      this.#db.prepare(`DELETE FROM wms_stocktake WHERE workspace_id = ?`).run(wsId);
+      this.#db.prepare(`DELETE FROM wms_stocktake_line WHERE workspace_id = ?`).run(wsId);
       this.#cursor = -1;
 
       let total = 0;
@@ -175,6 +183,7 @@ export class WmsWorkspace {
           this.locations.applyEvent(env);
           this.orders.applyEvent(env);
           this.inventory.applyEvent(env);
+          this.stocktakes.applyEvent(env);
           applied++;
         }
         this.#cursor = env.lamport;

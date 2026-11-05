@@ -119,7 +119,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         const errMsg =
           e instanceof ApiError && e.code === 'AI_NOT_CONFIGURED'
-            ? '未配置 AI 服务（需要在服务端设置 ONE_AI_MODEL 等环境变量）。'
+            ? '未配置 AI 服务——请在左侧「AI 模型」页面完成配置。'
             : e instanceof ApiError && e.code === 'AGENT_NOT_FOUND'
               ? '该助手不存在，可能定义已被修改——请重新选择助手。'
               : `请求失败：${e instanceof Error ? e.message : String(e)}`;

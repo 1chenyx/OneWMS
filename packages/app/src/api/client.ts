@@ -11,6 +11,8 @@ import type { ProfileSnapshot, Proposal, ProposalSummary } from '@one/core';
 export interface Sku {
   id: string;
   skuCode: string;
+  /** 条码（M18）：null = 未设置；同库唯一（扫码枪识读） */
+  barcode: string | null;
   name: string;
   extData: Record<string, unknown>;
   createdAt: string;
@@ -39,6 +41,62 @@ export interface InventoryRow {
   skuCode: string;
   name: string;
   quantity: number;
+}
+
+// ── 盘点（M17：范围勾选 / 清单进度 / 明细实盘）──────────
+
+/** 库位（GET /api/locations，与 @one/wms LocationRecord 同形；DEFAULT 虚拟桶不在列） */
+export interface Location {
+  id: string;
+  locationCode: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 盘点单清单行（GET /api/stocktakes；scope 是编码展示，'全场' = 全仓） */
+export interface Stocktake {
+  id: string;
+  stocktakeNo: string;
+  state: string;
+  locationIds: string[] | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  scope: string[] | '全场';
+  lineCount: number;
+  countedCount: number;
+}
+
+/** 盘点明细行：expectedQty 创建时点账面快照；bookQty 当前账面；delta 实盘 − 当前账面 */
+export interface StocktakeLine {
+  skuCode: string;
+  name: string;
+  locationCode: string;
+  batchNo: string;
+  expectedQty: number;
+  countedQty: number | null;
+  bookQty: number;
+  delta: number | null;
+}
+
+export type StocktakeDetail = Stocktake & { lines: StocktakeLine[] };
+
+/** wms.stocktake.close 响应：差异摘要（零差行不入列） */
+export interface StocktakeCloseResult {
+  stocktakeNo: string;
+  state: string;
+  totalLines: number;
+  adjustedLines: number;
+  adjustments: {
+    skuCode: string;
+    locationCode: string;
+    batchNo: string;
+    expectedQty: number;
+    countedQty: number;
+    bookQty: number;
+    delta: number;
+  }[];
 }
 
 // ── 效期看板（M14：临期分层预警；M15：库位明细 + 阈值 settings 化）──
@@ -142,6 +200,39 @@ export interface AgentCatalog {
   tools: { id: string; label: string; description: string; permission: 'read' | 'write' }[];
 }
 
+// ── AI 模型配置（M17：页面可配可测可关，保存即热生效）──────────
+
+/** 前端提交的配置体（apiKey 留空且接入方式与 Base URL 未变时，服务端沿用已保存密钥） */
+export interface AiConfigInput {
+  kind: 'openai-compatible' | 'ollama';
+  model: string;
+  baseUrl?: string;
+  apiKey?: string;
+}
+
+/** GET/PUT/DELETE /api/ai-config 响应：脱敏状态（apiKey 只报 apiKeySet 不回传明文） */
+export interface AiConfigStatus {
+  configured: boolean;
+  /** file = 页面配置（优先）/ env = 启动环境变量 / none = 未配置 */
+  source: 'file' | 'env' | 'none';
+  config?: {
+    kind: 'openai-compatible' | 'ollama';
+    model: string;
+    /** 生效端点（ollama 未填时回显本机缺省） */
+    baseUrl: string;
+    apiKeySet: boolean;
+  };
+}
+
+/** POST /api/ai-config/test 响应（200 包结果——测试失败不是请求失败） */
+export interface AiTestResult {
+  ok: boolean;
+  model: string;
+  latencyMs?: number;
+  reply?: string;
+  message?: string;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly code: string,
@@ -233,9 +324,21 @@ async function consumeSse(
 
 export const api = {
   // ── 管理界面（读直查投影 / 写走工具总线，见 ARCHITECTURE.md） ──
-  skus: () => request<Sku[]>('/api/skus'),
-  createSku: (body: { skuCode: string; name: string; extData?: Record<string, unknown> }) =>
-    request<{ skuId: string; skuCode: string; name: string }>('/api/skus', {
+  /** SKU 清单：q = 编码/名称/条码 模糊搜索（M18）；barcode = 条码精确匹配 */
+  skus: (query?: { q?: string; barcode?: string }) => {
+    const params = new URLSearchParams();
+    if (query?.q) params.set('q', query.q);
+    if (query?.barcode) params.set('barcode', query.barcode);
+    const qs = params.toString();
+    return request<Sku[]>(qs ? `/api/skus?${qs}` : '/api/skus');
+  },
+  createSku: (body: {
+    skuCode: string;
+    name: string;
+    barcode?: string;
+    extData?: Record<string, unknown>;
+  }) =>
+    request<{ skuId: string; skuCode: string; name: string; barcode?: string }>('/api/skus', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
@@ -263,6 +366,33 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  // ── 盘点（M17）──
+  locations: () => request<Location[]>('/api/locations'),
+  stocktakes: () => request<Stocktake[]>('/api/stocktakes'),
+  stocktakeDetail: (no: string) =>
+    request<StocktakeDetail>(`/api/stocktakes/${encodeURIComponent(no)}`),
+  createStocktake: (body: { locationCodes?: string[]; note?: string }) =>
+    request<{ stocktakeId: string; stocktakeNo: string; state: string; lineCount: number }>(
+      '/api/stocktakes',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  countStocktake: (
+    no: string,
+    body: { skuCode: string; locationCode?: string; batchNo?: string; countedQty: number },
+  ) =>
+    request<{ countedQty: number; expectedQty: number; bookQty: number }>(
+      `/api/stocktakes/${encodeURIComponent(no)}/count`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  closeStocktake: (no: string) =>
+    request<StocktakeCloseResult>(`/api/stocktakes/${encodeURIComponent(no)}/close`, {
+      method: 'POST',
+    }),
+  cancelStocktake: (no: string) =>
+    request<{ stocktakeNo: string; state: string }>(
+      `/api/stocktakes/${encodeURIComponent(no)}/cancel`,
+      { method: 'POST' },
+    ),
   profileSnapshot: () => request<ProfileSnapshot>('/api/profile/snapshot'),
   // ── 慢通道 ──
   proposals: () => request<ProposalSummary[]>('/api/proposals'),
@@ -300,5 +430,25 @@ export const api = {
     request<{ proposalId: string }>('/api/agents/propose', {
       method: 'POST',
       body: JSON.stringify({ agents, note }),
+    }),
+  // ── AI 模型配置（M17）──
+  /** 状态卡：configured/source + 脱敏配置（apiKey 不回传明文） */
+  aiConfig: () => request<AiConfigStatus>('/api/ai-config'),
+  /** 保存并热生效（写配置文件 + 重建 provider；响应即新状态） */
+  saveAiConfig: (body: AiConfigInput) =>
+    request<AiConfigStatus>('/api/ai-config', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  /** 关闭 AI（删页面配置；启动 env 配置仍在则回落 env） */
+  clearAiConfig: () =>
+    request<AiConfigStatus>('/api/ai-config', {
+      method: 'DELETE',
+    }),
+  /** 连通测试（body 缺省用当前生效配置打一轮最小补全） */
+  testAiConfig: (body?: AiConfigInput) =>
+    request<AiTestResult>('/api/ai-config/test', {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
     }),
 };

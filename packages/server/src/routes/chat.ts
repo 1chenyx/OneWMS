@@ -91,7 +91,7 @@ export function chatRoutes(ctx: AppContext): Hono {
       const base = ctx.provider;
       if (!base) {
         return c.json(
-          { code: 'AI_NOT_CONFIGURED', message: '未配置 AI（需设置 ONE_AI_MODEL 等环境变量）' },
+          { code: 'AI_NOT_CONFIGURED', message: '未配置 AI（在「AI 模型」页面配置，或设置 ONE_AI_MODEL 等环境变量）' },
           503,
         );
       }

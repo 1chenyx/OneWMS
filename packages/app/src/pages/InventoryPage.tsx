@@ -6,16 +6,21 @@ import { useAdjustInventory, useInventory, useSkus } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { InventoryRow } from '../api/client';
 import { useAppNav } from '../app-nav';
+import ScanInput from '../components/ScanInput';
 
 /**
  * 库存页：清单（流水汇总投影 + SKU 联查）+ 手工调整。
  * 调整走 wms.inventory.adjust 工具（库存不可为负的护栏在 handler）。
  * 注意：v1 单据状态流转不产生库存流水（二者解耦），库存从调整/期初录入开始。
  * AI 跳转携带的 skuCode 预填过滤框（M12 步骤4，挂载时一次性消费）。
+ * 扫码（M18）：扫条码（或编码）= 选中该 SKU 并打开调整弹窗（无库存行也照开，
+ * 余量显示 0——期初录入入口）。
  */
 export default function InventoryPage() {
+  const { message } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
   const { data: rows, isLoading } = useInventory();
+  const { data: skus } = useSkus();
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [preset, setPreset] = useState<InventoryRow | null>(null);
   const [keyword, setKeyword] = useState(() => takeInitialFilter()?.skuCode ?? '');
@@ -30,6 +35,19 @@ export default function InventoryPage() {
   const openAdjust = (row: InventoryRow | null) => {
     setPreset(row);
     setAdjustOpen(true);
+  };
+
+  const handleScan = (code: string) => {
+    // 条码优先，编码兜底（扫的可能是商品条码，手工输的可能是编码）
+    const sku = (skus ?? []).find((s) => s.barcode === code) ?? (skus ?? []).find((s) => s.skuCode === code);
+    if (!sku) {
+      message.warning(`没有条码/编码为 ${code} 的 SKU`);
+      return;
+    }
+    const row =
+      (rows ?? []).find((r) => r.skuCode === sku.skuCode) ??
+      ({ skuId: sku.id, skuCode: sku.skuCode, name: sku.name, quantity: 0 } as InventoryRow);
+    openAdjust(row);
   };
 
   const columns: ColumnsType<InventoryRow> = [
@@ -59,6 +77,7 @@ export default function InventoryPage() {
       title="库存"
       extra={
         <Space>
+          <ScanInput onScan={handleScan} />
           <Input
             allowClear
             placeholder="按编码/名称过滤"

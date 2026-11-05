@@ -14,6 +14,11 @@ export { SkuView, type SkuRecord } from './views/sku-view.js';
 export { LocationView, type LocationRecord } from './views/location-view.js';
 export { OrderView, type OrderRecord, type OrderLineRecord } from './views/order-view.js';
 export { InventoryView, type InventoryRecord, type LedgerRecord } from './views/inventory-view.js';
+export {
+  StocktakeView,
+  type StocktakeRecord,
+  type StocktakeLineRecord,
+} from './views/stocktake-view.js';
 
 export {
   ORDER_TRANSITIONS,
@@ -43,6 +48,9 @@ export type {
   OrderStateChangedPayload,
   OrderLinePayload,
   InventoryAdjustedPayload,
+  StocktakeCreatedPayload,
+  StocktakeCountedPayload,
+  StocktakeStateChangedPayload,
 } from './events/catalog.js';
 
 export { migrateWms } from './db/migrations.js';
@@ -53,6 +61,7 @@ export type { WmsSettings } from './tools/wms-tools.js';
 export {
   SkuAlreadyExistsError,
   SkuNotFoundError,
+  SkuBarcodeExistsError,
   OrderAlreadyExistsError,
   OrderNotFoundError,
   LocationAlreadyExistsError,
@@ -64,4 +73,9 @@ export {
   WorkflowNotFoundError,
   InsufficientStockError,
   OrderStateConflictError,
+  StocktakeNotFoundError,
+  StocktakeExistsError,
+  StocktakeNotOpenError,
+  StocktakeLinesUncountedError,
+  StocktakeScopeViolationError,
 } from './errors.js';

@@ -8,8 +8,13 @@ export function useProfileSnapshot() {
 
 // ── SKU ──────────────────────────────────────────────
 
-export function useSkus() {
-  return useQuery({ queryKey: ['skus'], queryFn: api.skus });
+/** SKU 清单（q = 编码/名称/条码 模糊搜索，M18；空串 = 全量）。queryKey 带 q，
+ *  搜索翻页互不串缓存；invalidateQueries({ queryKey: ['skus'] }) 前缀匹配仍全失效。 */
+export function useSkus(q?: string) {
+  return useQuery({
+    queryKey: ['skus', q ?? ''],
+    queryFn: () => api.skus(q ? { q } : undefined),
+  });
 }
 
 export function useCreateSku() {
@@ -69,6 +74,77 @@ export function useAdjustInventory() {
 /** 全仓批次分层清单（切页挂载即刷新；调整/出入库后由对应 mutation 失效重取） */
 export function useExpiryBoard() {
   return useQuery({ queryKey: ['expiry-board'], queryFn: api.expiryBoard });
+}
+
+// ── 盘点（M17）────────────────────────────────────────
+
+/** 实体库位清单（盘点范围勾选的数据源；DEFAULT 虚拟桶不在列） */
+export function useLocations() {
+  return useQuery({ queryKey: ['locations'], queryFn: api.locations });
+}
+
+export function useStocktakes() {
+  return useQuery({ queryKey: ['stocktakes'], queryFn: api.stocktakes });
+}
+
+export function useStocktakeDetail(no: string | null) {
+  return useQuery({
+    queryKey: ['stocktake', no],
+    queryFn: () => api.stocktakeDetail(no!),
+    enabled: no !== null,
+  });
+}
+
+/** 录实盘只动盘点投影——失效清单与当前明细即可 */
+function useInvalidateStocktakeLines() {
+  const qc = useQueryClient();
+  return () => {
+    void qc.invalidateQueries({ queryKey: ['stocktakes'] });
+    void qc.invalidateQueries({ queryKey: ['stocktake'] });
+  };
+}
+
+/** 关单/取消会改状态；关单还落库存调整 → 库存与效期看板一并失效 */
+function useInvalidateStocktakeLifecycle() {
+  const qc = useQueryClient();
+  return () => {
+    void qc.invalidateQueries({ queryKey: ['stocktakes'] });
+    void qc.invalidateQueries({ queryKey: ['stocktake'] });
+    void qc.invalidateQueries({ queryKey: ['inventory'] });
+    void qc.invalidateQueries({ queryKey: ['expiry-board'] });
+  };
+}
+
+export function useCreateStocktake() {
+  const invalidate = useInvalidateStocktakeLines();
+  return useMutation({ mutationFn: api.createStocktake, onSuccess: invalidate });
+}
+
+export function useCountStocktake() {
+  const invalidate = useInvalidateStocktakeLines();
+  return useMutation({
+    mutationFn: (params: {
+      no: string;
+      body: { skuCode: string; locationCode?: string; batchNo?: string; countedQty: number };
+    }) => api.countStocktake(params.no, params.body),
+    onSuccess: invalidate,
+  });
+}
+
+export function useCloseStocktake() {
+  const invalidate = useInvalidateStocktakeLifecycle();
+  return useMutation({
+    mutationFn: (no: string) => api.closeStocktake(no),
+    onSuccess: invalidate,
+  });
+}
+
+export function useCancelStocktake() {
+  const invalidate = useInvalidateStocktakeLifecycle();
+  return useMutation({
+    mutationFn: (no: string) => api.cancelStocktake(no),
+    onSuccess: invalidate,
+  });
 }
 
 // ── 慢通道 ───────────────────────────────────────────
@@ -138,4 +214,31 @@ export function useMigrationImport() {
       void qc.invalidateQueries({ queryKey: ['profile'] });
     },
   });
+}
+
+// ── AI 模型配置（M17）──────────────────────────────────
+
+/** 状态卡（切页挂载即刷新；保存/关闭后由 mutation 失效重取） */
+export function useAiConfig() {
+  return useQuery({ queryKey: ['ai-config'], queryFn: api.aiConfig });
+}
+
+function useInvalidateAiConfig() {
+  const qc = useQueryClient();
+  return () => qc.invalidateQueries({ queryKey: ['ai-config'] });
+}
+
+export function useSaveAiConfig() {
+  const invalidate = useInvalidateAiConfig();
+  return useMutation({ mutationFn: api.saveAiConfig, onSuccess: invalidate });
+}
+
+export function useClearAiConfig() {
+  const invalidate = useInvalidateAiConfig();
+  return useMutation({ mutationFn: api.clearAiConfig, onSuccess: invalidate });
+}
+
+/** 连通测试不改变服务端状态——无需失效缓存 */
+export function useTestAiConfig() {
+  return useMutation({ mutationFn: api.testAiConfig });
 }

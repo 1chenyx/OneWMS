@@ -40,9 +40,11 @@ export default function SkuFormModal({ open, onClose }: { open: boolean; onClose
       }
     }
     try {
+      const barcode = (values.barcode as string | undefined)?.trim();
       await create.mutateAsync({
         skuCode: values.skuCode as string,
         name: values.name as string,
+        barcode: barcode || undefined,
         extData: Object.keys(extData).length ? extData : undefined,
       });
       message.success(`SKU ${values.skuCode} 已创建`);
@@ -67,6 +69,9 @@ export default function SkuFormModal({ open, onClose }: { open: boolean; onClose
         </Form.Item>
         <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
           <Input />
+        </Form.Item>
+        <Form.Item name="barcode" label="条码（可选，扫码枪识读用；同库唯一）">
+          <Input placeholder="如 6901234567892（可用扫码枪扫入）" />
         </Form.Item>
         {extensions.map((ext) => (
           <Form.Item key={ext.key} name={ext.key} label={ext.label} valuePropName={ext.type === 'boolean' ? 'checked' : 'value'}>

@@ -14,15 +14,15 @@ import { DEFAULT_BATCH_NO, DEFAULT_LOCATION_ID } from '../events/catalog.js';
  */
 export function migrateWms(db: SqliteDatabase): void {
   db.transaction(() => {
-    // ── M11 老库收敛：流水表缺 batch_no 列 = M10 及以前结构 ──
-    // 六张投影表全是 oplog 的缓存（事件是唯一真相）——检测到旧结构即整组 DROP，
-    // 由 WmsWorkspace 构造期 sync()（cursor = -1 全量追账）重建；老事件无批次 →
-    // 投影兜底 DEFAULT 批次。必须整组 DROP：applyEvent 有幂等早退（orderCreated 见单
-    // 已存在即 return），单丢一张表会让兄弟表永远不重建。M9 结构（location_id 与
-    // batch_no 皆缺）同样命中本检测——一道检测覆盖 M9→M11、M10→M11 两条升级路径。
-    // 内核 oplog 本函数不碰——那是唯一不可丢的真相。
-    const ledgerCols = db.pragma('table_info(wms_inventory_ledger)') as { name: string }[];
-    if (ledgerCols.length > 0 && !ledgerCols.some((c) => c.name === 'batch_no')) {
+    // ── 老库收敛（投影整组 DROP 重建）──
+    // 八张投影表全是 oplog 的缓存（事件是唯一真相）——检测到旧结构即整组 DROP，
+    // 由 WmsWorkspace 构造期 sync()（cursor = -1 全量追账）重建。必须整组 DROP：
+    // applyEvent 有幂等早退（orderCreated 见单已存在即 return），单丢一张表会让
+    // 兄弟表永远不重建。内核 oplog 本函数不碰——那是唯一不可丢的真相。
+    // 两道检测覆盖三条升级路径（M9→M11 / M10→M11 / ≤M17→M18），任一命中即重建：
+    //  1. 流水表缺 batch_no 列 = M10 及以前结构（M9 结构同样命中——两列皆缺）；
+    //  2. wms_sku 缺 barcode 列 = M17 及以前结构（M18 条码管理）。
+    const dropAll = () => {
       db.exec(`
         DROP TABLE IF EXISTS wms_sku;
         DROP TABLE IF EXISTS wms_location;
@@ -30,20 +30,34 @@ export function migrateWms(db: SqliteDatabase): void {
         DROP TABLE IF EXISTS wms_order_line;
         DROP TABLE IF EXISTS wms_inventory_ledger;
         DROP TABLE IF EXISTS wms_inventory;
+        DROP TABLE IF EXISTS wms_stocktake;
+        DROP TABLE IF EXISTS wms_stocktake_line;
       `);
+    };
+    const ledgerCols = db.pragma('table_info(wms_inventory_ledger)') as { name: string }[];
+    if (ledgerCols.length > 0 && !ledgerCols.some((c) => c.name === 'batch_no')) {
+      dropAll();
+    }
+    const skuCols = db.pragma('table_info(wms_sku)') as { name: string }[];
+    if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'barcode')) {
+      dropAll();
     }
 
-    // ── SKU 主数据（业务键：workspace + sku_code）──
+    // ── SKU 主数据（业务键：workspace + sku_code；M18 加 barcode 条码列——
+    //    同库唯一：扫码枪识读的物理标识不允许二义；SQLite 中多行 NULL 不冲突，
+    //    无条码的 SKU 互不影响）──
     db.exec(`
       CREATE TABLE IF NOT EXISTS wms_sku (
         id           TEXT NOT NULL PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         sku_code     TEXT NOT NULL,
+        barcode      TEXT,
         name         TEXT NOT NULL,
         ext_data     TEXT NOT NULL DEFAULT '{}',
         created_at   TEXT NOT NULL,
         updated_at   TEXT NOT NULL,
-        UNIQUE (workspace_id, sku_code)
+        UNIQUE (workspace_id, sku_code),
+        UNIQUE (workspace_id, barcode)
       );
       CREATE INDEX IF NOT EXISTS idx_wms_sku_ws ON wms_sku (workspace_id);
     `);
@@ -126,6 +140,44 @@ export function migrateWms(db: SqliteDatabase): void {
         quantity     INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (workspace_id, sku_id, location_id, batch_no)
       );
+    `);
+
+    // ── 盘点单主表（M17，业务键：workspace + stocktake_no）──
+    //    location_ids 是范围声明（JSON 库位 id 数组；NULL = 全场）——真相在
+    //    事件，列是投影冗余；state 是固定生命周期词汇 created/closed/canceled。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_stocktake (
+        id            TEXT NOT NULL PRIMARY KEY,
+        workspace_id  TEXT NOT NULL,
+        stocktake_no  TEXT NOT NULL,
+        state         TEXT NOT NULL,
+        location_ids  TEXT,
+        note          TEXT,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        UNIQUE (workspace_id, stocktake_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_stocktake_ws ON wms_stocktake (workspace_id);
+    `);
+
+    // ── 盘点单行（M17）：一行 = 盘点单 + SKU + 库位 + 批次（桶）。
+    //    行 id 四段派生（重放幂等键 + 同桶重盘覆盖键）；expected_qty 是
+    //    applyEvent(created) 时点的账面快照（投影生成，不进事件）；counted_qty
+    //    NULL = 未盘；范围外新桶随 counted 事件补行（expected 取当时现值）。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_stocktake_line (
+        id            TEXT NOT NULL PRIMARY KEY,
+        workspace_id  TEXT NOT NULL,
+        stocktake_id  TEXT NOT NULL,
+        sku_id        TEXT NOT NULL,
+        location_id   TEXT NOT NULL,
+        batch_no      TEXT NOT NULL,
+        expected_qty  INTEGER NOT NULL,
+        counted_qty   INTEGER,
+        UNIQUE (workspace_id, stocktake_id, sku_id, location_id, batch_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_stocktake_line_st
+        ON wms_stocktake_line (workspace_id, stocktake_id);
     `);
   })();
 }

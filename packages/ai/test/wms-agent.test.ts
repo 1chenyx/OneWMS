@@ -123,6 +123,11 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
       'wms.order.transition',
       'wms.sku.create',
       'wms.sku.update',
+      'wms.stocktake.cancel',
+      'wms.stocktake.close',
+      'wms.stocktake.count',
+      'wms.stocktake.create',
+      'wms.stocktake.query',
     ]);
     // 默认 actor（无 nodeId 后缀）
     expect(agent.actor).toBe('ai:general');
