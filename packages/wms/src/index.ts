@@ -2,8 +2,8 @@
  * @one/wms —— 仓储领域包（里程碑 2：出入库 + 状态机 + 库存流水；M10：库位管理；M11：批次/效期）。
  *
  *  - WmsDomain / WmsWorkspace   领域装配与工作区门面（追账 / 重放）
- *  - SkuView / LocationView / OrderView / InventoryView   四个事件投影
- *  - wms.* 工具十件套           AI 与人机界面的共同通道（业务校验在 handler）
+ *  - SkuView / LocationView / OrderView / InventoryView / StocktakeView   五个事件投影
+ *  - wms.* 领域工具集           AI 与人机界面的共同通道（业务校验在 handler）
  *
  * 本包只 import @one/core 的公共 API（index.ts）——平台化口子纪律。
  * 本文件是本包公共 API 的唯一出口；分层规则见 docs/ARCHITECTURE.md。
@@ -13,7 +13,12 @@ export { WmsDomain, WmsWorkspace } from './wms.js';
 export { SkuView, type SkuRecord } from './views/sku-view.js';
 export { LocationView, type LocationRecord } from './views/location-view.js';
 export { OrderView, type OrderRecord, type OrderLineRecord } from './views/order-view.js';
-export { InventoryView, type InventoryRecord, type LedgerRecord } from './views/inventory-view.js';
+export {
+  InventoryView,
+  type InventoryRecord,
+  type LedgerRecord,
+  type HoldRecord,
+} from './views/inventory-view.js';
 export {
   StocktakeView,
   type StocktakeRecord,
@@ -48,6 +53,8 @@ export type {
   OrderStateChangedPayload,
   OrderLinePayload,
   InventoryAdjustedPayload,
+  InventoryHeldPayload,
+  InventoryReleasedPayload,
   StocktakeCreatedPayload,
   StocktakeCountedPayload,
   StocktakeStateChangedPayload,
@@ -55,8 +62,35 @@ export type {
 
 export { migrateWms } from './db/migrations.js';
 
-export { createWmsTools, readWmsSettings } from './tools/wms-tools.js';
-export type { WmsSettings } from './tools/wms-tools.js';
+export { createWmsTools } from './tools/wms-tools.js';
+export { readWmsSettings } from './config/wms-settings.js';
+export type { WmsSettings } from './config/wms-settings.js';
+
+export { listOrdersWithLines, withOrderLines } from './queries/order-queries.js';
+export type { OrderWithLines } from './queries/order-queries.js';
+export {
+  getExpiryBoard,
+  listHoldRows,
+  listInventorySummary,
+} from './queries/inventory-queries.js';
+export type {
+  ExpiryBatchRow,
+  ExpiryBoard,
+  ExpiryLevel,
+  HoldListRow,
+  InventorySummaryRow,
+} from './queries/inventory-queries.js';
+export {
+  getStocktakeDetail,
+  listStocktakeLineStates,
+  listStocktakes,
+  withStocktakeProgress,
+} from './queries/stocktake-queries.js';
+export type {
+  StocktakeDetail,
+  StocktakeLineState,
+  StocktakeWithProgress,
+} from './queries/stocktake-queries.js';
 
 export {
   SkuAlreadyExistsError,
@@ -72,6 +106,9 @@ export {
   InvalidTransitionError,
   WorkflowNotFoundError,
   InsufficientStockError,
+  StockHeldError,
+  HoldExceedsStockError,
+  HoldNotFoundError,
   OrderStateConflictError,
   StocktakeNotFoundError,
   StocktakeExistsError,

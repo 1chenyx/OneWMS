@@ -123,6 +123,39 @@ export class InsufficientStockError extends CoreError {
   }
 }
 
+// ── 冻结（M19）───────────────────────────────────────
+
+/**
+ * 冻结量不可出库（M19）：单据出库撞上活动冻结——SKU 级可用量 =
+ * 全库位合计余量 − 冻结合计。只拦单据出库（对齐 M13 过期拦截先例：
+ * 库存调整/移库/盘点修正是物理修正通道，不拦）。
+ */
+export class StockHeldError extends CoreError {
+  constructor(skuCode: string, requested: number, total: number, held: number) {
+    super(
+      'WMS_STOCK_HELD',
+      `SKU ${skuCode} 可用量不足：余量 ${total}，冻结 ${held}，可用 ${total - held}，需出库 ${requested}`,
+    );
+  }
+}
+
+/** 冻结量超过账面余量（M19：已冻结合计 + 本次 ≤ 全库位合计余量，fail-fast 挡荒谬冻结） */
+export class HoldExceedsStockError extends CoreError {
+  constructor(skuCode: string, quantity: number, total: number, held: number) {
+    super(
+      'WMS_HOLD_EXCEEDS_STOCK',
+      `SKU ${skuCode} 冻结超量：余量 ${total}，已冻结 ${held}，再冻 ${quantity} 超出账面`,
+    );
+  }
+}
+
+/** 冻结单不存在（M19：活动冻结里找不到该 holdId——从未创建或已释放） */
+export class HoldNotFoundError extends CoreError {
+  constructor(holdId: string) {
+    super('WMS_HOLD_NOT_FOUND', `冻结单不存在或已释放: ${holdId}`);
+  }
+}
+
 /**
  * 投影期状态冲突：state_changed 事件的 from 与投影当前态不匹配。
  * 唯一真冲突（§8.3）——v1 直接抛错停下；冲突队列 + 人工裁决是里程碑 5 的事。

@@ -45,6 +45,10 @@ export default function SkuFormModal({ open, onClose }: { open: boolean; onClose
         skuCode: values.skuCode as string,
         name: values.name as string,
         barcode: barcode || undefined,
+        reorderPoint:
+          typeof values.reorderPoint === 'number' && values.reorderPoint > 0
+            ? values.reorderPoint
+            : undefined,
         extData: Object.keys(extData).length ? extData : undefined,
       });
       message.success(`SKU ${values.skuCode} 已创建`);
@@ -72,6 +76,9 @@ export default function SkuFormModal({ open, onClose }: { open: boolean; onClose
         </Form.Item>
         <Form.Item name="barcode" label="条码（可选，扫码枪识读用；同库唯一）">
           <Input placeholder="如 6901234567892（可用扫码枪扫入）" />
+        </Form.Item>
+        <Form.Item name="reorderPoint" label="安全库存（可选，可用量低于此值预警；留空 = 不预警）">
+          <InputNumber style={{ width: '100%' }} min={0} precision={0} placeholder="如 50" />
         </Form.Item>
         {extensions.map((ext) => (
           <Form.Item key={ext.key} name={ext.key} label={ext.label} valuePropName={ext.type === 'boolean' ? 'checked' : 'value'}>

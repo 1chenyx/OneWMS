@@ -237,6 +237,12 @@ export class FieldRegistry {
     return row ? this.#toField(workspaceId, row) : undefined;
   }
 
+  /** 清空注册表投影；事件账本保持不变，供全量重放前调用。 */
+  clearProjection(workspaceId: string): void {
+    this.db.prepare(`DELETE FROM field_registry WHERE workspace_id = ?`).run(workspaceId);
+    this.db.prepare(`DELETE FROM field_usage WHERE workspace_id = ?`).run(workspaceId);
+  }
+
   // ─────────────────────────────────────────────────────────────
   // 事件投影：重放器与命令路径共用的唯一应用逻辑（§8 唯一真相）
   // ─────────────────────────────────────────────────────────────

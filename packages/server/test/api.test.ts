@@ -17,7 +17,11 @@ afterEach(() => {
 function scriptedProvider(turns: LlmTurnResponse[]): LlmProvider {
   let i = 0;
   return {
-    async completeTurn(_req: LlmTurnRequest) {
+    async completeTurn(req: LlmTurnRequest) {
+      // 记忆提取调用（turn-done 后台钩子）不消耗剧本轮次——直接返回空计划
+      if (req.system.includes('记忆提取器')) {
+        return { text: '{"save":[],"forget":[]}', toolCalls: [] };
+      }
       return turns[i++] ?? { text: '', toolCalls: [] };
     },
   };
@@ -71,7 +75,7 @@ describe('GET /api/health 与 /api/profile/snapshot', () => {
       schema: { entities: Record<string, { extensions: Array<{ key: string }> }> };
       workflows: Record<string, unknown>;
     };
-    expect(snap.version).toBe(2); // 种子 config.change（core.wms 流程）+ core.ai 模块登记（M16）
+    expect(snap.version).toBe(3); // 种子 config.change（core.wms 流程）+ core.ai（M16）+ core.memory 模块登记
     const keys = snap.schema.entities.sku!.extensions.map((f) => f.key).sort();
     expect(keys).toEqual(['category', 'spec', 'unit']);
     expect(Object.keys(snap.workflows).sort()).toEqual(['inbound', 'outbound']);
@@ -165,6 +169,10 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     ];
     const provider: LlmProvider = {
       async completeTurn(req) {
+        // 记忆提取调用不进剧本断言序列（requests[2] 必须是第二轮对话请求）
+        if (req.system.includes('记忆提取器')) {
+          return { text: '{"save":[],"forget":[]}', toolCalls: [] };
+        }
         // 快照 messages：编排层传入的是同一数组引用，调用后会继续 push（终态 assistant）
         requests.push({ ...req, messages: [...req.messages] });
         return turns[i++] ?? { text: '', toolCalls: [] };

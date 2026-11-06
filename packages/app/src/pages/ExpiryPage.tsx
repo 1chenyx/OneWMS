@@ -3,6 +3,8 @@ import { Card, Input, Select, Space, Statistic, Table, Tag, Typography } from 'a
 import type { ColumnsType } from 'antd/es/table';
 import { useExpiryBoard } from '../api/hooks';
 import { useAppNav } from '../app-nav';
+import PageHeader from '../components/PageHeader';
+import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
 import type { ExpiryBatchRow, ExpiryLevel } from '../api/client';
 
 /**
@@ -75,16 +77,25 @@ export default function ExpiryPage() {
       width: 110,
       render: (v: ExpiryLevel) => <Tag color={LEVEL_META[v].color}>{LEVEL_META[v].label}</Tag>,
     },
-    { title: '编码', dataIndex: 'skuCode', key: 'skuCode' },
+    { title: '编码', dataIndex: 'skuCode', key: 'skuCode', onCell: monoCell },
     { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '批次号', dataIndex: 'batchNo', key: 'batchNo' },
+    { title: '批次号', dataIndex: 'batchNo', key: 'batchNo', onCell: monoCell },
     { title: '效期', dataIndex: 'batchExpiryDate', key: 'batchExpiryDate' },
-    { title: '剩余天数', dataIndex: 'daysLeft', key: 'daysLeft', width: 120, render: (v: number | null) => <DaysLeft value={v} /> },
+    {
+      title: '剩余天数',
+      dataIndex: 'daysLeft',
+      key: 'daysLeft',
+      width: 120,
+      align: 'right',
+      onCell: numCell,
+      render: (v: number | null) => <DaysLeft value={v} />,
+    },
     {
       title: '余量',
       dataIndex: 'quantity',
       key: 'quantity',
       align: 'right',
+      onCell: numCell,
       render: (v: number) => <Typography.Text strong>{v}</Typography.Text>,
     },
     {
@@ -96,26 +107,12 @@ export default function ExpiryPage() {
   ];
 
   return (
-    <Space direction="vertical" size={16} style={{ display: 'flex' }}>
-      <Space size={16} wrap>
-        {LEVEL_ORDER.map((l) => (
-          <Card key={l} size="small" style={{ width: 168 }}>
-            <Statistic
-              title={LEVEL_META[l].label}
-              value={counts[l]}
-              suffix="批"
-              valueStyle={{ color: LEVEL_META[l].color }}
-            />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {LEVEL_HINT[l]}
-            </Typography.Text>
-          </Card>
-        ))}
-      </Space>
-      <Card
-        title={`批次效期清单（截至 ${data?.today ?? '…'}，按效期升序）`}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+      <PageHeader
+        title="效期看板"
+        subtitle={`临期分层预警（截至 ${data?.today ?? '…'}，按效期升序）`}
         extra={
-          <Space>
+          <>
             <Select<ExpiryLevel | 'all'>
               value={level}
               onChange={setLevel}
@@ -132,15 +129,31 @@ export default function ExpiryPage() {
               onChange={(e) => setKeyword(e.target.value)}
               style={{ width: 200 }}
             />
-          </Space>
+          </>
         }
-      >
+      />
+      <Space size={16} wrap>
+        {LEVEL_ORDER.map((l) => (
+          <Card key={l} size="small" style={{ width: 168 }}>
+            <Statistic
+              title={LEVEL_META[l].label}
+              value={counts[l]}
+              suffix="批"
+              valueStyle={{ color: LEVEL_META[l].color }}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {LEVEL_HINT[l]}
+            </Typography.Text>
+          </Card>
+        ))}
+      </Space>
+      <Card>
         <Table<ExpiryBatchRow>
           rowKey={(r) => `${r.skuId} ${r.batchNo}`}
           columns={columns}
           dataSource={visibleRows}
           loading={isLoading}
-          pagination={false}
+          pagination={TABLE_PAGINATION}
           locale={{ emptyText: '还没有批次库存（入库声明批次后出现）' }}
           expandable={{
             rowExpandable: (r) => r.buckets.length > 0,
@@ -149,12 +162,13 @@ export default function ExpiryPage() {
                 size="small"
                 rowKey={(b) => b.locationCode}
                 columns={[
-                  { title: '库位', dataIndex: 'locationCode', key: 'locationCode', width: 160 },
+                  { title: '库位', dataIndex: 'locationCode', key: 'locationCode', width: 160, onCell: monoCell },
                   {
                     title: '余量',
                     dataIndex: 'quantity',
                     key: 'quantity',
                     align: 'right',
+                    onCell: numCell,
                     render: (v: number) => <Typography.Text strong>{v}</Typography.Text>,
                   },
                 ]}
@@ -166,6 +180,6 @@ export default function ExpiryPage() {
           }}
         />
       </Card>
-    </Space>
+    </div>
   );
 }

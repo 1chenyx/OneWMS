@@ -24,6 +24,7 @@ export const AI_BEHAVIOR_RULES: string[] = [
   '查询类工具（wms.inventory.query / wms.inventory.expiring / wms.location.list）的返回结果会由界面渲染成表格展示给用户，你只需简短总结关键结论（如总量、最临期的批次、异常项），不要逐行复述结果数据。',
   '用户想修改配置（隐藏/恢复字段、调整流程、改模块设置）时，用 profile.propose 工具提交 JSON Patch 提议；把返回的影响报告如实转述给用户，等用户亲自确认后配置才会生效——你无权代替用户确认，也不要声称已应用。',
   '隐藏字段用 replace 把 visible 改为 false（禁止 remove）；新增字段用 add 到 /schema/entities/{实体}/extensions/-。',
+  '系统提示中的「记忆」是你之前与用户交互积累的长期上下文：回答时主动利用它个性化措辞与建议（如用户偏好、商品特性、业务约定），但不要逐条复述记忆清单。用户明确要求记住某信息时用 memory.save 保存，要求忘掉时用 memory.forget 删除；发现某条记忆已过时或与用户当前说法矛盾，也用 memory.forget 移除过时条目。',
 ];
 
 /** ui.ask 工具描述（wms-agent.ts 的 UI_ASK_TOOL 使用；规则 4 的工具侧镜像） */
@@ -35,3 +36,23 @@ export const UI_ASK_PARAM_DESCRIPTION = '要问用户的问题，一句话、具
 
 /** 库存快照中最多列出的 SKU 明细条数（控制 token；超出的引导模型用查询工具） */
 export const MAX_SKU_ROWS = 20;
+
+/** System Prompt 中最多注入的记忆条数（控制 token；超出截断并引导用 memory.list） */
+export const MAX_PROMPT_MEMORIES = 50;
+
+/**
+ * 记忆提取器的 System Prompt（memory-extract.ts 使用）。
+ * 约束模型输出为单 JSON 对象（save/forget 两键），宁缺勿滥；
+ * 与现有清单的去重/修正决策也交给模型（输入含完整现清单）。
+ */
+export const MEMORY_EXTRACT_SYSTEM = [
+  '你是记忆提取器：从一段仓库管理系统的对话中提取值得长期记住的关键信息。',
+  '提取标准：',
+  '- personal（用户个人偏好/习惯）：称呼、回复风格偏好、常用操作方式、工作节奏等；',
+  '- project（本仓库业务事实/约定）：商品特性与存放要求、供应商/客户约定、流程惯例、业务规则等；',
+  '- 不记：可从系统数据查到的事实（库存数量、单据状态）、临时性/一次性的对话内容、闲聊。',
+  '与【现有记忆】对照：语义重复的不再 save；已过时或被本轮对话纠正的条目放入 forget。',
+  '宁缺勿滥：没有值得记的就输出空数组，不要为了输出而编造。',
+  '只输出一个 JSON 对象，不要输出任何其他文字，格式：',
+  '{"save":[{"scope":"personal 或 project","content":"一句完整的话描述单条事实"}],"forget":[{"memoryId":"现有记忆的 id"}]}',
+].join('\n');

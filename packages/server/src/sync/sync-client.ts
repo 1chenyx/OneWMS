@@ -1,11 +1,14 @@
 import { computePullPlan, type EventEnvelope, type PullRange, type SyncHandshake } from '@one/core';
 import type { OneCore } from '@one/core';
 import type { WmsWorkspace } from '@one/wms';
+import type { MemoryWorkspace } from '@one/memory';
 
 /**
  * 同步客户端（宿主层传输编排，DESIGN §8.5 五步协议的 HTTP 落地）。
  * 一个回合 = 握手 → 校验同步组/自拉防护 → 计算计划 → 逐区间分页拉取 →
- * 幂等摄入 → accepted>0 时 replayAll 全量重建「内核+领域」两层投影。
+ * 幂等摄入 → accepted>0 时 replayAll 全量重建「内核+领域」两层投影
+ * （memory 可选传入时同步重建记忆投影——远端摄入的 memory.* 事件
+ * 不重建则记忆投影漏账）。
  * 双向同步 = 两个方向的回合（A 拉 B、B 拉 A），谁触发都收敛。
  */
 
@@ -36,6 +39,8 @@ export async function runSyncRound(params: {
   workspaceId: string;
   core: OneCore;
   ws: WmsWorkspace;
+  /** 记忆域工作区（可选——传入时同步回合重建记忆投影） */
+  memory?: MemoryWorkspace;
   fetchImpl?: FetchLike;
 }): Promise<SyncRoundResult> {
   const { peerBaseUrl, workspaceId, core, ws } = params;
@@ -98,6 +103,7 @@ export async function runSyncRound(params: {
   // ⑤ 摄入了新事件 → 全量重建两层投影（账本增量、投影全量的最保守实现）
   if (result.accepted > 0) {
     ws.replayAll();
+    params.memory?.replay(); // 记忆投影同步重建（不传则跳过——老调用方兼容）
     result.replayed = true;
     result.status = 'synced';
   }

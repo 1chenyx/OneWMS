@@ -1,22 +1,27 @@
 import type { WmsWorkspace } from '@one/wms';
-import { AI_BEHAVIOR_RULES, AI_IDENTITY, MAX_SKU_ROWS } from './prompts.js';
+import { AI_BEHAVIOR_RULES, AI_IDENTITY, MAX_PROMPT_MEMORIES, MAX_SKU_ROWS } from './prompts.js';
+import type { AgentMemoryRef } from './types.js';
 
 /**
  * System Prompt 组装（DESIGN.md §6.4 消费闭环 ② 的 v2，里程碑 4）。
  *
- * 段落结构：身份与行为规则（含慢通道规则）→ 当前配置（Profile 摘要）→
- * 库存快照 → 时间。静态文案集中管理在 prompts.ts（统一优化入口），
- * 本文件只负责把规则文案与运行时数据拼装。
+ * 段落结构：身份与行为规则（含慢通道规则）→ 记忆（长期上下文，可选）→
+ * 当前配置（Profile 摘要）→ 库存快照 → 时间。静态文案集中管理在
+ * prompts.ts（统一优化入口），本文件只负责把规则文案与运行时数据拼装。
  * 工具清单走 function calling 的 tools 参数（原生通道，
  * 不在 prompt 文本里重复）。
  *
  * Profile 摘要 = §6.4 闭环 ②：可见扩展字段、流程概要、模块开关——
  * 模型据此生成合法的配置 patch（字段键名、流程结构都来自这段上下文）。
  * 每次任务组装一次——快照新鲜度以任务为粒度。
+ *
+ * 记忆段（memories 可选）：personal=用户偏好、project=业务约定的积累
+ * 上下文，每条带 id（遗忘过时记忆需要）；超出 MAX_PROMPT_MEMORIES 截断
+ * 并引导用 memory.list 查询全量。
  */
 
 
-export function buildSystemPrompt(ws: WmsWorkspace): string {
+export function buildSystemPrompt(ws: WmsWorkspace, memories?: readonly AgentMemoryRef[]): string {
   const skus = ws.skus.list();
   // 库存按 SKU 聚合（M10：list() 是 SKU×库位 维度行，同 SKU 多行必须求和——
   // 此前 Map 直装会在多库位时静默丢桶）
@@ -31,6 +36,17 @@ export function buildSystemPrompt(ws: WmsWorkspace): string {
 
   const lines: string[] = [AI_IDENTITY, '', '行为规则：'];
   AI_BEHAVIOR_RULES.forEach((rule, i) => lines.push(`${i + 1}. ${rule}`));
+
+  // ── 记忆（长期上下文，可选注入）─────────────────────
+  if (memories && memories.length > 0) {
+    lines.push('', `记忆（${memories.length} 条，personal=用户偏好，project=业务约定；id 用于遗忘）：`);
+    for (const m of memories.slice(0, MAX_PROMPT_MEMORIES)) {
+      lines.push(`- ${m.id} [${m.scope}] ${m.content}`);
+    }
+    if (memories.length > MAX_PROMPT_MEMORIES) {
+      lines.push(`（仅列前 ${MAX_PROMPT_MEMORIES} 条，其余用 memory.list 工具获取）`);
+    }
+  }
 
   // ── Profile 摘要（§6.4 闭环 ②）──────────────────────
   const profile = ws.profile.getSnapshot();

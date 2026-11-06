@@ -5,7 +5,8 @@
     "paths": {
       "@one/core": ["../core/dist/index.js"],
       "@one/wms": ["../wms/dist/index.js"],
-      "@one/ai": ["../ai/dist/index.js"]
+      "@one/ai": ["../ai/dist/index.js"],
+      "@one/memory": ["../memory/dist/index.js"]
     }
   },
   "include": ["src/**/*.ts"]

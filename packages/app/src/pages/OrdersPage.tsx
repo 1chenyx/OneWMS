@@ -1,22 +1,27 @@
 import { useState } from 'react';
-import { PlusOutlined } from '@ant-design/icons';
-import { App as AntApp, Button, Card, Input, Popconfirm, Segmented, Space, Table, Tag, Typography } from 'antd';
+import { DownOutlined, PlusOutlined } from '@ant-design/icons';
+import { App as AntApp, Button, Card, Dropdown, Input, Segmented, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ProfileSnapshot } from '@one/core';
 import { useOrders, useProfileSnapshot, useTransitionOrder } from '../api/hooks';
 import { ApiError } from '../api/client';
-import type { Order } from '../api/client';
+import type { Order, OrderLine } from '../api/client';
 import OrderFormModal from '../components/OrderFormModal';
+import PageHeader from '../components/PageHeader';
+import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
 import { useAppNav } from '../app-nav';
 
 /**
  * 单据管理页——流转按钮由 Profile workflows 驱动（UI 消费配置面）：
  * 候选目标状态 = workflows[inbound|outbound].transitions.filter(from === 当前态)。
  * 行为权威仍是服务端状态机：非法转移被 400 WMS_INVALID_TRANSITION 兜底。
+ * P1 表格规范：单号等宽列；明细收进展开行（主表只留主干）；流转按钮收进
+ * Dropdown（点选目标态 → modal.confirm 二次确认——出入库动库存，不裸点）；
+ * 客户端分页。
  * AI 跳转携带的 orderNo 预填过滤框（M12 步骤4，挂载时一次性消费）。
  */
 export default function OrdersPage() {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
   const [direction, setDirection] = useState<'all' | 'in' | 'out'>('all');
   const { data: orders, isLoading } = useOrders(direction === 'all' ? undefined : direction);
@@ -40,7 +45,7 @@ export default function OrdersPage() {
   };
 
   const columns: ColumnsType<Order> = [
-    { title: '单号', dataIndex: 'orderNo', key: 'orderNo' },
+    { title: '单号', dataIndex: 'orderNo', key: 'orderNo', onCell: monoCell },
     {
       title: '方向',
       dataIndex: 'direction',
@@ -62,15 +67,6 @@ export default function OrdersPage() {
         return <Tag color={v === 'done' ? 'green' : v === 'canceled' ? 'default' : 'processing'}>{label}</Tag>;
       },
     },
-    {
-      title: '明细',
-      key: 'lines',
-      render: (_, r) => (
-        <Typography.Text type="secondary">
-          {r.lines.map((l) => `${l.skuCode}×${l.quantity}`).join('；')}
-        </Typography.Text>
-      ),
-    },
     { title: '备注', dataIndex: 'note', key: 'note', render: (v: string | null) => v ?? '-' },
     {
       title: '创建时间',
@@ -82,65 +78,102 @@ export default function OrdersPage() {
     {
       title: '流转',
       key: 'actions',
+      width: 96,
       render: (_, r) => {
         const nexts = nextStates(snapshot.data, r.direction, r.state);
         if (nexts.length === 0) return <Typography.Text type="secondary">—</Typography.Text>;
         return (
-          <Space size="small" wrap>
-            {nexts.map((to) => (
-              <Popconfirm
-                key={to}
-                title={`确认流转到「${stateLabel(snapshot.data, to, r.direction)}」？`}
-                onConfirm={() => doTransition(r.orderNo, to)}
-              >
-                <Button size="small" loading={transition.isPending && transition.variables?.orderNo === r.orderNo}>
-                  {stateLabel(snapshot.data, to, r.direction)}
-                </Button>
-              </Popconfirm>
-            ))}
-          </Space>
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: nexts.map((to) => ({
+                key: to,
+                label: stateLabel(snapshot.data, to, r.direction),
+              })),
+              onClick: ({ key }) =>
+                modal.confirm({
+                  title: `确认流转到「${stateLabel(snapshot.data, key, r.direction)}」？`,
+                  onOk: () => doTransition(r.orderNo, key),
+                }),
+            }}
+          >
+            <Button
+              size="small"
+              loading={transition.isPending && transition.variables?.orderNo === r.orderNo}
+            >
+              流转 <DownOutlined />
+            </Button>
+          </Dropdown>
         );
       },
     },
   ];
 
   return (
-    <Card
-      title="出入库单"
-      extra={
-        <Space>
-          <Segmented
-            value={direction}
-            onChange={(v) => setDirection(v as 'all' | 'in' | 'out')}
-            options={[
-              { value: 'all', label: '全部' },
-              { value: 'in', label: '入库' },
-              { value: 'out', label: '出库' },
-            ]}
-          />
-          <Input
-            allowClear
-            placeholder="按单号过滤"
-            value={orderNoFilter}
-            onChange={(e) => setOrderNoFilter(e.target.value)}
-            style={{ width: 180 }}
-          />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setFormOpen(true)}>
-            新建单据
-          </Button>
-        </Space>
-      }
-    >
-      <Table<Order>
-        rowKey="id"
-        columns={columns}
-        dataSource={visibleOrders}
-        loading={isLoading}
-        pagination={false}
-        locale={{ emptyText: '还没有单据' }}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+      <PageHeader
+        title="出入库单"
+        subtitle="单据与流转；流转按钮由配置层流程定义驱动"
+        extra={
+          <>
+            <Segmented
+              value={direction}
+              onChange={(v) => setDirection(v as 'all' | 'in' | 'out')}
+              options={[
+                { value: 'all', label: '全部' },
+                { value: 'in', label: '入库' },
+                { value: 'out', label: '出库' },
+              ]}
+            />
+            <Input
+              allowClear
+              placeholder="按单号过滤"
+              value={orderNoFilter}
+              onChange={(e) => setOrderNoFilter(e.target.value)}
+              style={{ width: 180 }}
+            />
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setFormOpen(true)}>
+              新建单据
+            </Button>
+          </>
+        }
       />
-      <OrderFormModal open={formOpen} onClose={() => setFormOpen(false)} />
-    </Card>
+      <Card>
+        <Table<Order>
+          rowKey="id"
+          columns={columns}
+          dataSource={visibleOrders}
+          loading={isLoading}
+          pagination={TABLE_PAGINATION}
+          locale={{ emptyText: '还没有单据' }}
+          expandable={{
+            rowExpandable: (r) => r.lines.length > 0,
+            expandedRowRender: (r) => (
+              <Table<OrderLine>
+                size="small"
+                rowKey={(l, i) => `${l.skuCode}#${i}`}
+                columns={[
+                  { title: 'SKU', dataIndex: 'skuCode', key: 'skuCode', width: 180, onCell: monoCell },
+                  { title: '名称', dataIndex: 'name', key: 'name' },
+                  {
+                    title: '数量',
+                    dataIndex: 'quantity',
+                    key: 'quantity',
+                    align: 'right',
+                    width: 120,
+                    onCell: numCell,
+                  },
+                ]}
+                dataSource={r.lines}
+                pagination={false}
+                style={{ maxWidth: 420 }}
+              />
+            ),
+          }}
+        />
+        <OrderFormModal open={formOpen} onClose={() => setFormOpen(false)} />
+      </Card>
+    </div>
   );
 }
 

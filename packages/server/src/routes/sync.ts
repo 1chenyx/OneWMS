@@ -53,6 +53,7 @@ export function syncRoutes(ctx: AppContext): Hono {
               workspaceId: ctx.workspaceId,
               core: ctx.core,
               ws: ctx.ws,
+              memory: ctx.memory,
             }),
           );
         } catch (err) {

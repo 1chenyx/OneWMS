@@ -3,7 +3,7 @@ import { runAgent, streamAgent, type AgentRunResult, type AgentStreamEvent, type
 import { UI_ASK_DESCRIPTION, UI_ASK_PARAM_DESCRIPTION } from './prompts.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import type { AgentDefinition } from './agent-defs.js';
-import type { AgentMessage, AgentToolMeta, LlmProvider } from './types.js';
+import type { AgentMemoryRef, AgentMessage, AgentToolMeta, LlmProvider } from './types.js';
 
 /**
  * WMS 便利工厂：把编排循环、System Prompt、工具总线三件事绑定到一个工作区。
@@ -58,6 +58,8 @@ export interface CreateAgentFromDefOptions {
   nodeId?: string;
   /** 编排步数上限（透传 runAgent，默认 8） */
   maxSteps?: number;
+  /** 长期记忆（注入 System Prompt 的「记忆」段；调用方从记忆投影现算快照） */
+  memories?: readonly AgentMemoryRef[];
 }
 
 /**
@@ -66,8 +68,9 @@ export interface CreateAgentFromDefOptions {
  *
  *  - 工具过滤：def.tools ∩ 总线在场项（授权了但不在场的工具静默丢弃——
  *    定义是脏面，卸载模块后旧清单不该炸装配）；
- *  - System Prompt = def.systemPrompt（人设前缀）+ '\n\n' + buildSystemPrompt(ws)
- *    （全局纪律与数据快照后缀——人设可定制，纪律不删减）；
+ *  - System Prompt = def.systemPrompt（人设前缀）+ '\n\n' + buildSystemPrompt(ws, memories)
+ *    （全局纪律与数据快照后缀——人设可定制，纪律不删减；memories 是
+ *    可选的长期上下文注入，AgentMemoryRef 结构化类型不引入包依赖）；
  *  - 'agent:<id>' 委托形态（多 AI 协作）是 v2 预留：v1 装配直接抛错，
  *    不允许静默降级成「工具不存在」。
  */
@@ -93,7 +96,7 @@ export function createAgentFromDef(
 
   const base = `ai:${def.id}`;
   const actor = options.nodeId ? `${base}@${options.nodeId}` : base;
-  const system = `${def.systemPrompt.trim()}\n\n${buildSystemPrompt(ws)}`;
+  const system = `${def.systemPrompt.trim()}\n\n${buildSystemPrompt(ws, options.memories)}`;
 
   return {
     actor,

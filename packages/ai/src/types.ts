@@ -45,6 +45,17 @@ export type AgentMessage =
   /** 一轮工具调用的全部结果（callId 与 tool-calls 对齐） */
   | { role: 'tool-results'; results: ToolCallResult[] };
 
+/**
+ * 注入对话上下文的记忆条目（结构化类型：@one/memory 的 MemoryRecord 天然满足，
+ * 不引入包依赖——@one/ai 保持纯编排层）。
+ * id 必须携带：模型需要它调用 memory.forget 遗忘过时记忆。
+ */
+export interface AgentMemoryRef {
+  id: string;
+  scope: 'personal' | 'project';
+  content: string;
+}
+
 /** 单轮补全请求：完整消息历史 + 工具清单（function calling 通道） */
 export interface LlmTurnRequest {
   system: string;

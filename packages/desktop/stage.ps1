@@ -14,9 +14,9 @@ try { npm run build } finally { Pop-Location }
 
 # 2) 组装运行时目录
 if (Test-Path $src) { Remove-Item $src -Recurse -Force }
-New-Item -ItemType Directory -Force -Path "$src\packages\core","$src\packages\wms","$src\packages\ai","$src\packages\server","$src\packages\app" | Out-Null
+New-Item -ItemType Directory -Force -Path "$src\packages\core","$src\packages\wms","$src\packages\memory","$src\packages\ai","$src\packages\server","$src\packages\app" | Out-Null
 Copy-Item "$repo\package.json" $src -Force
-foreach ($p in 'core','wms','ai','server') {
+foreach ($p in 'core','wms','memory','ai','server') {
   Copy-Item "$repo\packages\$p\package.json" "$src\packages\$p\" -Force
   Copy-Item "$repo\packages\$p\dist" "$src\packages\$p\dist" -Recurse -Force
 }
@@ -29,7 +29,7 @@ try { npm install --omit=dev --no-audit --no-fund --loglevel=error } finally { P
 $oneDir = Join-Path $src 'node_modules\@one'
 Get-ChildItem $oneDir -Directory -ErrorAction SilentlyContinue |
   Where-Object { $_.LinkType -eq 'Junction' } | ForEach-Object { $_.Delete() }
-foreach ($n in 'core','wms','ai') {
+foreach ($n in 'core','wms','memory','ai') {
   $target = Join-Path $oneDir $n
   if (Test-Path $target) { Remove-Item $target -Recurse -Force }
   Copy-Item "$src\packages\$n" $target -Recurse -Force

@@ -13,6 +13,7 @@ import { proposalRoutes } from './routes/proposals.js';
 import { chatRoutes } from './routes/chat.js';
 import { agentRoutes } from './routes/agents.js';
 import { aiConfigRoutes } from './routes/ai-config.js';
+import { memoryRoutes } from './routes/memory.js';
 import { wmsRoutes } from './routes/wms.js';
 import { syncRoutes } from './routes/sync.js';
 import { migrationRoutes } from './routes/migration.js';
@@ -22,6 +23,7 @@ export { createAppContext } from './context.js';
 export type { AppContext } from './context.js';
 export { readAiConfig } from './ai-config.js';
 export { APP_DIST, mountStatic } from './static.js';
+export { runMemoryExtraction, scheduleMemoryExtraction } from './memory-hook.js';
 export { runSyncRound } from './sync/sync-client.js';
 export type { SyncRoundResult } from './sync/sync-client.js';
 
@@ -35,6 +37,7 @@ export function createApp(ctx: AppContext): Hono {
   app.route('/api/chat', chatRoutes(ctx));
   app.route('/api/agents', agentRoutes(ctx));
   app.route('/api/ai-config', aiConfigRoutes(ctx));
+  app.route('/api/memory', memoryRoutes(ctx));
   app.route('/api/sync', syncRoutes(ctx));
   app.route('/api/migration', migrationRoutes(ctx));
   app.route('/api', wmsRoutes(ctx));
@@ -106,6 +109,7 @@ async function syncAllPeers(ctx: AppContext, peers: string[]): Promise<void> {
         workspaceId: ctx.workspaceId,
         core: ctx.core,
         ws: ctx.ws,
+        memory: ctx.memory,
       });
       if (r.status === 'synced') {
         console.log(`[one-server] 同步完成 peer=${r.peer} 拉取=${r.pulled} 接受=${r.accepted}`);

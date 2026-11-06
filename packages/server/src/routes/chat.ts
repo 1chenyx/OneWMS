@@ -10,6 +10,7 @@ import {
   type LlmProvider,
 } from '@one/ai';
 import type { AppContext } from '../context.js';
+import { scheduleMemoryExtraction } from '../memory-hook.js';
 
 /**
  * AI 快通道入口（M12：SSE 流式 + 会话化 + ui.ask 挂起/唤醒；M16：多助手）。
@@ -25,6 +26,12 @@ import type { AppContext } from '../context.js';
  *    POST /sessions/:id/answer 注入回答（或 5 分钟超时按 declined），
  *    回答经生成器 next(reply) 续流；ui.ask 不穿工具总线，天然不落 oplog；
  *  - 事件 JSON 即协议（event 名与 data.type 一致，便于浏览器直连调试）。
+ *
+ *  记忆（自动记忆闭环）：
+ *  - 装配时读记忆投影注入 System Prompt（memories 快照以消息为粒度）；
+ *  - turn-done 提交历史后 fire-and-forget 触发提取（scheduleMemoryExtraction
+ *    ——不阻塞 SSE、失败静默、模块级串行；落账走工具总线 actor
+ *    ai:memory-auto@{nodeId}，source='auto'）。中断/失败轮不提交也不提取。
  */
 
 /** 空闲会话回收阈值（本地单机量级，内存护栏而非精确策略） */
@@ -116,9 +123,13 @@ export function chatRoutes(ctx: AppContext): Hono {
         );
       }
       session.status = 'streaming';
-      // 现场装配（M16）：定义 → 工具授权 + 人设 prompt + 模型覆盖 + actor
-      const agent = createAgentFromDef(ctx.ws, providerFor(ctx, base, def.model), def, {
+      // 现场装配（M16）：定义 → 工具授权 + 人设 prompt + 模型覆盖 + actor；
+      // 记忆注入（快照以消息为粒度——上轮提取结果下一轮对话即生效）
+      const agentProvider = providerFor(ctx, base, def.model);
+      ctx.memory.sync();
+      const agent = createAgentFromDef(ctx.ws, agentProvider, def, {
         nodeId: ctx.core.nodeId,
+        memories: ctx.memory.memory.list(),
       });
 
       return streamSSE(c, async (stream) => {
@@ -132,6 +143,9 @@ export function chatRoutes(ctx: AppContext): Hono {
             reply = undefined;
             if (done) {
               session.history = value.messages;
+              // 自动记忆（fire-and-forget）：turn-done 历史提交后排队提取，
+              // 不阻塞 SSE；autoMemory 关闭/空轮/失败均静默（memory-hook 纪律）
+              void scheduleMemoryExtraction(ctx, agentProvider, value.messages);
               break;
             }
             if (stream.aborted) break; // 客户端断开：停止消费（本轮历史不提交）

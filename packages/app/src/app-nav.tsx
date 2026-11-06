@@ -16,6 +16,7 @@ export type Page =
   | 'expiry'
   | 'chat'
   | 'agents'
+  | 'memory'
   | 'proposals'
   | 'ai-config'
   | 'settings';

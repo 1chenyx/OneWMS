@@ -115,13 +115,18 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     expect(req.tools.map((t) => t.id).sort()).toEqual([
       'wms.inventory.adjust',
       'wms.inventory.expiring',
+      'wms.inventory.hold',
+      'wms.inventory.holds',
+      'wms.inventory.lowstock',
       'wms.inventory.move',
       'wms.inventory.query',
+      'wms.inventory.release',
       'wms.location.create',
       'wms.location.list',
       'wms.order.create',
       'wms.order.transition',
       'wms.sku.create',
+      'wms.sku.resolve',
       'wms.sku.update',
       'wms.stocktake.cancel',
       'wms.stocktake.close',
@@ -151,6 +156,47 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     expect(system).toContain('流程 outbound');
     // readonly 只装配 read 工具（写工具不在 function calling 清单里）
     expect(requests[0].tools.every((t) => t.id === 'ui.ask' || ws.tools.list().find((x) => x.id === t.id)?.permission === 'read')).toBe(true);
+  });
+
+  it('记忆注入：memories 选项 → System Prompt「记忆」段（行为规则后、Profile 前，每条带 id）', async () => {
+    const { provider, requests } = scriptedProvider([{ text: '好的', toolCalls: [] }]);
+    const agent = createAgentFromDef(ws, provider, defOf('general'), {
+      memories: [
+        { id: 'm1', scope: 'personal', content: '用户习惯周日盘点' },
+        { id: 'm2', scope: 'project', content: 'A001 是易碎品' },
+      ],
+    });
+
+    await agent.run('注意易碎品');
+
+    const system = requests[0].system;
+    expect(system).toContain('记忆（2 条');
+    expect(system).toContain('m1 [personal] 用户习惯周日盘点');
+    expect(system).toContain('m2 [project] A001 是易碎品');
+    // 段序：记忆在行为规则之后、Profile 摘要之前
+    expect(system.indexOf('记忆（2 条')).toBeGreaterThan(system.indexOf('行为规则：'));
+    expect(system.indexOf('记忆（2 条')).toBeLessThan(system.indexOf('当前配置（Profile）：'));
+    // 行为规则含记忆使用规则（对所有助手生效，不受 memories 传不传影响）
+    expect(system).toContain('memory.save');
+    expect(system).toContain('memory.forget');
+  });
+
+  it('记忆超上限截断：仅注 MAX_PROMPT_MEMORIES 条并提示 memory.list', async () => {
+    const { provider, requests } = scriptedProvider([{ text: '好的', toolCalls: [] }]);
+    const memories = Array.from({ length: 55 }, (_, i) => ({
+      id: `m${i}`,
+      scope: 'personal' as const,
+      content: `记忆条目 ${i}`,
+    }));
+    const agent = createAgentFromDef(ws, provider, defOf('general'), { memories });
+
+    await agent.run('你好');
+
+    const system = requests[0].system;
+    expect(system).toContain('记忆（55 条');
+    expect(system).toContain('仅列前 50 条');
+    expect(system).toContain('memory.list');
+    expect(system).not.toContain('记忆条目 54'); // 第 55 条被截断
   });
 
   it('慢通道端到端：config 助手经 profile.propose 提议 → 人工确认后生效', async () => {

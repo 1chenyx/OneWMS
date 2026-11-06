@@ -17,6 +17,7 @@ import { ApiOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icon
 import { ApiError } from '../api/client';
 import type { AiTestResult } from '../api/client';
 import { useAiConfig, useClearAiConfig, useSaveAiConfig, useTestAiConfig } from '../api/hooks';
+import PageHeader from '../components/PageHeader';
 
 /**
  * AI 模型配置页（M17）——模型通道的接入面板。
@@ -136,7 +137,18 @@ export default function AiConfigPage() {
   };
 
   return (
-    <Space direction="vertical" size="large" style={{ maxWidth: 720, width: '100%' }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 16,
+        flex: 1,
+        minHeight: 0,
+        maxWidth: 720,
+        width: '100%',
+      }}
+    >
+      <PageHeader title="AI 模型" subtitle="模型通道接入；保存即热生效，无需重启" />
       {/* ① 当前状态：GET 的真相面（脱敏——密钥只显示是否已设置） */}
       <Card title="当前状态" loading={isLoading}>
         {status && (
@@ -298,6 +310,6 @@ export default function AiConfigPage() {
           重启后依然有效。本地 Ollama 需先拉取模型（ollama pull）并保持服务运行。
         </Typography.Paragraph>
       </Card>
-    </Space>
+    </div>
   );
 }

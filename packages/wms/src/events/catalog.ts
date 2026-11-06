@@ -19,6 +19,8 @@ export const WMS_EVENT_TYPES = {
   orderCreated: 'wms.order.created',
   orderStateChanged: 'wms.order.state_changed',
   inventoryAdjusted: 'wms.inventory.adjusted',
+  inventoryHeld: 'wms.inventory.held',
+  inventoryReleased: 'wms.inventory.released',
   stocktakeCreated: 'wms.stocktake.created',
   stocktakeCounted: 'wms.stocktake.counted',
   stocktakeStateChanged: 'wms.stocktake.state_changed',
@@ -55,6 +57,8 @@ export interface SkuCreatedPayload {
   readonly name: string;
   /** 条码（M18，可选）：扫码枪识读用（EAN/Code128 等）；同库唯一（NULL 互不冲突） */
   readonly barcode?: string;
+  /** 安全库存（M20，可选）：低库存预警阈值；0 = 不预警（缺省）。预警按可用量（余量−冻结）判定 */
+  readonly reorderPoint?: number;
   /** 字段注册表驱动的扩展字段（§5.2：核心列固定 + ext_data JSON 列） */
   readonly extData?: Record<string, unknown>;
 }
@@ -65,6 +69,8 @@ export interface SkuUpdatedPayload {
   readonly name?: string;
   /** 条码（M18，可选）：显式传才改（未传保持不变——与 name/extData 同一 LWW 语义） */
   readonly barcode?: string;
+  /** 安全库存（M20，可选）：显式传才改；传 0 = 关闭该 SKU 的预警 */
+  readonly reorderPoint?: number;
   readonly extData?: Record<string, unknown>;
 }
 
@@ -117,6 +123,34 @@ export interface InventoryAdjustedPayload {
   readonly batchExpiryDate?: string;
   readonly orderId?: string;
   readonly orderNo?: string;
+}
+
+// ── 冻结（M19）payload ─────────────────────────────────────────
+
+/**
+ * 冻结诞生（M19）：把某 SKU 的一部分数量冻结（质检隔离 / 客订预留等）。
+ * 冻结量不可被单据出库消耗：可用量 = 全库位合计余量 − 冻结合计（SKU 级）。
+ * 不落库存流水——冻结不改物理量，wms_inventory_ledger 只记物理增减；
+ * 冻结的真相在 held/released 事件对，投影是 wms_inventory_hold 表。
+ */
+export interface InventoryHeldPayload {
+  readonly holdId: string;
+  readonly skuId: string;
+  /** 镜像 skuId+skuCode 双携带先例（投影与调用方免联查） */
+  readonly skuCode: string;
+  readonly quantity: number;
+  readonly reason: string;
+}
+
+/**
+ * 冻结释放（M19）：整笔解除（按 holdId 定位）。released 事件不携带数量——
+ * 数量在 held 事件里，投影按 holdId 删行；释放原因可选（如 质检合格放行）。
+ */
+export interface InventoryReleasedPayload {
+  readonly holdId: string;
+  readonly skuId: string;
+  readonly skuCode: string;
+  readonly reason?: string;
 }
 
 // ── 盘点（M17）payload ─────────────────────────────────────────

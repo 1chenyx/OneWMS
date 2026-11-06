@@ -69,6 +69,36 @@ export function useAdjustInventory() {
   });
 }
 
+// ── 冻结（M19）────────────────────────────────────────
+
+/** 活动冻结清单（skuCode 缺省 = 全部）。queryKey 带 skuCode 防串缓存；
+ *  invalidateQueries({ queryKey: ['holds'] }) 前缀匹配仍全失效 */
+export function useHolds(skuCode?: string) {
+  return useQuery({
+    queryKey: ['holds', skuCode ?? ''],
+    queryFn: () => api.holds(skuCode),
+  });
+}
+
+/** 冻结/释放改可用量与冻结清单（物理库存不变 → 效期看板无需失效） */
+function useInvalidateHolds() {
+  const qc = useQueryClient();
+  return () => {
+    void qc.invalidateQueries({ queryKey: ['inventory'] });
+    void qc.invalidateQueries({ queryKey: ['holds'] });
+  };
+}
+
+export function useCreateHold() {
+  const invalidate = useInvalidateHolds();
+  return useMutation({ mutationFn: api.createHold, onSuccess: invalidate });
+}
+
+export function useReleaseHold() {
+  const invalidate = useInvalidateHolds();
+  return useMutation({ mutationFn: api.releaseHold, onSuccess: invalidate });
+}
+
 // ── 效期看板（M14）────────────────────────────────────
 
 /** 全仓批次分层清单（切页挂载即刷新；调整/出入库后由对应 mutation 失效重取） */
@@ -192,9 +222,10 @@ export function useRejectProposal() {
 
 // ── 设置页（M8）──────────────────────────────────────
 
-/** 节点名片（切页挂载即刷新——同步回合后计数会变） */
-export function useNodeHello() {
-  return useQuery({ queryKey: ['node-hello'], queryFn: api.nodeHello });
+/** 节点名片（切页挂载即刷新——同步回合后计数会变）。
+ *  pollMs：轮询间隔（全局顶栏状态灯传 15s 常驻刷新；不传 = 不轮询，设置页行为不变）。 */
+export function useNodeHello(pollMs?: number) {
+  return useQuery({ queryKey: ['node-hello'], queryFn: api.nodeHello, refetchInterval: pollMs });
 }
 
 export function useSyncRun() {

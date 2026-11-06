@@ -11,6 +11,7 @@ export default defineConfig({
       '@one/core': fileURLToPath(new URL('../core/dist/index.js', import.meta.url)),
       '@one/wms': fileURLToPath(new URL('../wms/dist/index.js', import.meta.url)),
       '@one/ai': fileURLToPath(new URL('../ai/dist/index.js', import.meta.url)),
+      '@one/memory': fileURLToPath(new URL('../memory/dist/index.js', import.meta.url)),
     },
   },
 });

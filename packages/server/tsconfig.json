@@ -6,7 +6,8 @@
     "paths": {
       "@one/core": ["../core/dist/index.d.ts"],
       "@one/wms": ["../wms/dist/index.d.ts"],
-      "@one/ai": ["../ai/dist/index.d.ts"]
+      "@one/ai": ["../ai/dist/index.d.ts"],
+      "@one/memory": ["../memory/dist/index.d.ts"]
     }
   },
   "include": ["src/**/*.ts"]

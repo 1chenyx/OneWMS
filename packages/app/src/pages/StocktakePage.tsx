@@ -31,6 +31,8 @@ import {
 import { ApiError } from '../api/client';
 import type { Stocktake, StocktakeLine } from '../api/client';
 import ScanInput from '../components/ScanInput';
+import PageHeader from '../components/PageHeader';
+import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
 
 /**
  * 盘点页（M17）：清单（状态 + 范围 + 进度）→ 新建（范围勾选）→ 明细
@@ -76,7 +78,7 @@ export default function StocktakePage() {
   };
 
   const columns: ColumnsType<Stocktake> = [
-    { title: '盘点单号', dataIndex: 'stocktakeNo', key: 'stocktakeNo' },
+    { title: '盘点单号', dataIndex: 'stocktakeNo', key: 'stocktakeNo', onCell: monoCell },
     {
       title: '状态',
       dataIndex: 'state',
@@ -156,25 +158,29 @@ export default function StocktakePage() {
   ];
 
   return (
-    <Card
-      title="盘点"
-      extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-          新建盘点
-        </Button>
-      }
-    >
-      <Table<Stocktake>
-        rowKey="id"
-        columns={columns}
-        dataSource={rows ?? []}
-        loading={isLoading}
-        pagination={false}
-        locale={{ emptyText: '还没有盘点单' }}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+      <PageHeader
+        title="盘点"
+        subtitle="录实盘数，关单自动按差异调整库存"
+        extra={
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+            新建盘点
+          </Button>
+        }
       />
-      <CreateStocktakeModal open={createOpen} onClose={() => setCreateOpen(false)} />
-      <StocktakeDetailModal no={detailNo} onClose={() => setDetailNo(null)} />
-    </Card>
+      <Card>
+        <Table<Stocktake>
+          rowKey="id"
+          columns={columns}
+          dataSource={rows ?? []}
+          loading={isLoading}
+          pagination={TABLE_PAGINATION}
+          locale={{ emptyText: '还没有盘点单' }}
+        />
+        <CreateStocktakeModal open={createOpen} onClose={() => setCreateOpen(false)} />
+        <StocktakeDetailModal no={detailNo} onClose={() => setDetailNo(null)} />
+      </Card>
+    </div>
   );
 }
 
@@ -326,15 +332,16 @@ function StocktakeDetailModal({ no, onClose }: { no: string | null; onClose: () 
   };
 
   const columns: ColumnsType<StocktakeLine> = [
-    { title: 'SKU', dataIndex: 'skuCode', key: 'skuCode' },
+    { title: 'SKU', dataIndex: 'skuCode', key: 'skuCode', onCell: monoCell },
     { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '库位', dataIndex: 'locationCode', key: 'locationCode' },
-    { title: '批次', dataIndex: 'batchNo', key: 'batchNo' },
-    { title: '账面快照', dataIndex: 'expectedQty', key: 'expectedQty', align: 'right' },
+    { title: '库位', dataIndex: 'locationCode', key: 'locationCode', onCell: monoCell },
+    { title: '批次', dataIndex: 'batchNo', key: 'batchNo', onCell: monoCell },
+    { title: '账面快照', dataIndex: 'expectedQty', key: 'expectedQty', align: 'right', onCell: numCell },
     {
       title: '实盘数',
       key: 'countedQty',
       align: 'right',
+      onCell: numCell,
       render: (_, l) =>
         isOpen ? (
           <InputNumber
@@ -353,11 +360,12 @@ function StocktakeDetailModal({ no, onClose }: { no: string | null; onClose: () 
           (l.countedQty ?? '未盘')
         ),
     },
-    { title: '当前账面', dataIndex: 'bookQty', key: 'bookQty', align: 'right' },
+    { title: '当前账面', dataIndex: 'bookQty', key: 'bookQty', align: 'right', onCell: numCell },
     {
       title: '差异',
       key: 'delta',
       align: 'right',
+      onCell: numCell,
       render: (_, l) => {
         const counted = drafts[lineKey(l)] ?? l.countedQty;
         if (counted === null || counted === undefined) {

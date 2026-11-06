@@ -10,12 +10,13 @@
     "start": "node --env-file-if-exists=../../.env dist/main.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "pretest": "npm run build -w @one/core -w @one/wms -w @one/ai",
-    "pretypecheck": "npm run build -w @one/core -w @one/wms -w @one/ai"
+    "pretest": "npm run build -w @one/core -w @one/wms -w @one/memory -w @one/ai",
+    "pretypecheck": "npm run build -w @one/core -w @one/wms -w @one/memory -w @one/ai"
   },
   "dependencies": {
     "@one/ai": "*",
     "@one/core": "*",
+    "@one/memory": "*",
     "@one/wms": "*",
     "@hono/node-server": "^1.13.0",
     "hono": "^4.6.0"

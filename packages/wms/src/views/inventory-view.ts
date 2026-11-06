@@ -5,10 +5,12 @@ import {
   DEFAULT_LOCATION_ID,
   WMS_EVENT_TYPES,
   type InventoryAdjustedPayload,
+  type InventoryHeldPayload,
+  type InventoryReleasedPayload,
 } from '../events/catalog.js';
 
 /**
- * 库存投影（InventoryView）——wms_inventory_ledger / wms_inventory 表。
+ * 库存投影（InventoryView）——wms_inventory_ledger / wms_inventory / wms_inventory_hold 表。
  *
  * 核心纪律（DESIGN.md §8.2）：**只有流水事件，没有「改库存」事件**。
  *  - wms_inventory_ledger：append-only 流水，一事件一行（event_id 主键 = 幂等键）；
@@ -19,6 +21,10 @@ import {
  * 老事件 payload 无批次 → 兜底 DEFAULT（虚拟桶，catalog.DEFAULT_BATCH_NO）。
  * 批次随首条流水诞生（无实体表）：效期是流水的可选属性，汇总行冗余存储、
  * upsert 时 COALESCE 首个非空为准（工具层挡不一致，投影不埋业务策略）。
+ *
+ * 冻结（M19）：wms_inventory_hold 只存活动冻结行（held 事件 INSERT /
+ * released 事件 DELETE，幂等键 = holdId）——历史在事件里。冻结不改物理量、
+ * 不落流水：可用量 = totalOf(sku) − heldOf(sku)（SKU 级，跨库位合计）。
  */
 
 export interface InventoryRecord {
@@ -39,6 +45,15 @@ export interface LedgerRecord {
   readonly delta: number;
   readonly reason: string;
   readonly orderId: string | null;
+  readonly createdAt: string;
+}
+
+/** 活动冻结行（M19）：released 后即从投影消失（历史在事件） */
+export interface HoldRecord {
+  readonly id: string;
+  readonly skuId: string;
+  readonly quantity: number;
+  readonly reason: string;
   readonly createdAt: string;
 }
 
@@ -68,8 +83,27 @@ export class InventoryView {
     private readonly workspaceId: string,
   ) {}
 
-  /** 幂等应用一条 wms.inventory.adjusted 事件（重放器/追账器调用，事务内） */
+  /** 幂等应用一条库存域事件（adjusted/held/released；重放器/追账器调用，事务内） */
   applyEvent(env: EventEnvelope): void {
+    if (env.type === WMS_EVENT_TYPES.inventoryHeld) {
+      // 幂等：主键 holdId 已在 = 已应用过（INSERT OR IGNORE）
+      const p = env.payload as InventoryHeldPayload;
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO wms_inventory_hold (id, workspace_id, sku_id, quantity, reason, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(p.holdId, this.workspaceId, p.skuId, p.quantity, p.reason, env.createdAt);
+      return;
+    }
+    if (env.type === WMS_EVENT_TYPES.inventoryReleased) {
+      // 幂等：删不存在的行是 no-op（重复 released / 乱序重放天然收敛）
+      const p = env.payload as InventoryReleasedPayload;
+      this.db
+        .prepare(`DELETE FROM wms_inventory_hold WHERE workspace_id = ? AND id = ?`)
+        .run(this.workspaceId, p.holdId);
+      return;
+    }
     if (env.type !== WMS_EVENT_TYPES.inventoryAdjusted) return;
     const p = env.payload as InventoryAdjustedPayload;
 
@@ -130,6 +164,46 @@ export class InventoryView {
       )
       .get(this.workspaceId, skuId, locationId, batchNo) as InventoryRow | undefined;
     return row?.quantity ?? 0;
+  }
+
+  /** 某 SKU 全库位合计余量（M19 冻结可用量基数：可用 = totalOf − heldOf） */
+  totalOf(skuId: string): number {
+    const row = this.db
+      .prepare(`SELECT COALESCE(SUM(quantity), 0) AS total FROM wms_inventory WHERE workspace_id = ? AND sku_id = ?`)
+      .get(this.workspaceId, skuId) as { total: number };
+    return row.total;
+  }
+
+  /** 某 SKU 活动冻结合计（M19；出库拦截与可用量展示的数据源） */
+  heldOf(skuId: string): number {
+    const row = this.db
+      .prepare(`SELECT COALESCE(SUM(quantity), 0) AS held FROM wms_inventory_hold WHERE workspace_id = ? AND sku_id = ?`)
+      .get(this.workspaceId, skuId) as { held: number };
+    return row.held;
+  }
+
+  /** 活动冻结清单（M19）：skuId 缺省 = 全部；创建时间升序（稳定展示序） */
+  listHolds(skuId?: string): HoldRecord[] {
+    const rows = (skuId
+      ? this.db
+          .prepare(`SELECT * FROM wms_inventory_hold WHERE workspace_id = ? AND sku_id = ? ORDER BY created_at, id`)
+          .all(this.workspaceId, skuId)
+      : this.db
+          .prepare(`SELECT * FROM wms_inventory_hold WHERE workspace_id = ? ORDER BY created_at, id`)
+          .all(this.workspaceId)) as unknown as Array<{
+      id: string;
+      sku_id: string;
+      quantity: number;
+      reason: string;
+      created_at: string;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      skuId: r.sku_id,
+      quantity: r.quantity,
+      reason: r.reason,
+      createdAt: r.created_at,
+    }));
   }
 
   /** 全部库存清单（SKU × 库位 × 批次 维度行；AI 查询工具的数据源） */

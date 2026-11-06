@@ -15,13 +15,15 @@ import { DEFAULT_BATCH_NO, DEFAULT_LOCATION_ID } from '../events/catalog.js';
 export function migrateWms(db: SqliteDatabase): void {
   db.transaction(() => {
     // ── 老库收敛（投影整组 DROP 重建）──
-    // 八张投影表全是 oplog 的缓存（事件是唯一真相）——检测到旧结构即整组 DROP，
+    // 九张投影表全是 oplog 的缓存（事件是唯一真相）——检测到旧结构即整组 DROP，
     // 由 WmsWorkspace 构造期 sync()（cursor = -1 全量追账）重建。必须整组 DROP：
     // applyEvent 有幂等早退（orderCreated 见单已存在即 return），单丢一张表会让
     // 兄弟表永远不重建。内核 oplog 本函数不碰——那是唯一不可丢的真相。
-    // 两道检测覆盖三条升级路径（M9→M11 / M10→M11 / ≤M17→M18），任一命中即重建：
+    // 三道检测覆盖四条升级路径（M9→M11 / M10→M11 / ≤M17→M18 / ≤M19→M20），任一命中即重建：
     //  1. 流水表缺 batch_no 列 = M10 及以前结构（M9 结构同样命中——两列皆缺）；
-    //  2. wms_sku 缺 barcode 列 = M17 及以前结构（M18 条码管理）。
+    //  2. wms_sku 缺 barcode 列 = M17 及以前结构（M18 条码管理）；
+    //  3. wms_sku 缺 reorder_point 列 = M19 及以前结构（M20 安全库存）。
+    // M19 冻结表是纯新增（无列变更）：老库 CREATE IF NOT EXISTS 即收敛，不触发重建。
     const dropAll = () => {
       db.exec(`
         DROP TABLE IF EXISTS wms_sku;
@@ -30,6 +32,7 @@ export function migrateWms(db: SqliteDatabase): void {
         DROP TABLE IF EXISTS wms_order_line;
         DROP TABLE IF EXISTS wms_inventory_ledger;
         DROP TABLE IF EXISTS wms_inventory;
+        DROP TABLE IF EXISTS wms_inventory_hold;
         DROP TABLE IF EXISTS wms_stocktake;
         DROP TABLE IF EXISTS wms_stocktake_line;
       `);
@@ -42,20 +45,24 @@ export function migrateWms(db: SqliteDatabase): void {
     if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'barcode')) {
       dropAll();
     }
+    if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'reorder_point')) {
+      dropAll();
+    }
 
     // ── SKU 主数据（业务键：workspace + sku_code；M18 加 barcode 条码列——
     //    同库唯一：扫码枪识读的物理标识不允许二义；SQLite 中多行 NULL 不冲突，
-    //    无条码的 SKU 互不影响）──
+    //    无条码的 SKU 互不影响；M20 加 reorder_point 安全库存列——0 = 不预警）──
     db.exec(`
       CREATE TABLE IF NOT EXISTS wms_sku (
-        id           TEXT NOT NULL PRIMARY KEY,
-        workspace_id TEXT NOT NULL,
-        sku_code     TEXT NOT NULL,
-        barcode      TEXT,
-        name         TEXT NOT NULL,
-        ext_data     TEXT NOT NULL DEFAULT '{}',
-        created_at   TEXT NOT NULL,
-        updated_at   TEXT NOT NULL,
+        id             TEXT NOT NULL PRIMARY KEY,
+        workspace_id   TEXT NOT NULL,
+        sku_code       TEXT NOT NULL,
+        barcode        TEXT,
+        name           TEXT NOT NULL,
+        reorder_point  INTEGER NOT NULL DEFAULT 0,
+        ext_data       TEXT NOT NULL DEFAULT '{}',
+        created_at     TEXT NOT NULL,
+        updated_at     TEXT NOT NULL,
         UNIQUE (workspace_id, sku_code),
         UNIQUE (workspace_id, barcode)
       );
@@ -140,6 +147,22 @@ export function migrateWms(db: SqliteDatabase): void {
         quantity     INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (workspace_id, sku_id, location_id, batch_no)
       );
+    `);
+
+    // ── 库存冻结（M19）：活动冻结行（held 事件 INSERT / released 事件 DELETE——
+    //    历史在事件里，投影只存活动态）。冻结是 SKU 级数量占用（不改物理量、
+    //    不落流水）：可用量 = Σwms_inventory(该 SKU) − Σ本表(该 SKU)。
+    //    无 released_at 标记列——释放即删行，幂等键是主键 id（= holdId）。──
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_inventory_hold (
+        id           TEXT NOT NULL PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        sku_id       TEXT NOT NULL,
+        quantity     INTEGER NOT NULL,
+        reason       TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_hold_sku ON wms_inventory_hold (workspace_id, sku_id);
     `);
 
     // ── 盘点单主表（M17，业务键：workspace + stocktake_no）──

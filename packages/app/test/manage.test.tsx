@@ -24,6 +24,8 @@ import type { InitialFilter } from '../src/app-nav';
 const createSkuMock = vi.fn();
 const transitionMock = vi.fn();
 const adjustMock = vi.fn();
+const createHoldMock = vi.fn();
+const releaseHoldMock = vi.fn();
 
 /** snapshot fixture：spec 可见 / category 隐藏（与默认种子的可见性差异即为测试点） */
 const snapshotFixture = {
@@ -72,6 +74,7 @@ const skusFixture = [
     id: 's-1',
     skuCode: 'A-1',
     barcode: '6901234567892',
+    reorderPoint: 50,
     name: '螺丝',
     extData: { spec: '6204-2RS', category: '标准件' },
     createdAt: '2026-10-30T08:00:00.000Z',
@@ -81,6 +84,7 @@ const skusFixture = [
     id: 's-2',
     skuCode: 'B-2',
     barcode: null,
+    reorderPoint: 0,
     name: '螺母',
     extData: {},
     createdAt: '2026-10-30T08:00:00.000Z',
@@ -101,7 +105,16 @@ const ordersFixture = [
   },
 ];
 
-const inventoryFixture = [{ skuId: 's-1', skuCode: 'A-1', name: '螺丝', quantity: 30 }];
+/** 库存 fixture（M19 冻结三件套 + M20 安全库存：A-1 低库存（可用 25 < 50），B-2 充足） */
+const inventoryFixture = [
+  { skuId: 's-1', skuCode: 'A-1', name: '螺丝', quantity: 30, held: 5, available: 25, reorderPoint: 50 },
+  { skuId: 's-2', skuCode: 'B-2', name: '螺母', quantity: 8, held: 0, available: 8, reorderPoint: 5 },
+];
+
+/** 活动冻结 fixture（M19，与 inventoryFixture 的 held=5 对应） */
+const holdsFixture = [
+  { id: 'h-1', skuId: 's-1', skuCode: 'A-1', name: '螺丝', quantity: 5, reason: '质检隔离', createdAt: '2026-11-05T08:00:00.000Z' },
+];
 
 /** 效期看板 fixture：五层各一行（后端算好 level/daysLeft/buckets，前端只排版） */
 const expiryFixture = {
@@ -124,6 +137,12 @@ vi.mock('../src/api/hooks', () => ({
   useTransitionOrder: () => ({ mutateAsync: transitionMock, isPending: false, variables: undefined }),
   useInventory: () => ({ isLoading: false, data: inventoryFixture }),
   useAdjustInventory: () => ({ mutateAsync: adjustMock, isPending: false }),
+  useHolds: (skuCode?: string) => ({
+    isLoading: false,
+    data: skuCode ? holdsFixture.filter((h) => h.skuCode === skuCode) : holdsFixture,
+  }),
+  useCreateHold: () => ({ mutateAsync: createHoldMock, isPending: false }),
+  useReleaseHold: () => ({ mutateAsync: releaseHoldMock, isPending: false }),
   useExpiryBoard: () => ({ isLoading: false, data: expiryFixture }),
 }));
 
@@ -171,8 +190,10 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
     expect(screen.getByText('6204-2RS')).toBeInTheDocument(); // extData 值
     expect(screen.getByText('A-1')).toBeInTheDocument(); // 固定列
     expect(screen.getByText('条码')).toBeInTheDocument(); // 固定列（M18）
+    expect(screen.getByText('安全库存')).toBeInTheDocument(); // 固定列（M20）
     const rowA = screen.getByText('A-1').closest('tr')!; // 有码行
     expect(within(rowA).getByText('6901234567892')).toBeInTheDocument();
+    expect(within(rowA).getByText('50')).toBeInTheDocument(); // 安全库存（M20）
     const rowB = screen.getByText('B-2').closest('tr')!; // 无码行（扩展列同为 -，条码列也补 -）
     expect(within(rowB).queryByText('6901234567892')).not.toBeInTheDocument();
     expect(within(rowB).getAllByText('-').length).toBeGreaterThanOrEqual(1);
@@ -188,6 +209,7 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
     await user.type(screen.getByLabelText('名称'), '轴承');
     await user.type(screen.getByLabelText('规格'), '6204');
     await user.type(screen.getByLabelText(/条码/), ' 6901234567892 ');
+    await user.type(screen.getByLabelText(/安全库存/), '60');
     expect(screen.queryByLabelText('分类')).not.toBeInTheDocument(); // 隐藏字段无输入项
 
     await user.click(screen.getByRole('button', { name: 'OK' })); // Modal 确认（默认 locale）
@@ -196,6 +218,7 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
         skuCode: 'A-2',
         name: '轴承',
         barcode: '6901234567892', // trim 后提交；空白条码不提交该字段
+        reorderPoint: 60, // M20：>0 才提交（留空/0 不提交 = 不预警）
         extData: { spec: '6204' },
       }),
     );
@@ -229,21 +252,33 @@ describe('ScanInput：扫码枪输入（M18）', () => {
 describe('OrdersPage：workflows 驱动流转', () => {
   beforeEach(() => transitionMock.mockReset());
 
-  it('状态标签来自 workflows.states；候选按钮只含合法后继', () => {
+  it('状态标签来自 workflows.states；流转菜单只含合法后继', async () => {
+    const user = userEvent.setup();
     render(wrap(<OrdersPage />));
     expect(screen.getByText('已创建')).toBeInTheDocument(); // label 来自 Profile
-    expect(screen.getByRole('button', { name: '已收货' })).toBeInTheDocument(); // created → received
-    expect(screen.queryByRole('button', { name: '拣货中' })).not.toBeInTheDocument(); // 入库单无此路径
-    expect(screen.getByText('A-1×100')).toBeInTheDocument(); // 明细摘要
+    await user.click(screen.getByRole('button', { name: /流转/ })); // 打开 Dropdown 菜单
+    expect(await screen.findByRole('menuitem', { name: '已收货' })).toBeInTheDocument(); // created → received
+    expect(screen.queryByRole('menuitem', { name: '拣货中' })).not.toBeInTheDocument(); // 入库单无此路径
   });
 
-  it('点击流转 → popconfirm 确认 → 调用 transition', async () => {
+  it('明细收进展开行（P1）：展开单据行 → SKU/名称/数量明细表', async () => {
+    const user = userEvent.setup();
+    const { container } = render(wrap(<OrdersPage />));
+    const expand = container.querySelector('.ant-table-row-expand-icon');
+    expect(expand).toBeTruthy();
+    await user.click(expand!);
+    expect(await screen.findByText('螺丝')).toBeInTheDocument(); // 明细行 SKU 名称
+    expect(screen.getByText('100')).toBeInTheDocument(); // 明细行数量（右对齐等宽）
+  });
+
+  it('流转：菜单选目标态 → 确认弹窗 → 调用 transition', async () => {
     transitionMock.mockResolvedValueOnce({ orderNo: 'IN-20261030-1', from: 'created', to: 'received' });
     const user = userEvent.setup();
     render(wrap(<OrdersPage />));
 
-    await user.click(screen.getByRole('button', { name: '已收货' }));
-    await user.click(await screen.findByRole('button', { name: 'OK' }));
+    await user.click(screen.getByRole('button', { name: /流转/ }));
+    await user.click(await screen.findByRole('menuitem', { name: '已收货' }));
+    await user.click(await screen.findByRole('button', { name: 'OK' })); // modal.confirm（默认 locale）
     await waitFor(() =>
       expect(transitionMock).toHaveBeenCalledWith({ orderNo: 'IN-20261030-1', to: 'received' }),
     );
@@ -251,23 +286,74 @@ describe('OrdersPage：workflows 驱动流转', () => {
 });
 
 describe('InventoryPage：清单与调整', () => {
-  beforeEach(() => adjustMock.mockReset());
+  beforeEach(() => {
+    adjustMock.mockReset();
+    createHoldMock.mockReset();
+    releaseHoldMock.mockReset();
+  });
 
-  it('清单渲染 + 调整提交（delta/原因）', async () => {
+  it('清单渲染（含冻结三件套，M19）+ 调整提交（delta/原因）', async () => {
     adjustMock.mockResolvedValueOnce({ skuCode: 'A-1', quantity: 50 });
     const user = userEvent.setup();
     render(wrap(<InventoryPage />));
 
     expect(screen.getByText('A-1')).toBeInTheDocument();
     expect(screen.getByText('30')).toBeInTheDocument(); // 余量
+    expect(screen.getByText('冻结量')).toBeInTheDocument(); // M19 列
+    expect(screen.getByText('可用量')).toBeInTheDocument();
+    expect(screen.getByText('25')).toBeInTheDocument(); // 可用 = 30 − 冻结 5
+    expect(screen.getByText('安全库存')).toBeInTheDocument(); // M20 列（低库存 A-1 的可用量标红）
 
-    await user.click(screen.getByRole('button', { name: '调整' }));
+    // fixture 两行（A-1/B-2）各有调整/冻结按钮——按行作用域点击，避免全局撞重
+    const rowA = screen.getByText('A-1').closest('tr')!;
+    await user.click(within(rowA).getByRole('button', { name: '调整' }));
     await user.type(screen.getByLabelText('数量变化'), '20');
     await user.type(screen.getByLabelText(/原因/), '盘点');
     await user.click(screen.getByRole('button', { name: 'OK' }));
     await waitFor(() =>
       expect(adjustMock).toHaveBeenCalledWith({ skuCode: 'A-1', delta: 20, reason: '盘点' }),
     );
+  });
+
+  it('冻结弹窗（M19）：活动冻结可见、追加冻结提交、Popconfirm 释放', async () => {
+    createHoldMock.mockResolvedValueOnce({ holdId: 'h-2', skuCode: 'A-1', quantity: 3, total: 30, held: 8, available: 22 });
+    releaseHoldMock.mockResolvedValueOnce({ holdId: 'h-1', skuCode: 'A-1', quantity: 5, total: 30, held: 0, available: 30 });
+    const user = userEvent.setup();
+    render(wrap(<InventoryPage />));
+
+    // 按钮名含图标 aria-label（lock 冻结）→ 正则锚定结尾匹配
+    await user.click(within(screen.getByText('A-1').closest('tr')!).getByRole('button', { name: /冻结$/ }));
+    // 弹窗打开：摘要行 + 活动冻结行
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/余量 30，冻结 5，可用 25/)).toBeInTheDocument();
+    // 原因与分隔符同节点 → 子串匹配；表单 label 文案也含该词 → 取全部
+    expect(within(dialog).getAllByText(/质检隔离/).length).toBeGreaterThanOrEqual(1);
+
+    // 追加冻结提交（okText 冻结——autoInsertSpace 已关，无空格）
+    await user.type(within(dialog).getByLabelText('追加冻结数量'), '3');
+    await user.type(within(dialog).getByLabelText(/原因（可选/), '客订');
+    await user.click(within(dialog).getByRole('button', { name: '冻结' }));
+    await waitFor(() =>
+      expect(createHoldMock).toHaveBeenCalledWith({ skuCode: 'A-1', quantity: 3, reason: '客订' }),
+    );
+
+    // 释放活动冻结（Popconfirm 确认）
+    await user.click(within(dialog).getByRole('button', { name: '释放' }));
+    await user.click(await screen.findByRole('button', { name: 'OK' }));
+    await waitFor(() => expect(releaseHoldMock).toHaveBeenCalledWith('h-1'));
+  });
+
+  it('只看低库存（M20）：勾选过滤掉充足 SKU，只留可用量低于阈值的行', async () => {
+    const user = userEvent.setup();
+    render(wrap(<InventoryPage />));
+
+    // 两行都在
+    expect(screen.getByText('A-1')).toBeInTheDocument(); // 低库存（可用 25 < 50）
+    expect(screen.getByText('B-2')).toBeInTheDocument(); // 充足（可用 8 ≥ 5）
+
+    await user.click(screen.getByRole('checkbox', { name: /只看低库存/ }));
+    expect(screen.getByText('A-1')).toBeInTheDocument();
+    expect(screen.queryByText('B-2')).not.toBeInTheDocument();
   });
 
   it('过滤框：关键字命中（编码/名称、不区分大小写），无命中显示空表', async () => {

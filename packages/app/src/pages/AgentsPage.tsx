@@ -15,6 +15,7 @@ import {
 import { api, ApiError } from '../api/client';
 import type { AgentCatalog, AgentDef } from '../api/client';
 import { useAppNav } from '../app-nav';
+import PageHeader from '../components/PageHeader';
 
 /**
  * AI 助手管理页（M16：「配置 AI」的界面——与聊天里的「使用 AI」分离）。
@@ -122,21 +123,22 @@ export default function AgentsPage() {
   };
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }} align="start">
-      <Card
-        style={{ width: '100%' }}
-        title="AI 助手定义"
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0, width: '100%' }}>
+      <PageHeader
+        title="助手管理"
+        subtitle="人设 + 工具授权 + 模型覆盖；保存生成提议，确认后生效"
         extra={
-          <Space>
+          <>
             <Button icon={<PlusOutlined />} onClick={createAgent}>
               新建助手
             </Button>
             <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={save}>
               保存（生成提议）
             </Button>
-          </Space>
+          </>
         }
-      >
+      />
+      <Card>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
           每个助手 = 人设 + 工具授权 + 可选模型覆盖；保存走慢通道（提议 → 人工确认），
           确认后对话页的切换器即可使用新定义。清单保存为空 = 恢复内置三件套
@@ -172,7 +174,6 @@ export default function AgentsPage() {
 
       {active ? (
         <Card
-          style={{ width: '100%' }}
           title={
             <Space>
               <span>编辑助手</span>
@@ -274,6 +275,6 @@ export default function AgentsPage() {
       ) : saving ? (
         <Spin />
       ) : null}
-    </Space>
+    </div>
   );
 }

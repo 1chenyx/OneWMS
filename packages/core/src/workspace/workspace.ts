@@ -52,8 +52,7 @@ export class WorkspaceFacade {
    */
   replay(): { totalEvents: number; appliedRegistryEvents: number; appliedConfigEvents: number } {
     const rebuild = this.db.transaction(() => {
-      this.db.prepare(`DELETE FROM field_registry WHERE workspace_id = ?`).run(this.workspaceId);
-      this.db.prepare(`DELETE FROM field_usage WHERE workspace_id = ?`).run(this.workspaceId);
+      this.#registry.clearProjection(this.workspaceId);
       this.#profileService.clearProjection(this.workspaceId);
 
       let total = 0;

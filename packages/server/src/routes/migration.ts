@@ -29,7 +29,10 @@ export function migrationRoutes(ctx: AppContext): Hono {
         .map(([id, version]) => ({ id, version }));
 
       const replayed = accepted > 0;
-      if (replayed) ctx.ws.replayAll();
+      if (replayed) {
+        ctx.ws.replayAll();
+        ctx.memory.replay(); // 记忆投影同步重建（导入的记忆事件恢复可见）
+      }
       return c.json({ accepted, skipped, replayed, missingManifests });
     });
 }

@@ -6,6 +6,7 @@ import type { AgentDef } from '../api/client';
 import { useChatSession } from '../chat/ChatProvider';
 import { useAppNav } from '../app-nav';
 import ToolInvocationCard from '../components/ToolInvocationCard';
+import PageHeader from '../components/PageHeader';
 
 /**
  * AI 对话面板（M12：SSE 流式 + 会话化；M16：多助手切换）：
@@ -49,79 +50,91 @@ export default function ChatPage() {
   };
 
   return (
-    <Card
-      style={{ width: '100%', maxWidth: 860, margin: '0 auto', flex: 1, display: 'flex', flexDirection: 'column' }}
-      styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 } }}
-      title="AI 助手"
-      extra={<Typography.Text type="secondary">自然语言出入库 / 改配置</Typography.Text>}
+    <div
+      style={{
+        width: '100%',
+        maxWidth: 860,
+        margin: '0 auto',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 16,
+        flex: 1,
+        minHeight: 0,
+      }}
     >
-      <div ref={listRef} style={{ flex: 1, overflowY: 'auto', paddingRight: 8 }}>
-        {chat.turns.length === 0 ? (
-          <Typography.Paragraph type="secondary" style={{ padding: 24 }}>
-            试试说：「建一个 SKU：A-1001 轴承」「A-1001 入库 50 个」「帮我把规格字段隐藏」。
-            改配置类请求会生成待确认提议，由你最终拍板。
-          </Typography.Paragraph>
-        ) : null}
-        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          {chat.turns.map((turn, idx) => (
-            <div key={idx}>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-                <Typography.Text style={{ background: '#e6f4ff', padding: '6px 12px', borderRadius: 8 }}>
-                  {turn.userText}
-                </Typography.Text>
-              </div>
-              {turn.invocations.map((inv) => (
-                <div key={inv.callId} style={{ marginBottom: 8 }}>
-                  <ToolInvocationCard
-                    invocation={inv}
-                    onAnswer={chat.answerAsk}
-                    onNavigate={navigate}
-                  />
+      <PageHeader title="AI 对话" subtitle="自然语言出入库 / 改配置" />
+      <Card
+        style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
+        styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 } }}
+      >
+        <div ref={listRef} style={{ flex: 1, overflowY: 'auto', paddingRight: 8 }}>
+          {chat.turns.length === 0 ? (
+            <Typography.Paragraph type="secondary" style={{ padding: 24 }}>
+              试试说：「建一个 SKU：A-1001 轴承」「A-1001 入库 50 个」「帮我把规格字段隐藏」。
+              改配置类请求会生成待确认提议，由你最终拍板。
+            </Typography.Paragraph>
+          ) : null}
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            {chat.turns.map((turn, idx) => (
+              <div key={idx}>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+                  <Typography.Text style={{ background: '#e6f4ff', padding: '6px 12px', borderRadius: 8 }}>
+                    {turn.userText}
+                  </Typography.Text>
                 </div>
-              ))}
-              {turn.assistantText ? (
-                <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
-                  {turn.assistantText}
-                </Typography.Paragraph>
-              ) : null}
-              {turn.failed ? (
-                <Typography.Paragraph type="danger" style={{ marginBottom: 0 }}>
-                  {turn.failed}
-                </Typography.Paragraph>
-              ) : null}
-            </div>
-          ))}
-          {chat.isStreaming ? <Spin tip="思考中…" /> : null}
-        </Space>
-      </div>
-      <Space.Compact style={{ marginTop: 12 }} block>
-        <Input.TextArea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onPressEnter={(e) => {
-            if (!e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          placeholder="输入指令，Enter 发送（Shift+Enter 换行）"
-          autoSize={{ minRows: 1, maxRows: 4 }}
-          disabled={chat.isStreaming}
-        />
-        <Button type="primary" icon={<SendOutlined />} onClick={send} loading={chat.isStreaming}>
-          发送
-        </Button>
-      </Space.Compact>
-      {/* 助手切换（M16）：流式中锁定；定义的管理入口在「助手管理」页（高权限分离） */}
-      <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <Segmented
-          value={chat.agentId}
-          onChange={(v) => chat.setAgentId(v as string)}
-          disabled={chat.isStreaming}
-          options={agents.map((a) => ({ label: a.name, value: a.id, title: a.description }))}
-        />
-        <Typography.Link onClick={() => navigate('agents')}>管理助手</Typography.Link>
-      </div>
-    </Card>
+                {turn.invocations.map((inv) => (
+                  <div key={inv.callId} style={{ marginBottom: 8 }}>
+                    <ToolInvocationCard
+                      invocation={inv}
+                      onAnswer={chat.answerAsk}
+                      onNavigate={navigate}
+                    />
+                  </div>
+                ))}
+                {turn.assistantText ? (
+                  <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
+                    {turn.assistantText}
+                  </Typography.Paragraph>
+                ) : null}
+                {turn.failed ? (
+                  <Typography.Paragraph type="danger" style={{ marginBottom: 0 }}>
+                    {turn.failed}
+                  </Typography.Paragraph>
+                ) : null}
+              </div>
+            ))}
+            {chat.isStreaming ? <Spin tip="思考中…" /> : null}
+          </Space>
+        </div>
+        <Space.Compact style={{ marginTop: 12 }} block>
+          <Input.TextArea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onPressEnter={(e) => {
+              if (!e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            placeholder="输入指令，Enter 发送（Shift+Enter 换行）"
+            autoSize={{ minRows: 1, maxRows: 4 }}
+            disabled={chat.isStreaming}
+          />
+          <Button type="primary" icon={<SendOutlined />} onClick={send} loading={chat.isStreaming}>
+            发送
+          </Button>
+        </Space.Compact>
+        {/* 助手切换（M16）：流式中锁定；定义的管理入口在「助手管理」页（高权限分离） */}
+        <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <Segmented
+            value={chat.agentId}
+            onChange={(v) => chat.setAgentId(v as string)}
+            disabled={chat.isStreaming}
+            options={agents.map((a) => ({ label: a.name, value: a.id, title: a.description }))}
+          />
+          <Typography.Link onClick={() => navigate('agents')}>管理助手</Typography.Link>
+        </div>
+      </Card>
+    </div>
   );
 }

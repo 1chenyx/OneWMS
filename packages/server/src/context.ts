@@ -1,5 +1,6 @@
 import { OneCore } from '@one/core';
 import { WmsDomain, type WmsWorkspace } from '@one/wms';
+import { MemoryDomain, type MemoryWorkspace } from '@one/memory';
 import {
   AI_MODULE_ID,
   aiModuleManifest,
@@ -23,6 +24,10 @@ import {
  *
  * M17（AI 模型配置页）：provider/aiConfig 不再启动即固化——applyAiConfig
  * 保存后现场重建（无需重启进程），chat 路由每条消息读的都是当前值。
+ *
+ * 记忆域（MemoryDomain.attach）：core.memory 模块登记 + memory.* 工具注册
+ * + memory_item 投影，全在领域装配器内完成（与 WmsDomain 同模式）；
+ * ctx.memory 供 chat 提取钩子与管理端点消费。
  */
 
 /** 当前生效 AI 配置的来源（状态卡的「真相面」） */
@@ -31,6 +36,8 @@ export type AiConfigSource = 'file' | 'env' | 'none';
 export interface AppContext {
   readonly core: OneCore;
   readonly ws: WmsWorkspace;
+  /** 记忆域工作区门面（AI 聊天记忆的投影与设置读取面） */
+  readonly memory: MemoryWorkspace;
   /** 工作区边界（同步组 = 同 workspaceId，M5 同步的握手校验位） */
   readonly workspaceId: string;
   /** 进程级 LLM 通道（未配置 AI 时 undefined——/api/chat 503；页面保存后热替换） */
@@ -62,6 +69,8 @@ export function createAppContext(options: {
 }): AppContext {
   const core = OneCore.open(options.dbPath);
   const ws = WmsDomain.attach(core).workspace(options.workspaceId);
+  // 记忆域装配（manifest 登记 + 工具注册 + 模块种子安装都在域内完成）
+  const memory = MemoryDomain.attach(core).workspace(options.workspaceId);
   // core.ai 模块登记（M16）：registerManifest = 进程级「代码在场」目录
   // （迁移/同步的 manifest 在场性对照面，与 WmsDomain.attach 注册 core.wms 同模式）；
   // install = 落 module.installed 事件 + modules 段登记（幂等——同版本零事件）。
@@ -72,6 +81,7 @@ export function createAppContext(options: {
   const ctx: AppContext = {
     core,
     ws,
+    memory,
     workspaceId: options.workspaceId,
     provider: options.provider,
     aiConfig: options.aiConfig,

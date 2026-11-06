@@ -17,6 +17,8 @@ export interface SkuRecord {
   /** 条码（M18）：null = 未设置；同库唯一（扫码识读的物理标识） */
   readonly barcode: string | null;
   readonly name: string;
+  /** 安全库存（M20）：低库存预警阈值；0 = 不预警。预警按可用量（余量−冻结）判定 */
+  readonly reorderPoint: number;
   readonly extData: Record<string, unknown>;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -27,6 +29,7 @@ interface SkuRow {
   sku_code: string;
   barcode: string | null;
   name: string;
+  reorder_point: number;
   ext_data: string;
   created_at: string;
   updated_at: string;
@@ -38,6 +41,7 @@ function rowToRecord(row: SkuRow): SkuRecord {
     skuCode: row.sku_code,
     barcode: row.barcode,
     name: row.name,
+    reorderPoint: row.reorder_point,
     extData: JSON.parse(row.ext_data) as Record<string, unknown>,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -59,8 +63,8 @@ export class SkuView {
         // sku_code / barcode 唯一冲突不走 OR IGNORE 静默——那是业务冲突，必须显式炸出来
         this.db
           .prepare(
-            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, reorder_point, ext_data, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             p.skuId,
@@ -68,6 +72,7 @@ export class SkuView {
             p.skuCode,
             p.barcode ?? null,
             p.name,
+            p.reorderPoint ?? 0,
             JSON.stringify(p.extData ?? {}),
             env.createdAt,
             env.createdAt,
@@ -81,6 +86,7 @@ export class SkuView {
             `UPDATE wms_sku SET
                name = COALESCE(?, name),
                barcode = COALESCE(?, barcode),
+               reorder_point = COALESCE(?, reorder_point),
                ext_data = COALESCE(?, ext_data),
                updated_at = ?
              WHERE workspace_id = ? AND id = ?`,
@@ -88,6 +94,7 @@ export class SkuView {
           .run(
             p.name ?? null,
             p.barcode ?? null,
+            p.reorderPoint ?? null,
             p.extData === undefined ? null : JSON.stringify(p.extData),
             env.createdAt,
             this.workspaceId,

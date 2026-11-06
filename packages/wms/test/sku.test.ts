@@ -264,3 +264,147 @@ describe('条码管理（M18）', () => {
     }
   });
 });
+
+describe('安全库存与低库存预警（M20）', () => {
+  it('create 带 reorderPoint（缺省 0）；update 显式传才改、传 0 关闭', async () => {
+    const r = (await ws.tools.invoke('wms.sku.create', {
+      skuCode: 'A-1',
+      name: '螺丝',
+      reorderPoint: 50,
+    })) as { reorderPoint: number };
+    expect(r.reorderPoint).toBe(50);
+    expect(ws.skus.byCode('A-1')!.reorderPoint).toBe(50);
+
+    // 缺省 0
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'B-2', name: '螺母' });
+    expect(ws.skus.byCode('B-2')!.reorderPoint).toBe(0);
+
+    // update 未传保持
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'A-1', name: '螺丝加硬' });
+    expect(ws.skus.byCode('A-1')!.reorderPoint).toBe(50);
+
+    // update 改值 / 传 0 关闭
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'A-1', reorderPoint: 80 });
+    expect(ws.skus.byCode('A-1')!.reorderPoint).toBe(80);
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'A-1', reorderPoint: 0 });
+    expect(ws.skus.byCode('A-1')!.reorderPoint).toBe(0);
+
+    // 负数 schema 拒
+    await expect(
+      ws.tools.invoke('wms.sku.create', { skuCode: 'C-3', name: 'x', reorderPoint: -1 }),
+    ).rejects.toThrow('参数 reorderPoint 不能小于 0');
+  });
+
+  it('lowstock：低于阈值列出（缺口降序）；0 不参与；充足不列；纯读零事件', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: '螺丝', reorderPoint: 20 });
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'B-2', name: '螺母', reorderPoint: 5 });
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'C-3', name: '垫片' }); // 无阈值
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 5 }); // 缺 15
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'B-2', delta: 10 }); // 充足
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'C-3', delta: 1 }); // 无阈值有货不列
+
+    const before = ws.events.count();
+    const rows = (await ws.tools.invoke('wms.inventory.lowstock', {})) as Array<{
+      skuCode: string;
+      total: number;
+      available: number;
+      reorderPoint: number;
+      shortage: number;
+    }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      skuCode: 'A-1',
+      total: 5,
+      held: 0,
+      available: 5,
+      reorderPoint: 20,
+      shortage: 15,
+    });
+    expect(ws.events.count()).toBe(before); // 纯读零事件
+
+    // skuCode 过滤：充足 SKU 返回空数组（确认单品预警状态）
+    const ok = (await ws.tools.invoke('wms.inventory.lowstock', { skuCode: 'B-2' })) as unknown[];
+    expect(ok).toHaveLength(0);
+  });
+
+  it('lowstock：冻结吃掉可用量触发预警（M19 同一口径）；入库后解除', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: '螺丝', reorderPoint: 10 });
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 20 });
+    // 余量 20 ≥ 阈值 10：不预警
+    expect(await ws.tools.invoke('wms.inventory.lowstock', {})).toHaveLength(0);
+
+    // 冻结 15 → 可用 5 < 10：预警（物理余量仍 20）
+    await ws.tools.invoke('wms.inventory.hold', { skuCode: 'A-1', quantity: 15 });
+    const rows = (await ws.tools.invoke('wms.inventory.lowstock', {})) as Array<{
+      available: number;
+      shortage: number;
+    }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ available: 5, shortage: 5 });
+
+    // 补货 10 → 可用 15 ≥ 10：解除
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 10 });
+    expect(await ws.tools.invoke('wms.inventory.lowstock', {})).toHaveLength(0);
+  });
+
+  it('replay() 重建后 reorderPoint 保留', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: 'x', reorderPoint: 30 });
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'A-1', reorderPoint: 40 });
+    ws.replay();
+    expect(ws.skus.byCode('A-1')!.reorderPoint).toBe(40);
+  });
+
+  it('老库收敛：M19 结构（有 barcode 无 reorder_point 列）文件库重开 → 第三道检测重建，事件携带值完整恢复', async () => {
+    const file = join(tmpdir(), `onewms-m20-conv-${randomUUID()}.db`);
+    try {
+      // ① 用当前代码跑出业务事实
+      {
+        const core1 = OneCore.open(file);
+        const d1 = WmsDomain.attach(core1);
+        const w1 = d1.workspace('ws-m20-conv');
+        await w1.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: '螺丝', reorderPoint: 50 });
+        await w1.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 10 });
+        core1.close();
+      }
+      // ② 裸 SQL 模拟 M19 表结构：wms_sku 有 barcode 无 reorder_point（改表搬数）
+      {
+        const db = new Database(file);
+        try {
+          db.exec(`
+            ALTER TABLE wms_sku RENAME TO wms_sku_legacy;
+            CREATE TABLE wms_sku (
+              id           TEXT NOT NULL PRIMARY KEY,
+              workspace_id TEXT NOT NULL,
+              sku_code     TEXT NOT NULL,
+              barcode      TEXT,
+              name         TEXT NOT NULL,
+              ext_data     TEXT NOT NULL DEFAULT '{}',
+              created_at   TEXT NOT NULL,
+              updated_at   TEXT NOT NULL,
+              UNIQUE (workspace_id, sku_code),
+              UNIQUE (workspace_id, barcode)
+            );
+            INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, ext_data, created_at, updated_at)
+              SELECT id, workspace_id, sku_code, barcode, name, ext_data, created_at, updated_at FROM wms_sku_legacy;
+            DROP TABLE wms_sku_legacy;
+          `);
+        } finally {
+          db.close();
+        }
+      }
+      // ③ 重开：第三道检测（缺 reorder_point）→ 九张投影整组 DROP 重建；
+      //    事件里有 reorderPoint=50 → 重建后完整恢复（不是收敛 0——事件是真相）
+      {
+        const core2 = OneCore.open(file);
+        const d2 = WmsDomain.attach(core2);
+        const w2 = d2.workspace('ws-m20-conv');
+        const sku = w2.skus.byCode('A-1')!;
+        expect(sku.reorderPoint).toBe(50);
+        expect(w2.inventory.quantityOf(sku.id, DEFAULT_LOCATION_ID, DEFAULT_BATCH_NO)).toBe(10);
+        core2.close();
+      }
+    } finally {
+      rmSync(file, { force: true });
+    }
+  });
+});

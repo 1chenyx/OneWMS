@@ -189,7 +189,18 @@ describe('库存端点', () => {
       name: string;
       quantity: number;
     }>;
-    expect(rows).toEqual([{ skuId: expect.any(String), skuCode: 'A-1', name: '螺丝', quantity: 30 }]);
+    // M19：行含冻结三件套（无冻结时 held 0 / available = quantity）；M20 附 reorderPoint
+    expect(rows).toEqual([
+      {
+        skuId: expect.any(String),
+        skuCode: 'A-1',
+        name: '螺丝',
+        quantity: 30,
+        held: 0,
+        available: 30,
+        reorderPoint: 0,
+      },
+    ]);
 
     // 出库超余量 → 拒绝（库存不可为负）
     const bad = await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: -100 });
@@ -506,11 +517,27 @@ describe('盘点端点（M17：清单进度 / 明细联查 / 录实盘 / 关单�
       { skuCode: 'B-2', locationCode: 'DEFAULT', batchNo: 'DEFAULT', expectedQty: 4, countedQty: 5, bookQty: 4, delta: 1 },
     ]);
 
-    // 库存收敛 = 实盘数（清单页即时可见）
+    // 库存收敛 = 实盘数（清单页即时可见；M19 冻结三件套 + M20 reorderPoint，均无值）
     const inv = (await (await app.request('/api/inventory')).json()) as Array<{ skuCode: string; quantity: number }>;
     expect(inv).toEqual([
-      { skuId: expect.any(String), skuCode: 'A-1', name: '螺丝', quantity: 7 },
-      { skuId: expect.any(String), skuCode: 'B-2', name: '螺母', quantity: 11 }, // 6 + 5
+      {
+        skuId: expect.any(String),
+        skuCode: 'A-1',
+        name: '螺丝',
+        quantity: 7,
+        held: 0,
+        available: 7,
+        reorderPoint: 0,
+      },
+      {
+        skuId: expect.any(String),
+        skuCode: 'B-2',
+        name: '螺母',
+        quantity: 11,
+        held: 0,
+        available: 11,
+        reorderPoint: 0,
+      }, // 6 + 5
     ]);
   });
 
@@ -538,5 +565,126 @@ describe('盘点端点（M17：清单进度 / 明细联查 / 录实盘 / 关单�
     const res = await app.request('/api/stocktakes/ST-404');
     expect(res.status).toBe(400);
     expect(((await res.json()) as { code: string }).code).toBe('WMS_STOCKTAKE_NOT_FOUND');
+  });
+});
+
+// ── 冻结（M19：GET /api/inventory 三件套 + holds 端点）──────────
+
+describe('冻结端点（M19）', () => {
+  it('POST /api/holds 冻结 → GET /api/inventory 带 held/available；GET /api/holds 按 skuCode 过滤', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 10, reason: '期初' });
+
+    const hold = await post(app, '/api/holds', { skuCode: 'A-1', quantity: 4, reason: '质检隔离' });
+    expect(hold.status).toBe(201);
+    const created = (await hold.json()) as { holdId: string; held: number; available: number };
+    expect(created.holdId).toBeTruthy();
+    expect(created.held).toBe(4);
+    expect(created.available).toBe(6);
+
+    // 库存清单三件套（+ M20 reorderPoint，该测试未设安全库存 → 0）
+    const inv = (await (await app.request('/api/inventory')).json()) as Array<{
+      skuCode: string;
+      quantity: number;
+      held: number;
+      available: number;
+    }>;
+    expect(inv).toEqual([
+      {
+        skuId: expect.any(String),
+        skuCode: 'A-1',
+        name: '螺丝',
+        quantity: 10,
+        held: 4,
+        available: 6,
+        reorderPoint: 0,
+      },
+    ]);
+
+    // 活动冻结清单（过滤 + 形状）
+    const holds = (await (await app.request('/api/holds?skuCode=A-1')).json()) as Array<{
+      id: string;
+      skuCode: string;
+      quantity: number;
+      reason: string;
+    }>;
+    expect(holds).toHaveLength(1);
+    expect(holds[0]).toMatchObject({ skuCode: 'A-1', quantity: 4, reason: '质检隔离' });
+
+    // 未知编码 → 空清单（过滤器不报错）
+    const none = (await (await app.request('/api/holds?skuCode=X-9')).json()) as unknown[];
+    expect(none).toHaveLength(0);
+  });
+
+  it('POST /api/holds/:id/release 释放 → held 归零；重复释放 → 400 WMS_HOLD_NOT_FOUND', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 10 });
+    const { holdId } = (await (await post(app, '/api/holds', { skuCode: 'A-1', quantity: 5 })).json()) as {
+      holdId: string;
+    };
+
+    const rel = await post(app, `/api/holds/${holdId}/release`, {});
+    expect(rel.status).toBe(200);
+    expect(((await rel.json()) as { held: number; available: number })).toMatchObject({
+      held: 0,
+      available: 10,
+    });
+
+    const again = await post(app, `/api/holds/${holdId}/release`, {});
+    expect(again.status).toBe(400);
+    expect(((await again.json()) as { code: string }).code).toBe('WMS_HOLD_NOT_FOUND');
+  });
+
+  it('冻结超量 → 400 WMS_HOLD_EXCEEDS_STOCK；出库单撞冻结 → 400 WMS_STOCK_HELD', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 10 });
+
+    const over = await post(app, '/api/holds', { skuCode: 'A-1', quantity: 11 });
+    expect(over.status).toBe(400);
+    expect(((await over.json()) as { code: string }).code).toBe('WMS_HOLD_EXCEEDS_STOCK');
+
+    // 冻结 6 → 可用 4；出库 5 的单进拣货被拦
+    await post(app, '/api/holds', { skuCode: 'A-1', quantity: 6 });
+    const order = (await (await post(app, '/api/orders', {
+      direction: 'out',
+      lines: [{ skuCode: 'A-1', quantity: 5 }],
+    })).json()) as { orderNo: string };
+    const pick = await post(app, `/api/orders/${order.orderNo}/transition`, { to: 'picking' });
+    expect(pick.status).toBe(400);
+    expect(((await pick.json()) as { code: string }).code).toBe('WMS_STOCK_HELD');
+  });
+});
+
+// ── 安全库存（M20：SKU 主数据带 reorderPoint，/api/inventory 附带）──────────
+
+describe('安全库存端点（M20）', () => {
+  it('建 SKU 带 reorderPoint → /api/skus 透传；/api/inventory 行携带 reorderPoint', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝', reorderPoint: 20 });
+    await post(app, '/api/skus', { skuCode: 'B-2', name: '螺母' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 10 });
+    await post(app, '/api/inventory/adjust', { skuCode: 'B-2', delta: 5 });
+
+    const skus = (await (await app.request('/api/skus')).json()) as Array<{
+      skuCode: string;
+      reorderPoint: number;
+    }>;
+    expect(skus.find((s) => s.skuCode === 'A-1')!.reorderPoint).toBe(20);
+    expect(skus.find((s) => s.skuCode === 'B-2')!.reorderPoint).toBe(0);
+
+    const inv = (await (await app.request('/api/inventory')).json()) as Array<{
+      skuCode: string;
+      reorderPoint: number;
+      available: number;
+    }>;
+    // A-1：可用 10 < 阈值 20（前端据此标红/过滤）
+    expect(inv.find((r) => r.skuCode === 'A-1')!).toMatchObject({
+      reorderPoint: 20,
+      available: 10,
+    });
+    expect(inv.find((r) => r.skuCode === 'B-2')!.reorderPoint).toBe(0);
   });
 });

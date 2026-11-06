@@ -25,6 +25,7 @@ import {
   useNodeHello,
   useSyncRun,
 } from '../api/hooks';
+import PageHeader from '../components/PageHeader';
 
 /**
  * 设置页（M8）——M5 同步与 M7 迁移的用户面收口。
@@ -34,14 +35,17 @@ import {
 
 export default function SettingsPage() {
   return (
-    <Tabs
-      defaultActiveKey="node"
-      items={[
-        { key: 'node', icon: <NodeIndexOutlined />, label: '节点', children: <NodeTab /> },
-        { key: 'sync', icon: <LinkOutlined />, label: '局域网同步', children: <SyncTab /> },
-        { key: 'migration', icon: <SyncOutlined />, label: '迁移', children: <MigrationTab /> },
-      ]}
-    />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+      <PageHeader title="设置" subtitle="节点身份、局域网同步与数据迁移" />
+      <Tabs
+        defaultActiveKey="node"
+        items={[
+          { key: 'node', icon: <NodeIndexOutlined />, label: '节点', children: <NodeTab /> },
+          { key: 'sync', icon: <LinkOutlined />, label: '局域网同步', children: <SyncTab /> },
+          { key: 'migration', icon: <SyncOutlined />, label: '迁移', children: <MigrationTab /> },
+        ]}
+      />
+    </div>
   );
 }
 
