@@ -16,6 +16,8 @@ export const WMS_EVENT_TYPES = {
   skuCreated: 'wms.sku.created',
   skuUpdated: 'wms.sku.updated',
   locationCreated: 'wms.location.created',
+  partnerCreated: 'wms.partner.created',
+  partnerUpdated: 'wms.partner.updated',
   orderCreated: 'wms.order.created',
   orderStateChanged: 'wms.order.state_changed',
   inventoryAdjusted: 'wms.inventory.adjusted',
@@ -24,6 +26,9 @@ export const WMS_EVENT_TYPES = {
   stocktakeCreated: 'wms.stocktake.created',
   stocktakeCounted: 'wms.stocktake.counted',
   stocktakeStateChanged: 'wms.stocktake.state_changed',
+  pickingCreated: 'wms.picking.created',
+  pickingPicked: 'wms.picking.picked',
+  pickingStateChanged: 'wms.picking.state_changed',
 } as const;
 
 export type WmsEventType = (typeof WMS_EVENT_TYPES)[keyof typeof WMS_EVENT_TYPES];
@@ -80,6 +85,36 @@ export interface LocationCreatedPayload {
   readonly name: string;
 }
 
+// ── 往来单位（partner）payload ────────────────────────────────
+
+/**
+ * 往来单位诞生（M21）：供应商/客户统一实体（kind 区分），全库 partner_code 唯一。
+ * created 携带全量字段；updated 只携带变更字段（LWW，未传保持不变）。
+ */
+export interface PartnerCreatedPayload {
+  readonly partnerId: string;
+  readonly partnerCode: string;
+  /** supplier = 供应商（入库单往来单位）/ customer = 客户（出库单往来单位） */
+  readonly kind: 'supplier' | 'customer';
+  readonly name: string;
+  readonly contact?: string;
+  readonly phone?: string;
+  readonly address?: string;
+  readonly note?: string;
+  readonly extData?: Record<string, unknown>;
+}
+
+export interface PartnerUpdatedPayload {
+  readonly partnerId: string;
+  readonly partnerCode: string;
+  readonly name?: string;
+  readonly contact?: string;
+  readonly phone?: string;
+  readonly address?: string;
+  readonly note?: string;
+  readonly extData?: Record<string, unknown>;
+}
+
 export interface OrderLinePayload {
   readonly skuId: string;
   readonly quantity: number;
@@ -95,6 +130,8 @@ export interface OrderCreatedPayload {
   readonly orderId: string;
   readonly orderNo: string;
   readonly direction: OrderDirection;
+  /** 往来单位 id（M21，可选）：入库单=供应商 / 出库单=客户；缺省 null */
+  readonly partnerId?: string;
   readonly lines: readonly OrderLinePayload[];
   readonly note?: string;
 }
@@ -192,6 +229,63 @@ export interface StocktakeCountedPayload {
 export interface StocktakeStateChangedPayload {
   readonly stocktakeId: string;
   readonly stocktakeNo: string;
+  readonly from: string;
+  readonly to: string;
+}
+
+// ── 拣货单（picking，M21）payload ─────────────────────────────
+
+/** 拣货单行 payload：一行 = 关联出库单行（四段键定位）+ 建议桶 + 待拣量 */
+export interface PickingLinePayload {
+  /** 拣货单行 id（pickingId:orderLineId 派生，重放幂等键） */
+  readonly lineId: string;
+  readonly orderId: string;
+  readonly orderNo: string;
+  /** 关联出库单行 id（= orderId:skuId:locationId:batchNo 四段派生） */
+  readonly orderLineId: string;
+  readonly skuId: string;
+  readonly skuCode: string;
+  readonly qtyToPick: number;
+  /** 建议桶（行声明的库位/批次；分配策略展开后的具体桶） */
+  readonly suggestedLocationId: string;
+  readonly suggestedLocationCode: string;
+  readonly suggestedBatchNo: string;
+}
+
+/**
+ * 拣货单诞生（M21）：聚合多张「拣货中」出库单的行成一张拣货单。
+ * 行的建议桶随事件携带（建单时点的事实）；实拣是后续 picked 事件的增量。
+ */
+export interface PickingCreatedPayload {
+  readonly pickingId: string;
+  readonly pickingNo: string;
+  readonly lines: readonly PickingLinePayload[];
+  readonly note?: string;
+}
+
+/**
+ * 一行实拣记录（M21）。pickedQty 是本行累计实拣量（后到者胜，重盘覆盖）；
+ * 实拣桶缺省用建议桶，picker 可改拣其他库位/批次（记录事实）。
+ * 不落库存流水——扣减发生在关单（close）时的 inventory.adjusted。
+ */
+export interface PickingPickedPayload {
+  readonly pickingId: string;
+  readonly pickingNo: string;
+  readonly lineId: string;
+  readonly pickedQty: number;
+  readonly pickedLocationId?: string;
+  readonly pickedLocationCode?: string;
+  readonly pickedBatchNo?: string;
+}
+
+/**
+ * 拣货单生命周期（M21）：created → closed / canceled（固定词汇，不进 Profile
+ * workflows——M17 盘点先例）。close 联动的扣减是普通 inventory.adjusted
+ * （reason: picking:{单号}）+ 各出库单的 order.state_changed，不落新事件类型。
+ */
+export interface PickingStateChangedPayload {
+  readonly pickingId: string;
+  readonly pickingNo: string;
   readonly from: string;
   readonly to: string;
 }

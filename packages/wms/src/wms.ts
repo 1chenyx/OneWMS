@@ -12,13 +12,17 @@ import {
 import { migrateWms } from './db/migrations.js';
 import { SkuView } from './views/sku-view.js';
 import { LocationView } from './views/location-view.js';
+import { PartnerView } from './views/partner-view.js';
 import { OrderView } from './views/order-view.js';
 import { InventoryView } from './views/inventory-view.js';
 import { StocktakeView } from './views/stocktake-view.js';
+import { PickingView } from './views/picking-view.js';
 import { WmsProjections } from './views/wms-projections.js';
 import { createWmsTools } from './tools/wms-tools.js';
+import { createPutawayTools } from './tools/putaway-tools.js';
 import { isWmsEventType } from './events/catalog.js';
 import { wmsManifest } from './wms-manifest.js';
+import { putawayManifest } from './putaway-manifest.js';
 
 /**
  * WmsDomain —— 领域装配器：把仓储领域「挂载」到一个内核实例上。
@@ -33,6 +37,7 @@ export class WmsDomain {
   readonly #core: OneCore;
   readonly #db: Database.Database;
   readonly #manifest: ModuleManifest;
+  readonly #putawayManifest: ModuleManifest;
   readonly #cache = new Map<string, WmsWorkspace>();
 
   private constructor(core: OneCore) {
@@ -40,10 +45,15 @@ export class WmsDomain {
     this.#db = core.exposeDb();
     migrateWms(this.#db);
     const bus = core.exposeToolBus();
+    // 工具 partition（M21）：putaway 工具注册上总线（AI 可用），但不进
+    // core.wms 的 tools 数组——它由 module.putaway manifest 单独声明（双声明冲突）
     const toolDefs = createWmsTools((id) => this.workspace(id));
-    for (const tool of toolDefs) bus.register(tool);
+    const putawayToolDefs = createPutawayTools((id) => this.workspace(id));
+    for (const tool of [...toolDefs, ...putawayToolDefs]) bus.register(tool);
     this.#manifest = wmsManifest(toolDefs);
+    this.#putawayManifest = putawayManifest(putawayToolDefs);
     core.exposeModuleRegistry().registerManifest(this.#manifest);
+    core.exposeModuleRegistry().registerManifest(this.#putawayManifest);
   }
 
   /** 把领域挂到内核上（幂等心智：attach 两次 = 工具覆盖注册 + 表 IF NOT EXISTS + 目录覆盖登记） */
@@ -55,7 +65,7 @@ export class WmsDomain {
   workspace(workspaceId: string): WmsWorkspace {
     let ws = this.#cache.get(workspaceId);
     if (!ws) {
-      ws = new WmsWorkspace(workspaceId, this.#core, this.#db, this.#manifest);
+      ws = new WmsWorkspace(workspaceId, this.#core, this.#db, this.#manifest, this.#putawayManifest);
       this.#cache.set(workspaceId, ws);
     }
     return ws;
@@ -84,21 +94,31 @@ export class WmsWorkspace {
   /** 领域五投影 */
   readonly skus: SkuView;
   readonly locations: LocationView;
+  readonly partners: PartnerView;
   readonly orders: OrderView;
   readonly inventory: InventoryView;
   readonly stocktakes: StocktakeView;
+  readonly pickings: PickingView;
 
   readonly #facade: WorkspaceFacade;
   readonly #db: Database.Database;
   readonly #projections: WmsProjections;
   readonly #nodeId: string;
+  readonly #putawayManifest: ModuleManifest;
   #cursor = -1;
 
-  constructor(workspaceId: string, core: OneCore, db: Database.Database, manifest: ModuleManifest) {
+  constructor(
+    workspaceId: string,
+    core: OneCore,
+    db: Database.Database,
+    manifest: ModuleManifest,
+    putawayManifest: ModuleManifest,
+  ) {
     this.#facade = core.workspace(workspaceId);
     this.#db = db;
     this.#projections = new WmsProjections(db, workspaceId);
     this.#nodeId = core.nodeId;
+    this.#putawayManifest = putawayManifest;
     this.events = this.#facade.events;
     this.fields = this.#facade.fields;
     this.tools = this.#facade.tools;
@@ -106,11 +126,14 @@ export class WmsWorkspace {
     this.modules = this.#facade.modules;
     this.skus = this.#projections.skus;
     this.locations = this.#projections.locations;
+    this.partners = this.#projections.partners;
     this.orders = this.#projections.orders;
     this.inventory = this.#projections.inventory;
     this.stocktakes = this.#projections.stocktakes;
+    this.pickings = this.#projections.pickings;
     this.sync();
     this.#installBaseModule(manifest);
+    this.#installPutawayModule();
   }
 
   /**
@@ -125,6 +148,26 @@ export class WmsWorkspace {
    */
   #installBaseModule(manifest: ModuleManifest): void {
     this.modules.install(manifest, { actor: `module:${manifest.id}@${this.#nodeId}` });
+  }
+
+  /**
+   * 上架模块种子（M21）：默认随构造安装（enabled=true → putaway 步骤立即可用）。
+   * try/catch 降级：老库若自定义过 inbound 流程（已手工加了 putaway 态或删了
+   * received 态）导致贡献校验失败，跳过安装并 log——上架不可用，但不阻塞打开
+   * 工作区。停用/卸载走 profile 慢通道（propose → confirm）。
+   */
+  #installPutawayModule(): void {
+    try {
+      this.modules.install(this.#putawayManifest, {
+        actor: `module:${this.#putawayManifest.id}@${this.#nodeId}`,
+      });
+    } catch (e) {
+      console.warn(
+        `[module.putaway] 安装降级（流程贡献校验未过，上架步骤不可用）：${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
   }
 
   /**

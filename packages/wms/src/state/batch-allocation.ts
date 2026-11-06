@@ -1,11 +1,12 @@
 import type { WmsWorkspace } from '../wms.js';
 import { AllocationInsufficientError, SkuNotFoundError } from '../errors.js';
-import { isExpired, resolveLocation } from './inventory-policy.js';
+import { resolveLocation } from './inventory-policy.js';
+import { allocateFromBuckets } from './allocation.js';
 
 /**
  * 批次分配（M12）：出库单启用 allocation 时，把未指定批次的行按策略拆分为具体批次行。
  *  - fifo：桶按首笔流水时间升序（firstSeenAt）；fefo：按效期升序，无期批次（含
- *    DEFAULT）排最后——同段并列回落 firstSeenAt，再并列用 batchNo 字典序稳定化；
+ *    DEFAULT）排最后——排序与装载核心在 allocation.ts（M21 提取，拣货建议桶共用）；
  *  - 分配范围 = 行库位内的全部余量桶（不跨库位）；按序扣到足额，一行可拆多批次；
  *  - 显式指定 batchNo 的行原样保留（显式优先，不参与分配）；
  *  - 各批次合计不足 → AllocationInsufficientError（纯计算不落事件，fail-fast）；
@@ -46,29 +47,13 @@ export function expandAllocatedLines(
     if (!sku) throw new SkuNotFoundError(l.skuCode);
     const loc = resolveLocation(ws, l.locationCode);
 
-    const buckets = ws.inventory.batchesOf(sku.id, loc.locationId);
-    // M13：拦截开启时跳过过期桶（效期早于今天；今天到期 = 临期可用）
-    const usable = blockExpired ? buckets.filter((b) => !isExpired(b.batchExpiryDate, today)) : buckets;
-    usable.sort((a, b) => {
-      if (strategy === 'fefo') {
-        const ae = a.batchExpiryDate;
-        const be = b.batchExpiryDate;
-        if (ae === null && be !== null) return 1; // 无期批次最后（含 DEFAULT）
-        if (ae !== null && be === null) return -1;
-        if (ae !== null && be !== null && ae !== be) return ae < be ? -1 : 1;
-      }
-      if (a.firstSeenAt !== b.firstSeenAt) return a.firstSeenAt < b.firstSeenAt ? -1 : 1;
-      return a.batchNo < b.batchNo ? -1 : a.batchNo > b.batchNo ? 1 : 0;
-    });
-
-    let remaining = l.quantity;
-    const parts: { batchNo: string; quantity: number }[] = [];
-    for (const b of usable) {
-      if (remaining <= 0) break;
-      const take = Math.min(remaining, b.quantity);
-      parts.push({ batchNo: b.batchNo, quantity: take });
-      remaining -= take;
-    }
+    const { parts, remaining } = allocateFromBuckets(
+      ws.inventory.batchesOf(sku.id, loc.locationId),
+      l.quantity,
+      strategy,
+      blockExpired,
+      today,
+    );
     if (remaining > 0) {
       throw new AllocationInsufficientError(
         l.skuCode,

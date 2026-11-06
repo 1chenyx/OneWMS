@@ -34,6 +34,7 @@ export type { FieldSharing } from './registry/key-naming.js';
 export { applyPatch, parsePointer } from './profile/patch.js';
 export { validatePatch } from './profile/validate.js';
 export { buildImpactReport } from './profile/impact.js';
+export { evalWhenCondition } from './profile/when.js';
 export type {
   ConfigState,
   FieldExtension,

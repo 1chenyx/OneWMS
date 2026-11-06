@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
 
-/** Profile 快照：动态列 / 流转按钮的数据源（切页挂载即刷新，配置确认后自然可见） */
+/** Profile 快照：动态列 / 流转按钮的数据源（切页挂载即刷新，提议确认后自然可见） */
 export function useProfileSnapshot() {
   return useQuery({ queryKey: ['profile'], queryFn: api.profileSnapshot });
 }
@@ -25,6 +25,115 @@ export function useCreateSku() {
   });
 }
 
+// ── 往来单位（M21）────────────────────────────────────
+
+/** 往来单位清单（kind = supplier/customer；queryKey 带 kind/q 防串缓存，
+ *  invalidateQueries({ queryKey: ['partners'] }) 前缀匹配仍全失效） */
+export function usePartners(query?: { kind?: 'supplier' | 'customer'; q?: string }) {
+  return useQuery({
+    queryKey: ['partners', query?.kind ?? '', query?.q ?? ''],
+    queryFn: () => api.partners(query),
+  });
+}
+
+function useInvalidatePartners() {
+  const qc = useQueryClient();
+  return () => {
+    void qc.invalidateQueries({ queryKey: ['partners'] });
+  };
+}
+
+export function useCreatePartner() {
+  const invalidate = useInvalidatePartners();
+  return useMutation({ mutationFn: api.createPartner, onSuccess: invalidate });
+}
+
+export function useUpdatePartner() {
+  const invalidate = useInvalidatePartners();
+  return useMutation({
+    mutationFn: (params: {
+      partnerCode: string;
+      body: { name?: string; contact?: string; phone?: string; address?: string; note?: string };
+    }) => api.updatePartner(params.partnerCode, params.body),
+    onSuccess: invalidate,
+  });
+}
+
+// ── 拣货单（M21）──────────────────────────────────────
+
+export function usePickings(state?: string) {
+  return useQuery({ queryKey: ['pickings', state ?? ''], queryFn: () => api.pickings(state) });
+}
+
+function useInvalidatePickings() {
+  const qc = useQueryClient();
+  return () => {
+    void qc.invalidateQueries({ queryKey: ['pickings'] });
+    void qc.invalidateQueries({ queryKey: ['orders'] }); // 关单推进订单状态
+    void qc.invalidateQueries({ queryKey: ['inventory'] }); // 关单统一扣减
+    void qc.invalidateQueries({ queryKey: ['expiry-board'] });
+    void qc.invalidateQueries({ queryKey: ['dashboard'] });
+  };
+}
+
+export function useCreatePicking() {
+  const invalidate = useInvalidatePickings();
+  return useMutation({ mutationFn: api.createPicking, onSuccess: invalidate });
+}
+
+export function usePickPickingLine() {
+  const invalidate = useInvalidatePickings();
+  return useMutation({
+    mutationFn: (params: {
+      pickingNo: string;
+      body: Parameters<typeof api.pickPickingLine>[1];
+    }) => api.pickPickingLine(params.pickingNo, params.body),
+    onSuccess: invalidate,
+  });
+}
+
+export function useClosePicking() {
+  const invalidate = useInvalidatePickings();
+  return useMutation({
+    mutationFn: (pickingNo: string) => api.closePicking(pickingNo),
+    onSuccess: invalidate,
+  });
+}
+
+export function useCancelPicking() {
+  const invalidate = useInvalidatePickings();
+  return useMutation({
+    mutationFn: (pickingNo: string) => api.cancelPicking(pickingNo),
+    onSuccess: invalidate,
+  });
+}
+
+// ── 运营看板（M21）：五维度独立 queryKey（['dashboard', 维度]），写操作
+// 失效时 invalidateQueries({ queryKey: ['dashboard'] }) 前缀匹配全失效 ──
+
+export function useDashboardOverview() {
+  return useQuery({ queryKey: ['dashboard', 'overview'], queryFn: api.dashboardOverview });
+}
+
+export function useDashboardFlowTrend(days = 14) {
+  return useQuery({
+    queryKey: ['dashboard', 'flow-trend', days],
+    queryFn: () => api.dashboardFlowTrend(days),
+  });
+}
+
+export function useDashboardLocations() {
+  return useQuery({ queryKey: ['dashboard', 'locations'], queryFn: api.dashboardLocations });
+}
+
+export function useDashboardOrders() {
+  return useQuery({ queryKey: ['dashboard', 'orders'], queryFn: api.dashboardOrders });
+}
+
+export function useDashboardAlerts() {
+  return useQuery({ queryKey: ['dashboard', 'alerts'], queryFn: api.dashboardAlerts });
+}
+
 // ── 单据 ─────────────────────────────────────────────
 
 export function useOrders(direction?: 'in' | 'out') {
@@ -43,10 +152,28 @@ export function useTransitionOrder() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (params: { orderNo: string; to: string }) => api.transitionOrder(params.orderNo, params.to),
-    // 出库扣减改桶余量 → 效期看板随之变（M14）
+    // 出库扣减改桶余量 → 效期看板/运营看板随之变（M14/M21）
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['orders'] });
       void qc.invalidateQueries({ queryKey: ['expiry-board'] });
+      void qc.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
+export function usePutawayOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: {
+      orderNo: string;
+      targets?: { skuCode: string; fromLocationCode?: string; batchNo?: string; toLocationCode: string }[];
+    }) => api.putawayOrder(params.orderNo, params.targets),
+    // 归位移桶 → 库存分布/效期看板/运营看板随之变（M21）
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['orders'] });
+      void qc.invalidateQueries({ queryKey: ['inventory'] });
+      void qc.invalidateQueries({ queryKey: ['expiry-board'] });
+      void qc.invalidateQueries({ queryKey: ['dashboard'] });
     },
   });
 }
@@ -203,12 +330,27 @@ function useInvalidateProposals() {
 }
 
 export function useConfirmProposal() {
-  const invalidate = useInvalidateProposals();
+  const qc = useQueryClient();
   return useMutation({
     // by 可省：服务端默认补全 user:local@nodeId（本地界面确认）
     mutationFn: (params: { id: string; by?: string }) =>
       api.confirmProposal(params.id, params.by),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      // 确认即配置生效：待确认列表、快照（流程/模块/字段）与派生视图一并失效（M21）
+      void qc.invalidateQueries({ queryKey: ['proposals'] });
+      void qc.invalidateQueries({ queryKey: ['profile'] });
+      void qc.invalidateQueries({ queryKey: ['orders'] });
+    },
+  });
+}
+
+/** 提议配置变更（M21 设置页「流程与模块」入口；AI 提议同一队列） */
+export function useProposeProfile() {
+  return useMutation({
+    mutationFn: (params: {
+      patch: { op: string; path: string; value?: unknown }[];
+      note?: string;
+    }) => api.proposeProfile(params.patch, params.note),
   });
 }
 

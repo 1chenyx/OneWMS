@@ -37,15 +37,22 @@ describe('默认 Profile 种子', () => {
     expect(snapshot.schema.entities.sku.extensions.every((f) => f.visible && f.providedBy === 'core.wms')).toBe(true);
 
     // 流程骨架与 M2 硬编码状态机逐条一致（已知临时状态：M6 前配置面≠行为权威）
-    expect(snapshot.version).toBe(1);
+    // M21 起构造期装两个模块（core.wms + module.putaway）→ config 版本 = 2
+    expect(snapshot.version).toBe(2);
     const { inbound, outbound } = snapshot.workflows;
     expect(inbound.states[0].id).toBe('created'); // states[0] = 初始态约定
-    expect(inbound.transitions).toEqual(
-      ORDER_TRANSITIONS.in.map((t) => ({ from: t.from, to: t.to })),
-    );
+    // inbound = 基础转移 + putaway 贡献（received→putaway 挂 when；putaway→done 无条件）
+    expect(inbound.transitions).toEqual([
+      ...ORDER_TRANSITIONS.in.map((t) => ({ from: t.from, to: t.to })),
+      { from: 'received', to: 'putaway', when: 'module.putaway.enabled' },
+      { from: 'putaway', to: 'done' },
+    ]);
+    expect(inbound.states.find((s) => s.id === 'putaway')?.providedBy).toBe('module.putaway');
     expect(outbound.transitions).toEqual(
       ORDER_TRANSITIONS.out.map((t) => ({ from: t.from, to: t.to })),
     );
+    // 上架模块默认启用（enabled=true → putaway 步骤立即可用）
+    expect(snapshot.modules['module.putaway']).toMatchObject({ enabled: true, version: '0.1.0' });
     core.close();
   });
 
@@ -57,14 +64,14 @@ describe('默认 Profile 种子', () => {
     const first = OneCore.open(dbPath);
     const ws1 = WmsDomain.attach(first).workspace('ws-reopen');
     const events1 = ws1.events.count();
-    expect(ws1.profile.getSnapshot().version).toBe(1);
+    expect(ws1.profile.getSnapshot().version).toBe(2);
     first.close();
 
     // 新进程打开同一库：种子事件已存在（hasHistory），不再装载
     const second = OneCore.open(dbPath);
     const ws2 = WmsDomain.attach(second).workspace('ws-reopen');
     expect(ws2.events.count()).toBe(events1);
-    expect(ws2.profile.getSnapshot().version).toBe(1);
+    expect(ws2.profile.getSnapshot().version).toBe(2);
     second.close();
   });
 
@@ -95,7 +102,7 @@ describe('默认 Profile 种子', () => {
     expect(ws.fields.get('sku', 'spec')!.visible).toBe(false);
     // 纯字段变更走注册表事件（1 条 visibility_changed），不落 config.change
     expect(ws.events.count()).toBe(eventsBefore + 1);
-    expect(ws.profile.getSnapshot().version).toBe(1);
+    expect(ws.profile.getSnapshot().version).toBe(2); // 两个模块种子，未被慢通道改变
     core.close();
   });
 });

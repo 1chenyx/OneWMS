@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { SendOutlined } from '@ant-design/icons';
-import { Button, Card, Input, Segmented, Space, Spin, Typography } from 'antd';
+import { Badge, Button, Card, Input, List, Segmented, Space, Spin, Typography } from 'antd';
 import { api } from '../api/client';
 import type { AgentDef } from '../api/client';
+import { useProposals } from '../api/hooks';
 import { useChatSession } from '../chat/ChatProvider';
 import { useAppNav } from '../app-nav';
+import ProposalDetail from '../components/ProposalDetail';
 import ToolInvocationCard from '../components/ToolInvocationCard';
 import PageHeader from '../components/PageHeader';
 
@@ -12,12 +14,15 @@ import PageHeader from '../components/PageHeader';
  * AI 对话面板（M12：SSE 流式 + 会话化；M16：多助手切换）：
  *  - 状态在 ChatProvider（App 级 context）——切页不丢对话；
  *  - 输入区上方 Segmented 切换助手（选项来自 GET /api/agents；「使用 AI」与
- *    「配置 AI」分离——定义改动走管理页 + 配置确认，聊天里只有切换权）；
+ *    「配置 AI」分离——定义改动走管理页 + 对话页确认，聊天里只有切换权）；
  *    切换 = 换新会话 + 清空历史（流式中锁定）；
+ *  - 待确认提议面板：慢通道的人工拍板收敛在本页（配置确认页已并入）——
+ *    AI 对话里的 profile.propose、助手管理/AI 记忆的保存提议都出现在顶部
+ *    面板，展开详情即可直接确认/拒绝，不再单独设页跳转；
  *  - 流式渲染：工具卡先落「执行中」态、tool-result 回填，助手文本逐 delta 增长；
  *  - 工具调用过程可见（可审计）；成功的工具卡带后置动作按钮（步骤4）：
- *    profile.propose → 去配置确认、库存/单据操作 → 去对应管理页（带过滤）、
- *    临期查询 → 去效期看板（单 SKU 结果带过滤预填，M15）。
+ *    库存/单据操作 → 去对应管理页（带过滤）、临期查询 → 去效期看板
+ *    （单 SKU 结果带过滤预填，M15）。
  */
 export default function ChatPage() {
   const chat = useChatSession();
@@ -25,6 +30,23 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [agents, setAgents] = useState<AgentDef[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // 待确认提议（慢通道人工拍板面）：5s 轮询 + 新提议落地即刷（见下方 effect）
+  const proposalsQuery = useProposals();
+  const proposals = proposalsQuery.data;
+  const [activeProposalId, setActiveProposalId] = useState<string | null>(null);
+
+  // 对话里 profile.propose 刚成功 → 立即刷新待确认面板（不等 5s 轮询）。
+  // refetch 经 ref 中转：依赖只留 proposeCount，避免查询对象身份变化触发回流。
+  const proposeCount = chat.turns.reduce(
+    (n, t) => n + t.invocations.filter((i) => i.toolId === 'profile.propose' && i.ok === true).length,
+    0,
+  );
+  const refetchProposals = useRef(proposalsQuery.refetch);
+  refetchProposals.current = proposalsQuery.refetch;
+  useEffect(() => {
+    if (proposeCount > 0) void refetchProposals.current?.();
+  }, [proposeCount]);
 
   // 助手清单（M16）：挂载拉取；失败静默——仅显示当前 agentId，切换器空态可接受
   useEffect(() => {
@@ -63,6 +85,46 @@ export default function ChatPage() {
       }}
     >
       <PageHeader title="AI 对话" subtitle="自然语言出入库 / 改配置" />
+      {/* 待确认提议面板：仅在有 pending 提议时出现；确认/拒绝后列表失效即消失 */}
+      {proposals && proposals.length > 0 ? (
+        <Card
+          size="small"
+          title="待确认提议"
+          extra={<Badge count={proposals.length} />}
+        >
+          <List
+            size="small"
+            dataSource={proposals}
+            renderItem={(p) => (
+              <List.Item
+                actions={[
+                  <a
+                    key="open"
+                    onClick={() =>
+                      setActiveProposalId(p.proposalId === activeProposalId ? null : p.proposalId)
+                    }
+                  >
+                    {p.proposalId === activeProposalId ? '收起' : '查看详情'}
+                  </a>,
+                ]}
+              >
+                <List.Item.Meta
+                  title={
+                    <Space>
+                      <Typography.Text code>{p.proposedBy}</Typography.Text>
+                      <Typography.Text type="secondary">基于 v{p.baseVersion}</Typography.Text>
+                    </Space>
+                  }
+                  description={p.note ?? p.summary}
+                />
+              </List.Item>
+            )}
+          />
+          {activeProposalId ? (
+            <ProposalDetail proposalId={activeProposalId} onDone={() => setActiveProposalId(null)} />
+          ) : null}
+        </Card>
+      ) : null}
       <Card
         style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
         styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 } }}
@@ -71,7 +133,7 @@ export default function ChatPage() {
           {chat.turns.length === 0 ? (
             <Typography.Paragraph type="secondary" style={{ padding: 24 }}>
               试试说：「建一个 SKU：A-1001 轴承」「A-1001 入库 50 个」「帮我把规格字段隐藏」。
-              改配置类请求会生成待确认提议，由你最终拍板。
+              改配置类请求会生成待确认提议，出现在本页顶部，由你直接拍板。
             </Typography.Paragraph>
           ) : null}
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>

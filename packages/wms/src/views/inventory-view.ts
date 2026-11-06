@@ -316,4 +316,36 @@ export class InventoryView {
       createdAt: r.created_at,
     }));
   }
+
+  /**
+   * 出入库日流量聚合（M21，运营看板）：近 N 天逐日正/负流水合计。
+   * 上架移库（reason: putaway:*）成对 ± 净零——计入会虚增双向流量，排除；
+   * 盘点差异/调整是真实库存变化，计入。group by 走 ledger 的 created_at
+   * 前缀（ISO 8601 → substr(1,10) 即 UTC 日，展示口径一致即可）。
+   */
+  dailyFlow(sinceDay: string): { day: string; inbound: number; outbound: number }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT substr(created_at, 1, 10) AS day,
+                SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END) AS inbound,
+                SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END) AS outbound
+         FROM wms_inventory_ledger
+         WHERE workspace_id = ? AND created_at >= ? AND reason NOT LIKE 'putaway:%'
+         GROUP BY day ORDER BY day`,
+      )
+      .all(this.workspaceId, sinceDay) as { day: string; inbound: number; outbound: number }[];
+    return rows.map((r) => ({ day: r.day, inbound: r.inbound, outbound: r.outbound }));
+  }
+
+  /** 库位维度库存分布（M21，运营看板）：quantity > 0 的库位合计，降序 */
+  quantityByLocation(): { locationId: string; quantity: number }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT location_id, SUM(quantity) AS quantity
+         FROM wms_inventory WHERE workspace_id = ? AND quantity > 0
+         GROUP BY location_id ORDER BY quantity DESC`,
+      )
+      .all(this.workspaceId) as { location_id: string; quantity: number }[];
+    return rows.map((r) => ({ locationId: r.location_id, quantity: r.quantity }));
+  }
 }

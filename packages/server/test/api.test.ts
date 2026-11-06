@@ -75,7 +75,7 @@ describe('GET /api/health 与 /api/profile/snapshot', () => {
       schema: { entities: Record<string, { extensions: Array<{ key: string }> }> };
       workflows: Record<string, unknown>;
     };
-    expect(snap.version).toBe(3); // 种子 config.change（core.wms 流程）+ core.ai（M16）+ core.memory 模块登记
+    expect(snap.version).toBe(4); // 种子 config.change（core.wms 流程）+ core.ai（M16）+ core.memory + module.putaway（M21）模块登记
     const keys = snap.schema.entities.sku!.extensions.map((f) => f.key).sort();
     expect(keys).toEqual(['category', 'spec', 'unit']);
     expect(Object.keys(snap.workflows).sort()).toEqual(['inbound', 'outbound']);
@@ -479,6 +479,36 @@ describe('提议确认端点（人类专属，§4.1）', () => {
     const res = await post(app, `/api/proposals/${id}/reject`, {});
     expect(res.status).toBe(200);
     expect(await (await app.request('/api/proposals')).json()).toEqual([]);
+  });
+
+  it('POST /api/profile/propose（设置页入口）：201 + 影响报告 → confirm → 模块启停生效', async () => {
+    const app = setup();
+    const propose = await post(app, '/api/profile/propose', {
+      patch: [{ op: 'replace', path: '/modules/module.putaway/enabled', value: false }],
+      note: '设置页：停用上架模块',
+    });
+    expect(propose.status).toBe(201);
+    const data = (await propose.json()) as {
+      proposalId: string;
+      report: { summary: string; items: unknown[] };
+      pendingConfirm: boolean;
+    };
+    expect(data.pendingConfirm).toBe(true);
+    expect(data.report.items.length).toBeGreaterThan(0);
+
+    // 提议者在列表可辨（本地界面身份，非 AI）
+    const list = (await (await app.request('/api/proposals')).json()) as Array<{ proposalId: string; proposedBy: string }>;
+    expect(list[0]).toMatchObject({ proposalId: data.proposalId, proposedBy: `user:local@${ctx!.core.nodeId}` });
+
+    const confirm = await post(app, `/api/proposals/${data.proposalId}/confirm`, {});
+    expect(confirm.status).toBe(200);
+    expect(ctx!.ws.profile.getSnapshot().modules['module.putaway']!.enabled).toBe(false);
+  });
+
+  it('POST /api/profile/propose：patch 非数组 → 400', async () => {
+    const app = setup();
+    const bad = await post(app, '/api/profile/propose', { patch: 'nope' });
+    expect(bad.status).toBe(400);
   });
 });
 

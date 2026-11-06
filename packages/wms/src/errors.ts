@@ -212,3 +212,125 @@ export class StocktakeScopeViolationError extends CoreError {
     );
   }
 }
+
+// ── 往来单位（M21）───────────────────────────────────
+
+/** 往来单位编码已存在（业务键唯一） */
+export class PartnerAlreadyExistsError extends CoreError {
+  constructor(partnerCode: string) {
+    super('WMS_PARTNER_EXISTS', `往来单位编码已存在: ${partnerCode}`);
+  }
+}
+
+/** 往来单位不存在 */
+export class PartnerNotFoundError extends CoreError {
+  constructor(partnerCode: string) {
+    super('WMS_PARTNER_NOT_FOUND', `往来单位不存在: ${partnerCode}`);
+  }
+}
+
+/** 往来单位种类与单据方向不匹配（入库=供应商 / 出库=客户） */
+export class PartnerKindMismatchError extends CoreError {
+  constructor(partnerCode: string, kind: string, direction: string) {
+    super(
+      'WMS_PARTNER_KIND_MISMATCH',
+      `往来单位 ${partnerCode} 是${kind === 'supplier' ? '供应商' : '客户'}，不适用于${
+        direction === 'in' ? '入库' : '出库'
+      }单（入库单选供应商，出库单选客户）`,
+    );
+  }
+}
+
+// ── 上架（M21，module.putaway）───────────────────────
+
+/** 上架只对入库单开放（出库单调用了 wms.order.putaway） */
+export class PutawayOnlyInboundError extends CoreError {
+  constructor(orderNo: string) {
+    super('WMS_PUTAWAY_ONLY_INBOUND', `上架只适用于入库单：${orderNo} 是出库单`);
+  }
+}
+
+/** 上架目标行未找到（sku+源库位+批次 匹配不到入库单行） */
+export class PutawayLineNotFoundError extends CoreError {
+  constructor(orderNo: string, lineKey: string) {
+    super('WMS_PUTAWAY_LINE_NOT_FOUND', `入库单 ${orderNo} 中找不到匹配的上架行: ${lineKey}`);
+  }
+}
+
+/** 上架源桶余量不足（该行收货入库的库位/批次余量已被挪用） */
+export class PutawaySourceShortError extends CoreError {
+  constructor(skuCode: string, locationCode: string, batchNo: string, needed: number, available: number) {
+    super(
+      'WMS_PUTAWAY_SOURCE_SHORT',
+      `SKU ${skuCode} 在库位 ${locationCode} 批次 ${batchNo} 余量不足：需 ${needed}，仅有 ${available}——该行收货库存已被挪用`,
+    );
+  }
+}
+
+// ── 拣货单（M21）─────────────────────────────────────
+
+/** 拣货单不存在 */
+export class PickingNotFoundError extends CoreError {
+  constructor(pickingNo: string) {
+    super('WMS_PICKING_NOT_FOUND', `拣货单不存在: ${pickingNo}`);
+  }
+}
+
+/** 拣货单号已存在（业务键唯一） */
+export class PickingExistsError extends CoreError {
+  constructor(pickingNo: string) {
+    super('WMS_PICKING_EXISTS', `拣货单号已存在: ${pickingNo}`);
+  }
+}
+
+/** 拣货单不在拣货中状态（pick/close/cancel 只对 created 态开放） */
+export class PickingNotOpenError extends CoreError {
+  constructor(pickingNo: string, state: string) {
+    const label = state === 'closed' ? '已关单' : state === 'canceled' ? '已取消' : state;
+    super('WMS_PICKING_NOT_OPEN', `拣货单 ${pickingNo} 已${label}——只有拣货中的单据才能操作`);
+  }
+}
+
+/** 关单时仍有未拣满的行 */
+export class PickingIncompleteError extends CoreError {
+  constructor(pickingNo: string, unpicked: number) {
+    super(
+      'WMS_PICKING_INCOMPLETE',
+      `拣货单 ${pickingNo} 还有 ${unpicked} 行未拣满——全部行实拣数量等于应拣数量后才能关单（不需要的行请拣 0）`,
+    );
+  }
+}
+
+/** 实拣量超过应拣量 */
+export class PickingOverPickError extends CoreError {
+  constructor(pickingNo: string, lineKey: string, toPick: number, already: number, given: number) {
+    super(
+      'WMS_PICKING_OVER_PICK',
+      `拣货单 ${pickingNo} 行 ${lineKey} 实拣超量：应拣 ${toPick}，已拣 ${already}，本次 ${given}`,
+    );
+  }
+}
+
+/** 建单时出库单不在「拣货中」状态 */
+export class PickingOrderStateError extends CoreError {
+  constructor(orderNo: string, state: string) {
+    super(
+      'WMS_PICKING_ORDER_STATE',
+      `出库单 ${orderNo} 当前状态为 ${state}——只有「拣货中」状态的出库单才能聚合进拣货单`,
+    );
+  }
+}
+
+/** 拣货单行未找到（pickingNo + orderNo + skuCode + 建议批次 定位不到行） */
+export class PickingLineNotFoundError extends CoreError {
+  constructor(pickingNo: string, lineKey: string) {
+    super('WMS_PICKING_LINE_NOT_FOUND', `拣货单 ${pickingNo} 中没有匹配的行：${lineKey}`);
+  }
+}
+
+/** 建单时未提供任何出库单 */
+export class PickingNoOrdersError extends CoreError {
+  constructor() {
+    super('WMS_PICKING_NO_ORDERS', 'orderNos 不能为空——至少聚合一张「拣货中」状态的出库单');
+  }
+}

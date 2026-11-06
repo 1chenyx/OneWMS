@@ -1,23 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import type { ToolDefinition } from '@one/core';
+import { evalWhenCondition, type ToolDefinition } from '@one/core';
 import { readWmsSettings } from '../config/wms-settings.js';
 import { WMS_EVENT_TYPES } from '../events/catalog.js';
 import {
-  ExpiredBatchError,
-  InsufficientStockError,
   OrderAlreadyExistsError,
   OrderNotFoundError,
+  PartnerKindMismatchError,
+  PartnerNotFoundError,
   SkuNotFoundError,
-  StockHeldError,
   WorkflowNotFoundError,
 } from '../errors.js';
 import { expandAllocatedLines } from '../state/batch-allocation.js';
 import { requiresAvailabilityCheck, stockEffectOf } from '../state/inventory-effect.js';
+import { assertOutboundBuckets } from '../state/outbound-guards.js';
 import {
   assertExpiryConsistent,
-  bucketLabel,
   codeOfLocation,
-  isExpired,
   resolveBatch,
   resolveLocation,
 } from '../state/inventory-policy.js';
@@ -40,13 +38,15 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     }[];
     orderNo?: string;
     note?: string;
+    /** 往来单位编码（M21，可选）：入库单=供应商 / 出库单=客户 */
+    partnerCode?: string;
     /** 批次分配策略（M12 起，M13 扩加 strict，仅出库单）：strict=严格桶不分配，fifo=先进先出，fefo=先到期先出 */
     allocation?: 'strict' | 'fifo' | 'fefo';
   }> = {
     id: 'wms.order.create',
     label: '创建出入库单',
     description:
-      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正整数）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致），出库行指定批次则只扣该批次（不指定只扣 DEFAULT 批次，其他批次有货不救）。出库单可选 allocation 批次分配策略（strict=严格桶不分配 / fifo=先进先出 / fefo=先到期先出）：fifo/fefo 启用后未指定批次的行按策略在行库位内自动拆分为具体批次行（一行可拆多批次），显式指定批次的行不受影响；不传时用全局缺省策略（core.wms 设置 defaultAllocation，缺省 strict），本参数优先。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传则自动生成。',
+      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正整数）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致），出库行指定批次则只扣该批次（不指定只扣 DEFAULT 批次，其他批次有货不救）。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。出库单可选 allocation 批次分配策略（strict=严格桶不分配 / fifo=先进先出 / fefo=先到期先出）：fifo/fefo 启用后未指定批次的行按策略在行库位内自动拆分为具体批次行（一行可拆多批次），显式指定批次的行不受影响；不传时用全局缺省策略（core.wms 设置 defaultAllocation，缺省 strict），本参数优先。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传则自动生成。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -59,6 +59,11 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         },
         orderNo: { type: 'string', description: '单据号（可选，缺省自动生成）' },
         note: { type: 'string', description: '备注（可选）' },
+        partnerCode: {
+          type: 'string',
+          description:
+            '往来单位编码（可选，M21）：入库单关联供应商、出库单关联客户；种类不匹配会被拒绝',
+        },
         allocation: {
           type: 'string',
           enum: ['strict', 'fifo', 'fefo'],
@@ -128,11 +133,25 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         throw new OrderAlreadyExistsError(orderNo);
       }
 
+      // 往来单位解析（M21）：存在 + 方向匹配（in↔supplier / out↔customer）。
+      // 只落 partnerId（业务 id）；编码/名称展示由查询层联查（事件禁冗余快照）。
+      let partnerId: string | undefined;
+      if (params.partnerCode !== undefined) {
+        const partner = ws.partners.byCode(params.partnerCode);
+        if (!partner) throw new PartnerNotFoundError(params.partnerCode);
+        const expectedKind = params.direction === 'in' ? 'supplier' : 'customer';
+        if (partner.kind !== expectedKind) {
+          throw new PartnerKindMismatchError(partner.partnerCode, partner.kind, params.direction);
+        }
+        partnerId = partner.id;
+      }
+
       const orderId = randomUUID();
       ctx.appendEvent(WMS_EVENT_TYPES.orderCreated, {
         orderId,
         orderNo,
         direction: params.direction,
+        partnerId,
         // M12：分配后行集（未启用分配时即原始行集）——事件形态与 M11 逐字节同构
         lines: resolvedLines.map((l) => {
           const batch = resolveBatch(l.batchNo, l.batchExpiryDate);
@@ -174,9 +193,15 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
       // 流程校验（M8 行为闭环）——转移表来自 Profile workflows（配置即权威）：
       // AI 慢通道改流程、模块 contributes 叠加转移，下一次流转立即生效。
       // 流程定义缺失 → 明确报错，不静默回退硬编码表（否则「删流程」的配置静默失效）。
-      const workflow = ws.profile.getSnapshot().workflows[WORKFLOW_BY_DIRECTION[order.direction]];
+      // when 条件运行时求值（M21）：条件不满足的转移视为不存在（如 module.putaway
+      // 停用时 received→putaway 不可达）——与 evalWhenCondition（core）同一语义。
+      const snapshot = ws.profile.getSnapshot();
+      const workflow = snapshot.workflows[WORKFLOW_BY_DIRECTION[order.direction]];
       if (!workflow) throw new WorkflowNotFoundError(order.direction);
-      assertTransition(workflow.transitions, order.direction, order.state, params.to);
+      const activeTransitions = workflow.transitions.filter((t) =>
+        evalWhenCondition(t.when, snapshot.modules),
+      );
+      assertTransition(activeTransitions, order.direction, order.state, params.to);
 
       // 库存联动（M9 起，M11 升级为行库位+批次维度）：出库进入 picking 预检、进入
       // shipped 硬守卫——逐行按 (SKU, 行库位, 行批次) 验余量（行键唯一，orderCreate
@@ -199,49 +224,10 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         }
       }
       if (effect?.kind === 'decrease' || requiresAvailabilityCheck(order.direction, params.to)) {
-        // M13 过期拦截：blockExpiredOutbound 开启时，行批次效期（以流水首个非空
-        // 登记为准——出库行自身不声明效期）早于今日即拒；显式行与分配行同拦。
+        // 出库硬守卫（M21 提取为 state/outbound-guards.ts，与拣货关单共用）：
+        // 过期拦截（M13）/ 逐桶余量（M11）/ SKU 冻结聚合（M19）。
         // 只拦单据出库：库存调整/移库不经本守卫（盘点、报废走自己的通道）。
-        const settings = readWmsSettings(ws);
-        const today = new Date().toISOString().slice(0, 10);
-        for (const line of lines) {
-          if (settings.blockExpiredOutbound) {
-            const expiry = ws.inventory.expiryOfBatch(line.skuId, line.batchNo);
-            if (isExpired(expiry, today)) {
-              throw new ExpiredBatchError(
-                ws.skus.byId(line.skuId)?.skuCode ?? line.skuId,
-                line.batchNo,
-                expiry,
-              );
-            }
-          }
-          const available = ws.inventory.quantityOf(line.skuId, line.locationId, line.batchNo);
-          if (available < line.quantity) {
-            throw new InsufficientStockError(
-              bucketLabel(
-                ws.skus.byId(line.skuId)?.skuCode ?? line.skuId,
-                codeOfLocation(ws, line.locationId),
-                line.batchNo,
-              ),
-              -line.quantity,
-              available,
-            );
-          }
-        }
-        // M19 冻结拦截：SKU 级可用量 = 全库位合计余量 − 冻结合计。同 SKU 多行
-        // 先聚合再校验（逐行各自通过而合计超可用也要拒）。只拦单据出库——对齐
-        // M13 先例：调整/移库/盘点修正是物理修正通道，不拦。
-        const needBySku = new Map<string, number>();
-        for (const line of lines) {
-          needBySku.set(line.skuId, (needBySku.get(line.skuId) ?? 0) + line.quantity);
-        }
-        for (const [skuId, need] of needBySku) {
-          const total = ws.inventory.totalOf(skuId);
-          const held = ws.inventory.heldOf(skuId);
-          if (total - held < need) {
-            throw new StockHeldError(ws.skus.byId(skuId)?.skuCode ?? skuId, need, total, held);
-          }
-        }
+        assertOutboundBuckets(ws, lines);
       }
 
       // 原子落账：状态事实 + 每行流水事实同生共死（savepoint 包裹，杜绝半落账）

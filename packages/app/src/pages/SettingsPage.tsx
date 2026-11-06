@@ -5,13 +5,18 @@ import {
   Card,
   Descriptions,
   Input,
+  Modal,
   Space,
+  Switch,
+  Table,
   Tabs,
   Tag,
   Typography,
   Upload,
 } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd';
+import type { ModuleConfig, ProfileSnapshot } from '@one/core';
 import {
   DownloadOutlined,
   LinkOutlined,
@@ -23,12 +28,15 @@ import { api, ApiError } from '../api/client';
 import {
   useMigrationImport,
   useNodeHello,
+  useProfileSnapshot,
+  useProposeProfile,
+  useConfirmProposal,
   useSyncRun,
 } from '../api/hooks';
 import PageHeader from '../components/PageHeader';
 
 /**
- * 设置页（M8）——M5 同步与 M7 迁移的用户面收口。
+ * 设置页（M8/M21）——同步/迁移的用户面收口 + 流程与模块配置。
  * 定位：触发器 + 状态显示器（不引入新服务端状态——peers 每次随请求发送，
  * 服务端 env 是唯一持久位）。
  */
@@ -36,13 +44,14 @@ import PageHeader from '../components/PageHeader';
 export default function SettingsPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
-      <PageHeader title="设置" subtitle="节点身份、局域网同步与数据迁移" />
+      <PageHeader title="设置" subtitle="节点身份、局域网同步、数据迁移与流程模块配置" />
       <Tabs
         defaultActiveKey="node"
         items={[
           { key: 'node', icon: <NodeIndexOutlined />, label: '节点', children: <NodeTab /> },
           { key: 'sync', icon: <LinkOutlined />, label: '局域网同步', children: <SyncTab /> },
           { key: 'migration', icon: <SyncOutlined />, label: '迁移', children: <MigrationTab /> },
+          { key: 'flow', icon: <NodeIndexOutlined />, label: '流程与模块', children: <FlowModulesPanel /> },
         ]}
       />
     </div>
@@ -195,5 +204,185 @@ function MigrationTab() {
         </div>
       </Space>
     </Card>
+  );
+}
+
+/** ④ 流程与模块（M21）——「流程可配置」的运营入口
+ *  模块启停走慢通道三段：propose（影响报告）→ 人工确认 → 生效；与 AI 的
+ *  配置提议同一队列（确认权在用户，永不委托）。流程视图只读：状态（含模块
+ *  贡献徽标）+ 转移表（when 条件列）。 */
+function FlowModulesPanel() {
+  const { message, modal } = AntApp.useApp();
+  const snapshot = useProfileSnapshot();
+  const propose = useProposeProfile();
+  const confirm = useConfirmProposal();
+  const [pending, setPending] = useState<{
+    id: string;
+    summary: string;
+    items: { severity: string; description: string }[];
+  } | null>(null);
+
+  const modules = Object.entries(snapshot.data?.modules ?? {});
+  const bizModules = modules.filter(([id]) => id.startsWith('module.'));
+  const sysModules = modules.filter(([id]) => id.startsWith('core.'));
+
+  const toggleModule = (moduleId: string, enabled: boolean) => {
+    propose.mutate(
+      {
+        patch: [{ op: 'replace', path: `/modules/${moduleId}/enabled`, value: enabled }],
+        note: `设置页：${enabled ? '启用' : '停用'} ${moduleId}`,
+      },
+      {
+        onSuccess: (r) => {
+          setPending({ id: r.proposalId, summary: r.report.summary, items: r.report.items });
+        },
+        onError: (e) => message.error(e instanceof ApiError ? e.message : `提议失败：${String(e)}`),
+      },
+    );
+  };
+
+  const doConfirm = () => {
+    if (!pending) return;
+    confirm.mutate(
+      { id: pending.id },
+      {
+        onSuccess: (r) => {
+          message.success(`配置已生效（v${r.newVersion}，${r.appliedOps} 项变更）`);
+          setPending(null);
+        },
+        onError: (e) => message.error(e instanceof ApiError ? e.message : `确认失败：${String(e)}`),
+      },
+    );
+  };
+
+  const moduleColumns: ColumnsType<[string, ModuleConfig]> = [
+    { title: '模块', key: 'id', render: (_, r) => <Typography.Text code>{r[0]}</Typography.Text> },
+    { title: '版本', key: 'version', width: 90, render: (_, r) => `v${r[1].version ?? '-'}` },
+    {
+      title: '启用',
+      key: 'enabled',
+      width: 110,
+      render: (_, r) => (
+        <Switch
+          checked={r[1].enabled}
+          loading={propose.isPending}
+          onChange={(v) =>
+            modal.confirm({
+              title: `${v ? '启用' : '停用'} ${r[0]}？`,
+              content: v
+                ? '启用后其贡献的流程步骤立即生效。'
+                : '停用后其贡献的流程转移被掐掉（历史数据不受影响）。',
+              onOk: () => toggleModule(r[0], v),
+            })
+          }
+        />
+      ),
+    },
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <div>
+        <Typography.Title level={5} style={{ marginTop: 0 }}>
+          业务模块
+        </Typography.Title>
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          启停走慢通道（提议 → 影响报告 → 确认生效），与 AI 的配置提议同一队列——确认权在用户。
+          module.putaway 停用 = 入库流程回到「收货即完成」老流程，历史单据不受影响。
+        </Typography.Paragraph>
+        <Table
+          rowKey={(r) => r[0]}
+          size="small"
+          columns={moduleColumns}
+          dataSource={bizModules}
+          pagination={false}
+          locale={{ emptyText: '暂无业务模块' }}
+        />
+      </div>
+      <div>
+        <Typography.Title level={5} style={{ marginTop: 0 }}>
+          系统模块（只读）
+        </Typography.Title>
+        <Table
+          rowKey={(r) => r[0]}
+          size="small"
+          columns={moduleColumns.slice(0, 2)}
+          dataSource={sysModules}
+          pagination={false}
+        />
+      </div>
+      <WorkflowCard snapshot={snapshot.data} workflowKey="inbound" title="入库流程（inbound）" />
+      <WorkflowCard snapshot={snapshot.data} workflowKey="outbound" title="出库流程（outbound）" />
+
+      <Modal
+        title="确认应用配置变更？"
+        open={pending !== null}
+        onCancel={() => setPending(null)}
+        onOk={doConfirm}
+        confirmLoading={confirm.isPending}
+        okText="确认生效"
+      >
+        <Typography.Paragraph>{pending?.summary}</Typography.Paragraph>
+        <ul style={{ paddingLeft: 20, margin: 0 }}>
+          {(pending?.items ?? []).map((it, i) => (
+            <li key={i}>
+              <Tag color={it.severity === 'warning' ? 'orange' : 'blue'} style={{ marginRight: 6 }}>
+                {it.severity === 'warning' ? '注意' : '变更'}
+              </Tag>
+              {it.description}
+            </li>
+          ))}
+        </ul>
+      </Modal>
+    </div>
+  );
+}
+
+/** 流程只读视图：状态（含模块贡献徽标）+ 转移表（from → to，when 条件列） */
+function WorkflowCard({
+  snapshot,
+  workflowKey,
+  title,
+}: {
+  snapshot: ProfileSnapshot | undefined;
+  workflowKey: 'inbound' | 'outbound';
+  title: string;
+}) {
+  const wf = snapshot?.workflows[workflowKey];
+  if (!wf) return null;
+  return (
+    <div>
+      <Typography.Title level={5} style={{ marginTop: 0 }}>
+        {title}
+      </Typography.Title>
+      <div style={{ marginBottom: 12 }}>
+        {wf.states.map((s) => (
+          <Tag key={s.id} color={s.id === 'created' ? 'default' : 'processing'}>
+            {s.label ?? s.id}
+            {s.providedBy ? (
+              <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
+                （{s.providedBy}）
+              </Typography.Text>
+            ) : null}
+          </Tag>
+        ))}
+      </div>
+      <Table
+        rowKey={(t) => `${t.from}->${t.to}`}
+        size="small"
+        pagination={false}
+        dataSource={wf.transitions}
+        columns={[
+          { title: '从', dataIndex: 'from', width: 120 },
+          { title: '到', dataIndex: 'to', width: 120 },
+          {
+            title: '条件（when）',
+            dataIndex: 'when',
+            render: (v: string | undefined) =>
+              v ? <Typography.Text code>{v}</Typography.Text> : <Typography.Text type="secondary">—</Typography.Text>,
+          },
+        ]}
+      />
+    </div>
   );
 }

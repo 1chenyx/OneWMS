@@ -19,15 +19,19 @@ export function migrateWms(db: SqliteDatabase): void {
     // 由 WmsWorkspace 构造期 sync()（cursor = -1 全量追账）重建。必须整组 DROP：
     // applyEvent 有幂等早退（orderCreated 见单已存在即 return），单丢一张表会让
     // 兄弟表永远不重建。内核 oplog 本函数不碰——那是唯一不可丢的真相。
-    // 三道检测覆盖四条升级路径（M9→M11 / M10→M11 / ≤M17→M18 / ≤M19→M20），任一命中即重建：
+    // 四道检测覆盖五条升级路径（M9→M11 / M10→M11 / ≤M17→M18 / ≤M19→M20 / ≤M20→M21），
+    // 任一命中即重建：
     //  1. 流水表缺 batch_no 列 = M10 及以前结构（M9 结构同样命中——两列皆缺）；
     //  2. wms_sku 缺 barcode 列 = M17 及以前结构（M18 条码管理）；
-    //  3. wms_sku 缺 reorder_point 列 = M19 及以前结构（M20 安全库存）。
-    // M19 冻结表是纯新增（无列变更）：老库 CREATE IF NOT EXISTS 即收敛，不触发重建。
+    //  3. wms_sku 缺 reorder_point 列 = M19 及以前结构（M20 安全库存）；
+    //  4. wms_order 缺 partner_id 列 = M20 及以前结构（M21 往来单位）。
+    // M19 冻结表 / M21 partner / picking 表是纯新增（无既有表列变更），但 partner_id
+    // 检测触发的整组 DROP 会连带把它们一并重建（IF NOT EXISTS 对新库无感）。
     const dropAll = () => {
       db.exec(`
         DROP TABLE IF EXISTS wms_sku;
         DROP TABLE IF EXISTS wms_location;
+        DROP TABLE IF EXISTS wms_partner;
         DROP TABLE IF EXISTS wms_order;
         DROP TABLE IF EXISTS wms_order_line;
         DROP TABLE IF EXISTS wms_inventory_ledger;
@@ -35,6 +39,8 @@ export function migrateWms(db: SqliteDatabase): void {
         DROP TABLE IF EXISTS wms_inventory_hold;
         DROP TABLE IF EXISTS wms_stocktake;
         DROP TABLE IF EXISTS wms_stocktake_line;
+        DROP TABLE IF EXISTS wms_picking;
+        DROP TABLE IF EXISTS wms_picking_line;
       `);
     };
     const ledgerCols = db.pragma('table_info(wms_inventory_ledger)') as { name: string }[];
@@ -46,6 +52,10 @@ export function migrateWms(db: SqliteDatabase): void {
       dropAll();
     }
     if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'reorder_point')) {
+      dropAll();
+    }
+    const orderCols = db.pragma('table_info(wms_order)') as { name: string }[];
+    if (orderCols.length > 0 && !orderCols.some((c) => c.name === 'partner_id')) {
       dropAll();
     }
 
@@ -83,7 +93,29 @@ export function migrateWms(db: SqliteDatabase): void {
       CREATE INDEX IF NOT EXISTS idx_wms_location_ws ON wms_location (workspace_id);
     `);
 
-    // ── 单据主表（状态机当前态 + 业务键：workspace + order_no）──
+    // ── 往来单位主数据（M21：供应商/客户统一实体，kind 区分；
+    //    业务键：workspace + partner_code；引用完整性靠工具层守卫（无外键声明））──
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_partner (
+        id           TEXT NOT NULL PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        partner_code TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('supplier', 'customer')),
+        name         TEXT NOT NULL,
+        contact      TEXT,
+        phone        TEXT,
+        address      TEXT,
+        note         TEXT,
+        ext_data     TEXT NOT NULL DEFAULT '{}',
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        UNIQUE (workspace_id, partner_code)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_partner_ws ON wms_partner (workspace_id);
+    `);
+
+    // ── 单据主表（状态机当前态 + 业务键：workspace + order_no；M21 加
+    //    partner_id 往来单位列——入库=供应商/出库=客户，可空）──
     db.exec(`
       CREATE TABLE IF NOT EXISTS wms_order (
         id           TEXT NOT NULL PRIMARY KEY,
@@ -91,6 +123,7 @@ export function migrateWms(db: SqliteDatabase): void {
         order_no     TEXT NOT NULL,
         direction    TEXT NOT NULL,
         state        TEXT NOT NULL,
+        partner_id   TEXT,
         note         TEXT,
         ext_data     TEXT NOT NULL DEFAULT '{}',
         created_at   TEXT NOT NULL,
@@ -201,6 +234,49 @@ export function migrateWms(db: SqliteDatabase): void {
       );
       CREATE INDEX IF NOT EXISTS idx_wms_stocktake_line_st
         ON wms_stocktake_line (workspace_id, stocktake_id);
+    `);
+
+    // ── 拣货单主表（M21，业务键：workspace + picking_no；state 固定生命周期
+    //    created/closed/canceled——M17 盘点先例，不进 Profile workflows）──
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_picking (
+        id            TEXT NOT NULL PRIMARY KEY,
+        workspace_id  TEXT NOT NULL,
+        picking_no    TEXT NOT NULL,
+        state         TEXT NOT NULL,
+        note          TEXT,
+        ext_data      TEXT NOT NULL DEFAULT '{}',
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        UNIQUE (workspace_id, picking_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_picking_ws ON wms_picking (workspace_id);
+    `);
+
+    // ── 拣货单行（M21）：一行 = 拣货单 + 关联出库单行（orderLineId 四段派生键）。
+    //    行 id = pickingId:orderLineId（重放幂等键）；建议桶随 created 事件携带；
+    //    picked_qty 0 = 未拣；实拣桶缺省 = 建议桶，picker 改拣时记录实际桶。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_picking_line (
+        id                    TEXT NOT NULL PRIMARY KEY,
+        workspace_id          TEXT NOT NULL,
+        picking_id            TEXT NOT NULL,
+        order_id              TEXT NOT NULL,
+        order_no              TEXT NOT NULL,
+        order_line_id         TEXT NOT NULL,
+        sku_id                TEXT NOT NULL,
+        qty_to_pick           INTEGER NOT NULL,
+        suggested_location_id TEXT NOT NULL,
+        suggested_batch_no    TEXT NOT NULL,
+        picked_qty            INTEGER NOT NULL DEFAULT 0,
+        picked_location_id    TEXT,
+        picked_batch_no       TEXT,
+        created_at            TEXT NOT NULL,
+        updated_at            TEXT NOT NULL,
+        UNIQUE (workspace_id, picking_id, order_line_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_picking_line_pk
+        ON wms_picking_line (workspace_id, picking_id);
     `);
   })();
 }

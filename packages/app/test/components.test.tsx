@@ -303,9 +303,7 @@ describe('ToolInvocationCard：ui.ask 挂起/回填（M12 步骤3）', () => {
 describe('ToolInvocationCard：后置动作按钮（M12 步骤4）', () => {
   const wrap = (ui: React.ReactNode) => <ConfigProvider button={{ autoInsertSpace: false }}>{ui}</ConfigProvider>;
 
-  it('profile.propose 成功 → 「去确认提议」跳配置确认页（无过滤）', async () => {
-    const onNavigate = vi.fn();
-    const user = userEvent.setup();
+  it('profile.propose 成功 → 无后置动作（确认收敛在对话页待确认面板，不跳页）', () => {
     render(
       wrap(
         <ToolInvocationCard
@@ -316,12 +314,11 @@ describe('ToolInvocationCard：后置动作按钮（M12 步骤4）', () => {
             ok: true,
             payload: { proposalId: 'p-1', pendingConfirm: true },
           }}
-          onNavigate={onNavigate}
+          onNavigate={vi.fn()}
         />,
       ),
     );
-    await user.click(screen.getByRole('button', { name: '去确认提议 →' }));
-    expect(onNavigate).toHaveBeenCalledWith('proposals', undefined);
+    expect(screen.queryByRole('button', { name: /去确认提议/ })).not.toBeInTheDocument();
   });
 
   it('order.create 成功 → 带单号过滤跳单据页', async () => {

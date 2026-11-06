@@ -126,12 +126,13 @@ describe('单据端点', () => {
       orderNo: string;
       direction: string;
       state: string;
-      lines: Array<{ skuCode: string; name: string; quantity: number }>;
+      lines: Array<{ skuCode: string; name: string; quantity: number; locationCode: string; batchNo: string }>;
     }>;
     expect(orders).toHaveLength(1);
+    // M21：行携带目标库位/批次（上架归位的源桶维度）
     expect(orders[0]!.lines).toEqual([
-      { skuCode: 'A-1', name: '螺丝', quantity: 100 },
-      { skuCode: 'B-2', name: '螺母', quantity: 50 },
+      { skuCode: 'A-1', name: '螺丝', quantity: 100, locationCode: 'DEFAULT', batchNo: 'DEFAULT' },
+      { skuCode: 'B-2', name: '螺母', quantity: 50, locationCode: 'DEFAULT', batchNo: 'DEFAULT' },
     ]);
 
     // 方向过滤：out 为空
@@ -167,6 +168,45 @@ describe('单据端点', () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { code: string }).code).toBe('WMS_SKU_NOT_FOUND');
+  });
+
+  it('上架端点（M21）：收货 → 纯确认；归位 → 移库流水；重复上架 400', async () => {
+    const app = setup();
+    await seedSku(app, 'A-1', '螺丝');
+    // 库位经工具通道建（POST /api/locations 未设路由——库位管理走 AI/工具）
+    await ctx!.ws.tools.invoke(
+      'wms.location.create',
+      { locationCode: 'A-01', name: 'A 区 01' },
+      `user:local@${ctx!.core.nodeId}`,
+    );
+    const created = (await (await post(app, '/api/orders', {
+      direction: 'in',
+      lines: [{ skuCode: 'A-1', quantity: 10 }],
+    })).json()) as { orderNo: string };
+    await post(app, `/api/orders/${created.orderNo}/transition`, { to: 'received' });
+
+    // 归位上架：DEFAULT → A-01（一对 ± 流水）
+    const r = await (await post(app, `/api/orders/${created.orderNo}/putaway`, {
+      targets: [{ skuCode: 'A-1', toLocationCode: 'A-01' }],
+    })).json() as {
+      from: string;
+      to: string;
+      movedLines: { toLocationCode: string; quantity: number }[];
+    };
+    expect(r).toMatchObject({ from: 'received', to: 'putaway' });
+    expect(r.movedLines[0]).toMatchObject({ toLocationCode: 'A-01', quantity: 10 });
+
+    // 库存落在 A-01（效期看板行带库位桶明细，联查可见）
+    const board = (await (await app.request('/api/inventory/expiry')).json()) as {
+      rows: { skuCode: string; batchNo: string; buckets: { locationCode: string; quantity: number }[] }[];
+    };
+    expect(board.rows.find((row) => row.skuCode === 'A-1')?.buckets).toEqual([
+      { locationCode: 'A-01', quantity: 10 },
+    ]);
+
+    // 重复上架（已不是 received）→ 400
+    const again = await post(app, `/api/orders/${created.orderNo}/putaway`, {});
+    expect(again.status).toBe(400);
   });
 });
 

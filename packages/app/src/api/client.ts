@@ -30,14 +30,22 @@ export type {
 } from './agent-api';
 export type { MemoryItem, MemoryListResponse, MemorySettings } from './memory-api';
 export type {
+  AlertSummary,
+  DashboardOverview,
   ExpiryBatchRow,
   ExpiryBoard,
   ExpiryLevel,
+  FlowTrendPoint,
   Hold,
   InventoryRow,
   Location,
+  LocationDistribution,
   Order,
   OrderLine,
+  OrderStateCount,
+  Partner,
+  Picking,
+  PickingLine,
   Sku,
   Stocktake,
   StocktakeCloseResult,

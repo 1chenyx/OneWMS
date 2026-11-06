@@ -3,7 +3,6 @@ import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App as AntApp, ConfigProvider } from 'antd';
 import ProposalDetail from '../src/components/ProposalDetail';
-import ProposalsPage from '../src/pages/ProposalsPage';
 import ChatPage from '../src/pages/ChatPage';
 import { ChatProvider } from '../src/chat/ChatProvider';
 import { AppNavProvider } from '../src/app-nav';
@@ -126,18 +125,6 @@ describe('ProposalDetail：确认流程', () => {
     await user.click(await screen.findByRole('button', { name: '确认拒绝' }));
     expect(rejectMock).toHaveBeenCalledWith('p-1');
     expect(await screen.findByText(/已拒绝/)).toBeInTheDocument();
-  });
-});
-
-describe('页面 smoke', () => {
-  it('ProposalsPage：列表 → 查看详情 → 报告可见', async () => {
-    const user = userEvent.setup();
-    render(wrap(<ProposalsPage />));
-    expect(screen.getAllByText('隐藏规格字段').length).toBeGreaterThan(0); // 列表项 note
-
-    await user.click(screen.getByText('查看详情'));
-    expect(screen.getByText('提议详情')).toBeInTheDocument();
-    expect(screen.getAllByText(/字段「规格」将从界面隐藏/).length).toBeGreaterThan(0);
   });
 });
 
@@ -322,7 +309,7 @@ describe('ChatPage：SSE 流式', () => {
     expect(await screen.findByText('好的，按默认批次处理。')).toBeInTheDocument();
   });
 
-  it('profile.propose 成功 → 工具卡出现「去确认提议」后置动作按钮（M12 步骤4）', async () => {
+  it('profile.propose 成功 → 顶部待确认面板出现提议，对话页内直接确认（配置确认页已并入）', async () => {
     streamMock.mockImplementationOnce(
       async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
         onEvent({ type: 'tool-call', callId: 'c1', toolId: 'profile.propose', args: {} });
@@ -337,6 +324,8 @@ describe('ChatPage：SSE 流式', () => {
         onEvent({ type: 'turn-done', steps: 2 });
       },
     );
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValueOnce({ newVersion: 2, appliedOps: 1 });
     const user = userEvent.setup();
     render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
 
@@ -345,6 +334,17 @@ describe('ChatPage：SSE 流式', () => {
     await user.click(screen.getByRole('button', { name: /发送/ }));
 
     expect(await screen.findByText('已生成提议，等你确认。')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '去确认提议 →' })).toBeInTheDocument(); // 后置动作
+    // 后置跳转按钮已移除：确认收敛在本页面板，不再跳配置确认页
+    expect(screen.queryByRole('button', { name: /去确认提议/ })).not.toBeInTheDocument();
+    // 顶部待确认面板：提议可见 → 展开详情 → 确认应用
+    expect(screen.getByText('待确认提议')).toBeInTheDocument();
+    expect(screen.getAllByText('隐藏规格字段').length).toBeGreaterThan(0); // 面板列表项 note
+    await user.click(screen.getByText('查看详情'));
+    expect(screen.getByText('/schema/entities/sku/extensions/1/visible')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '确认应用' }));
+    await user.click(await screen.findByRole('button', { name: '应用' })); // popconfirm 确认
+    expect(confirmMock).toHaveBeenCalledWith({ id: 'p-1' });
+    expect(await screen.findByText(/已应用/)).toBeInTheDocument();
   });
 });

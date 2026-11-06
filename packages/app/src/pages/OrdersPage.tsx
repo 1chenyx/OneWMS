@@ -1,20 +1,24 @@
 import { useState } from 'react';
-import { DownOutlined, PlusOutlined } from '@ant-design/icons';
-import { App as AntApp, Button, Card, Dropdown, Input, Segmented, Table, Tag, Typography } from 'antd';
+import { DownOutlined, PlusOutlined, VerticalAlignTopOutlined } from '@ant-design/icons';
+import { App as AntApp, Button, Card, Dropdown, Input, Segmented, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ProfileSnapshot } from '@one/core';
 import { useOrders, useProfileSnapshot, useTransitionOrder } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { Order, OrderLine } from '../api/client';
 import OrderFormModal from '../components/OrderFormModal';
+import PutawayModal from '../components/PutawayModal';
 import PageHeader from '../components/PageHeader';
 import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
 import { useAppNav } from '../app-nav';
 
 /**
  * 单据管理页——流转按钮由 Profile workflows 驱动（UI 消费配置面）：
- * 候选目标状态 = workflows[inbound|outbound].transitions.filter(from === 当前态)。
+ * 候选目标状态 = workflows[inbound|outbound].transitions.filter(from === 当前态
+ * 且 when 条件满足——M21 起模块停用会掐掉其贡献的转移)。
  * 行为权威仍是服务端状态机：非法转移被 400 WMS_INVALID_TRANSITION 兜底。
+ * 上架（M21）：入库单 received 态且 module.putaway 启用时出现「上架」按钮
+ * （弹窗可选归位目标库位；服务端工具 wms.order.putaway 是行为权威）。
  * P1 表格规范：单号等宽列；明细收进展开行（主表只留主干）；流转按钮收进
  * Dropdown（点选目标态 → modal.confirm 二次确认——出入库动库存，不裸点）；
  * 客户端分页。
@@ -28,6 +32,7 @@ export default function OrdersPage() {
   const snapshot = useProfileSnapshot();
   const transition = useTransitionOrder();
   const [formOpen, setFormOpen] = useState(false);
+  const [putawayOrder, setPutawayOrder] = useState<Order | null>(null);
   const [orderNoFilter, setOrderNoFilter] = useState(() => takeInitialFilter()?.orderNo ?? '');
 
   const noKw = orderNoFilter.trim().toLowerCase();
@@ -67,6 +72,23 @@ export default function OrdersPage() {
         return <Tag color={v === 'done' ? 'green' : v === 'canceled' ? 'default' : 'processing'}>{label}</Tag>;
       },
     },
+    {
+      title: '往来单位',
+      key: 'partner',
+      render: (_, r) =>
+        r.partnerName ? (
+          <span>
+            {r.partnerName}
+            {r.partnerCode ? (
+              <Typography.Text type="secondary" style={{ marginLeft: 6, fontSize: 12 }}>
+                {r.partnerCode}
+              </Typography.Text>
+            ) : null}
+          </span>
+        ) : (
+          <Typography.Text type="secondary">-</Typography.Text>
+        ),
+    },
     { title: '备注', dataIndex: 'note', key: 'note', render: (v: string | null) => v ?? '-' },
     {
       title: '创建时间',
@@ -78,32 +100,50 @@ export default function OrdersPage() {
     {
       title: '流转',
       key: 'actions',
-      width: 96,
+      width: 150,
       render: (_, r) => {
         const nexts = nextStates(snapshot.data, r.direction, r.state);
+        const canPutaway =
+          r.direction === 'in' && r.state === 'received' && nexts.includes('putaway');
         if (nexts.length === 0) return <Typography.Text type="secondary">—</Typography.Text>;
         return (
-          <Dropdown
-            trigger={['click']}
-            menu={{
-              items: nexts.map((to) => ({
-                key: to,
-                label: stateLabel(snapshot.data, to, r.direction),
-              })),
-              onClick: ({ key }) =>
-                modal.confirm({
-                  title: `确认流转到「${stateLabel(snapshot.data, key, r.direction)}」？`,
-                  onOk: () => doTransition(r.orderNo, key),
-                }),
-            }}
-          >
-            <Button
-              size="small"
-              loading={transition.isPending && transition.variables?.orderNo === r.orderNo}
+          <>
+            {canPutaway ? (
+              <Tooltip title="确认上架，可选归位目标库位（module.putaway）">
+                <Button
+                  size="small"
+                  type="primary"
+                  ghost
+                  icon={<VerticalAlignTopOutlined />}
+                  style={{ marginRight: 8 }}
+                  onClick={() => setPutawayOrder(r)}
+                >
+                  上架
+                </Button>
+              </Tooltip>
+            ) : null}
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: nexts.map((to) => ({
+                  key: to,
+                  label: stateLabel(snapshot.data, to, r.direction),
+                })),
+                onClick: ({ key }) =>
+                  modal.confirm({
+                    title: `确认流转到「${stateLabel(snapshot.data, key, r.direction)}」？`,
+                    onOk: () => doTransition(r.orderNo, key),
+                  }),
+              }}
             >
-              流转 <DownOutlined />
-            </Button>
-          </Dropdown>
+              <Button
+                size="small"
+                loading={transition.isPending && transition.variables?.orderNo === r.orderNo}
+              >
+                流转 <DownOutlined />
+              </Button>
+            </Dropdown>
+          </>
         );
       },
     },
@@ -163,15 +203,24 @@ export default function OrdersPage() {
                     width: 120,
                     onCell: numCell,
                   },
+                  { title: '批次', dataIndex: 'batchNo', key: 'batchNo', width: 110, onCell: monoCell },
+                  {
+                    title: '目标库位',
+                    dataIndex: 'locationCode',
+                    key: 'locationCode',
+                    width: 110,
+                    onCell: monoCell,
+                  },
                 ]}
                 dataSource={r.lines}
                 pagination={false}
-                style={{ maxWidth: 420 }}
+                style={{ maxWidth: 640 }}
               />
             ),
           }}
         />
         <OrderFormModal open={formOpen} onClose={() => setFormOpen(false)} />
+        <PutawayModal open={putawayOrder !== null} order={putawayOrder} onClose={() => setPutawayOrder(null)} />
       </Card>
     </div>
   );
@@ -195,9 +244,27 @@ function stateLabel(snapshot: ProfileSnapshot | undefined, state: string, direct
   return state;
 }
 
-/** 候选目标状态（去重）：workflows 的 transitions 里 from === 当前态的 to */
+/** when 条件求值（与 @one/core evalWhenCondition 同语义；app 不允许 runtime
+ *  import @one/core，故本地等价实现）：module.{id}.enabled / !module.{id}.enabled */
+function evalWhen(
+  when: string | undefined,
+  modules: ProfileSnapshot['modules'] | undefined,
+): boolean {
+  if (!when) return true;
+  const m = /^(!?)(module\.[A-Za-z0-9][A-Za-z0-9._-]*)\.enabled$/.exec(when);
+  if (!m) return false; // 无法识别 → 保守不展示（服务端仍是行为权威）
+  const enabled = modules?.[m[2]]?.enabled ?? false;
+  return m[1] === '!' ? !enabled : enabled;
+}
+
+/** 候选目标状态（去重）：workflows 的 transitions 里 from === 当前态且 when
+ *  条件满足的 to（M21：模块停用 → 其贡献的转移被掐掉，UI 与服务端口径一致） */
 function nextStates(snapshot: ProfileSnapshot | undefined, direction: Order['direction'], state: string): string[] {
   const wf = snapshot?.workflows[WORKFLOW_BY_DIRECTION[direction]];
   if (!wf) return [];
-  return [...new Set(wf.transitions.filter((t) => t.from === state).map((t) => t.to))];
+  return [
+    ...new Set(
+      wf.transitions.filter((t) => t.from === state && evalWhen(t.when, snapshot?.modules)).map((t) => t.to),
+    ),
+  ];
 }

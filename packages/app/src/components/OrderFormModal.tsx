@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { App as AntApp, Button, Form, Input, InputNumber, Modal, Radio, Select, Space, Typography } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { useCreateOrder, useSkus } from '../api/hooks';
+import { useCreateOrder, usePartners, useSkus } from '../api/hooks';
 import { ApiError } from '../api/client';
 import ScanInput from './ScanInput';
 
@@ -15,6 +15,7 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
   const { message } = AntApp.useApp();
   const [form] = Form.useForm();
   const { data: skus } = useSkus();
+  const { data: partners } = usePartners();
   const create = useCreateOrder();
   const [direction, setDirection] = useState<'in' | 'out'>('in');
 
@@ -46,12 +47,14 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
   const submit = async (values: {
     direction: 'in' | 'out';
     lines: { skuCode: string; quantity: number }[];
+    partnerCode?: string;
     note?: string;
   }) => {
     try {
       const r = await create.mutateAsync({
         direction: values.direction,
         lines: values.lines,
+        partnerCode: values.partnerCode || undefined,
         note: values.note || undefined,
       });
       message.success(`单据 ${r.orderNo} 已创建`);
@@ -82,9 +85,32 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
               { value: 'in', label: '入库' },
               { value: 'out', label: '出库' },
             ]}
-            onChange={(e) => setDirection(e.target.value)}
+            onChange={(e) => {
+              setDirection(e.target.value);
+              // 方向切换 → 清空已选往来单位（供应商/客户不匹配新方向）
+              form.setFieldValue('partnerCode', undefined);
+            }}
             optionType="button"
             buttonStyle="solid"
+          />
+        </Form.Item>
+        <Form.Item
+          name="partnerCode"
+          label={`往来单位（可选，${direction === 'in' ? '供应商' : '客户'}）`}
+        >
+          <Select
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder={direction === 'in' ? '选择供应商' : '选择客户'}
+            options={(partners ?? [])
+              .filter((p) => p.kind === (direction === 'in' ? 'supplier' : 'customer'))
+              .map((p) => ({ value: p.partnerCode, label: `${p.partnerCode} · ${p.name}` }))}
+            notFoundContent={
+              <Typography.Text type="secondary">
+                还没有{direction === 'in' ? '供应商' : '客户'}档案，可到「档案 → 往来单位」新建
+              </Typography.Text>
+            }
           />
         </Form.Item>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>

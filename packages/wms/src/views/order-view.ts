@@ -25,6 +25,8 @@ export interface OrderRecord {
   readonly direction: OrderDirection;
   /** 状态词汇由流程配置定义（模块可贡献新状态）——投影只记事实（M8） */
   readonly state: string;
+  /** 往来单位 id（M21）：入库=供应商 / 出库=客户；null = 未关联 */
+  readonly partnerId: string | null;
   readonly note: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -46,6 +48,7 @@ interface OrderRow {
   order_no: string;
   direction: string;
   state: string;
+  partner_id: string | null;
   note: string | null;
   created_at: string;
   updated_at: string;
@@ -65,6 +68,7 @@ function rowToRecord(row: OrderRow): OrderRecord {
     orderNo: row.order_no,
     direction: row.direction as OrderDirection,
     state: row.state,
+    partnerId: row.partner_id,
     note: row.note,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -85,10 +89,10 @@ export class OrderView {
         if (this.#byIdRaw(p.orderId)) return; // 已应用过（幂等）
         this.db
           .prepare(
-            `INSERT INTO wms_order (id, workspace_id, order_no, direction, state, note, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, 'created', ?, '{}', ?, ?)`,
+            `INSERT INTO wms_order (id, workspace_id, order_no, direction, state, partner_id, note, ext_data, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 'created', ?, ?, '{}', ?, ?)`,
           )
-          .run(p.orderId, this.workspaceId, p.orderNo, p.direction, p.note ?? null, env.createdAt, env.createdAt);
+          .run(p.orderId, this.workspaceId, p.orderNo, p.direction, p.partnerId ?? null, p.note ?? null, env.createdAt, env.createdAt);
         const insertLine = this.db.prepare(
           `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

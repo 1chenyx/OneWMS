@@ -13,7 +13,7 @@ import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
  * SKU 管理页——动态列是 Profile 配置的第一个真实消费闭环：
  * 列 = 固定列（编码/名称/条码/安全库存/更新时间）+ schema.entities.sku.extensions
  * 中 visible !== false 的扩展列（dataIndex 指向 extData[key]）。
- * 在配置确认页确认「隐藏字段」提议后切回本页，列即消失（数据保留）。
+ * 在 AI 对话页确认「隐藏字段」提议后切回本页，列即消失（数据保留）。
  * 搜索框（M18）：编码/名称/条码 三字段模糊（服务端 q 参数），回车/点按钮触发。
  * 安全库存列（M20）：低库存预警阈值，0 显 -（不预警）。
  */

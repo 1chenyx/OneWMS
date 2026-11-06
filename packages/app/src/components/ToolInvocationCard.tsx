@@ -13,7 +13,9 @@ import ToolResultView from './ToolResultView';
  * ui.ask 分流（M12 步骤3）：挂起态渲染 AskCard（问题 + 回答输入，onAnswer
  * 由 ChatPage 注入会话壳的 answerAsk）；终态渲染问答回显。
  * 后置动作按钮（M12 步骤4）：工具成功后「去对应管理页」（onNavigate 由
- * ChatPage 注入 useAppNav().navigate，如 profile.propose → 配置确认页）。
+ * ChatPage 注入 useAppNav().navigate，如库存调整 → 库存页）。
+ * profile.propose 不出后置动作：提议确认收敛在 ChatPage 顶部待确认面板，
+ * 用户在对话页直接拍板（配置确认页已并入）。
  */
 export default function ToolInvocationCard({
   invocation,
@@ -134,11 +136,11 @@ function str(v: unknown): string | undefined {
 
 /**
  * 工具 → 后置动作映射（仅成功终态）：
- *  - profile.propose → 配置确认页（慢通道闭环：提议等人工拍板）；
  *  - SKU 写操作 → SKU 管理页；建单 → 单据页（带单号过滤）；
  *  - 库存调整/移库/单 SKU 查询 → 库存页（带 SKU 过滤）；
  *  - 临期查询（M15）→ 效期看板：结果全部同一 SKU 时带过滤，多 SKU 不带；
- *  - inventory.query 平铺/全量清单形态不出（结果已在卡内成表，无单一落点）。
+ *  - inventory.query 平铺/全量清单形态不出（结果已在卡内成表，无单一落点）；
+ *  - profile.propose 不出（确认在 ChatPage 待确认面板，不跳页）。
  * payload 结构是 @one/wms / @one/core 工具返回的手写镜像（前端不依赖后端包类型）。
  */
 function followUpAction(invocation: ChatInvocation): FollowUpAction | undefined {
@@ -148,8 +150,6 @@ function followUpAction(invocation: ChatInvocation): FollowUpAction | undefined 
       ? (invocation.payload as Record<string, unknown>)
       : undefined;
   switch (invocation.toolId) {
-    case 'profile.propose':
-      return { label: '去确认提议', page: 'proposals' };
     case 'wms.sku.create':
     case 'wms.sku.update':
       return { label: '去 SKU 管理查看', page: 'skus' };

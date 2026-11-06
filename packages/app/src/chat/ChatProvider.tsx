@@ -13,8 +13,8 @@ import type { ChatInvocation, ChatStreamEvent } from '../api/client';
  *  - send() 消费 SSE 流，事件归约到最后一个 turn（单在途流，靠 isStreaming 串行）；
  *  - ui.ask 挂起（步骤3）：ask 事件落一张问卡，answerAsk 提交回答后
  *    tool-result 事件沿原 SSE 流回填卡片（会话仍 isStreaming，输入区锁定）；
- *  - profile.propose 成功的慢通道引导（步骤4）：工具卡上的「去确认提议」
- *    跳转按钮（ToolInvocationCard 后置动作），不再用全局提示条。
+ *  - profile.propose 成功的慢通道闭环（步骤4）：提议落在 ChatPage 顶部的
+ *    待确认面板，人工在对话页直接确认/拒绝（配置确认页已并入，不再跳页）。
  */
 
 /** 一轮对话的展示单元：用户消息 → 工具卡片们（流式落卡/回填）→ 助手回复 */

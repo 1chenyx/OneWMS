@@ -408,8 +408,10 @@ entity.batch.expiry_date:
 |---|---|---|---|
 | 业务 | `sku.created` / `sku.updated` | 最终一致 | ext_data 整体携带，字段级 LWW |
 | 业务 | `inventory.adjusted` | 最终一致 | **只有流水事件，没有「改库存」事件**——库存 = 期初 + Σ流水，永远是派生视图 |
-| 业务 | `order.created` / `order.state_changed` | 最终一致 | 记录 from→to |
+| 业务 | `order.created` / `order.state_changed` | 最终一致 | 记录 from→to；M21 起 order payload 携带可选 partnerId（往来单位关联） |
 | 业务 | `batch.created` | 最终一致 | |
+| 业务 | `partner.created` / `partner.updated` | 最终一致 | 往来单位主数据（M21）：统一实体，kind 区分 supplier/customer；编辑只改名称/联系人等属性，kind 不可变 |
+| 业务 | `picking.created` / `picking.picked` / `picking.state_changed` | 最终一致 | 拣货单（M21）：生命周期固定 created → closed / canceled（不进 Profile workflows，盘点先例）；close 时统一落 order.state_changed + inventory.adjusted（reason=`picking:{单号}`） |
 | 配置 | `config.change` | **强一致** | patch + profileVersion（严格 +1） |
 | 生命周期 | `module.installed` / `module.uninstalled` | **强一致** | manifest 摘要 + 版本 |
 | 预留 | `role.*` | — | v1 不产生，信封已兼容 |

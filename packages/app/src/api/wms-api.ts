@@ -18,6 +18,10 @@ export interface OrderLine {
   skuCode: string;
   name: string;
   quantity: number;
+  /** 行目标库位编码（M21：上架归位的源桶） */
+  locationCode?: string;
+  /** 行批次（DEFAULT = 虚拟批次） */
+  batchNo?: string;
 }
 
 export interface Order {
@@ -25,10 +29,96 @@ export interface Order {
   orderNo: string;
   direction: 'in' | 'out';
   state: string;
+  /** 往来单位展示（M21）：入库=供应商 / 出库=客户；null = 未关联 */
+  partnerCode: string | null;
+  partnerName: string | null;
   note: string | null;
   createdAt: string;
   updatedAt: string;
   lines: OrderLine[];
+}
+
+/** 往来单位（M21，GET /api/partners；供应商/客户统一档案，kind 区分） */
+export interface Partner {
+  id: string;
+  partnerCode: string;
+  kind: 'supplier' | 'customer';
+  name: string;
+  contact: string | null;
+  phone: string | null;
+  address: string | null;
+  note: string | null;
+  extData: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 拣货单（M21，GET /api/pickings）：聚合「拣货中」出库单的作业单 */
+export interface Picking {
+  id: string;
+  pickingNo: string;
+  /** 'created'（拣货中）/ 'closed'（已关单）/ 'canceled'（已取消）——固定生命周期 */
+  state: string;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lines: PickingLine[];
+}
+
+export interface PickingLine {
+  id: string;
+  orderId: string;
+  orderNo: string;
+  skuId: string;
+  skuCode: string;
+  skuName: string;
+  qtyToPick: number;
+  suggestedLocationCode: string;
+  suggestedBatchNo: string;
+  /** 累计实拣量（0 = 未拣） */
+  pickedQty: number;
+  /** 实拣桶（null = 未拣 / 用建议桶） */
+  pickedLocationCode: string | null;
+  pickedBatchNo: string | null;
+}
+
+// ── 运营看板（M21）：五维度独立类型/端点/queryKey，便于后续扩展新维度 ──
+
+export interface DashboardOverview {
+  skuCount: number;
+  totalQuantity: number;
+  openOrderCount: number;
+  locationCount: number;
+  locationUsedCount: number;
+  openPickingCount: number;
+  activeHoldCount: number;
+  expiringSoonCount: number;
+}
+
+export interface FlowTrendPoint {
+  day: string;
+  inbound: number;
+  outbound: number;
+}
+
+export interface LocationDistribution {
+  locationCode: string;
+  quantity: number;
+}
+
+export interface OrderStateCount {
+  direction: 'in' | 'out';
+  state: string;
+  count: number;
+}
+
+export interface AlertSummary {
+  expiredCount: number;
+  criticalCount: number;
+  warningCount: number;
+  holdCount: number;
+  negativeCount: number;
+  negativeBuckets: { skuCode: string; locationCode: string; batchNo: string; quantity: number }[];
 }
 
 export interface InventoryRow {
@@ -157,9 +247,84 @@ export const wmsApi = {
     ),
   orders: (direction?: 'in' | 'out') =>
     request<Order[]>(direction ? `/api/orders?direction=${direction}` : '/api/orders'),
+  /** 往来单位清单（M21）：kind = supplier/customer 过滤；q = 编码/名称模糊 */
+  partners: (query?: { kind?: 'supplier' | 'customer'; q?: string }) => {
+    const params = new URLSearchParams();
+    if (query?.kind) params.set('kind', query.kind);
+    if (query?.q) params.set('q', query.q);
+    const qs = params.toString();
+    return request<Partner[]>(qs ? `/api/partners?${qs}` : '/api/partners');
+  },
+  createPartner: (body: {
+    partnerCode: string;
+    kind: 'supplier' | 'customer';
+    name: string;
+    contact?: string;
+    phone?: string;
+    address?: string;
+    note?: string;
+  }) =>
+    request<{ partnerId: string; partnerCode: string; kind: string; name: string }>('/api/partners', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updatePartner: (
+    partnerCode: string,
+    body: { name?: string; contact?: string; phone?: string; address?: string; note?: string },
+  ) =>
+    request<{ partnerId: string; partnerCode: string; name: string }>(
+      `/api/partners/${encodeURIComponent(partnerCode)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  /** 拣货单清单（M21）：state 过滤（created/closed/canceled） */
+  pickings: (state?: string) =>
+    request<Picking[]>(state ? `/api/pickings?state=${state}` : '/api/pickings'),
+  createPicking: (body: { orderNos: string[]; note?: string }) =>
+    request<{ pickingId: string; pickingNo: string; state: string; lineCount: number }>(
+      '/api/pickings',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  pickPickingLine: (
+    pickingNo: string,
+    body: {
+      orderNo: string;
+      skuCode: string;
+      suggestedBatchNo?: string;
+      pickedQty: number;
+      locationCode?: string;
+      pickedBatchNo?: string;
+    },
+  ) =>
+    request<{ pickingNo: string; lineId: string; pickedQty: number; remainingToPick: number }>(
+      `/api/pickings/${encodeURIComponent(pickingNo)}/pick`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  closePicking: (pickingNo: string) =>
+    request<{
+      pickingNo: string;
+      state: string;
+      orders: { orderNo: string; from: string; to: string }[];
+    }>(`/api/pickings/${encodeURIComponent(pickingNo)}/close`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  cancelPicking: (pickingNo: string) =>
+    request<{ pickingNo: string; state: string }>(`/api/pickings/${encodeURIComponent(pickingNo)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  // ── 运营看板（M21）：五维度各自独立端点 ──
+  dashboardOverview: () => request<DashboardOverview>('/api/dashboard/overview'),
+  dashboardFlowTrend: (days = 14) =>
+    request<FlowTrendPoint[]>(`/api/dashboard/flow-trend?days=${days}`),
+  dashboardLocations: () => request<LocationDistribution[]>('/api/dashboard/locations'),
+  dashboardOrders: () => request<OrderStateCount[]>('/api/dashboard/orders'),
+  dashboardAlerts: () => request<AlertSummary>('/api/dashboard/alerts'),
   createOrder: (body: {
     direction: 'in' | 'out';
     lines: { skuCode: string; quantity: number }[];
+    /** 往来单位编码（M21）：入库单=供应商 / 出库单=客户 */
+    partnerCode?: string;
     note?: string;
   }) =>
     request<{ orderId: string; orderNo: string; state: string }>('/api/orders', {
@@ -170,6 +335,26 @@ export const wmsApi = {
     request<{ orderNo: string; from: string; to: string }>(`/api/orders/${orderNo}/transition`, {
       method: 'POST',
       body: JSON.stringify({ to }),
+    }),
+  /** 上架确认与归位（M21）：targets 缺省 = 纯确认不动库存 */
+  putawayOrder: (
+    orderNo: string,
+    targets?: { skuCode: string; fromLocationCode?: string; batchNo?: string; toLocationCode: string }[],
+  ) =>
+    request<{
+      orderNo: string;
+      from: string;
+      to: string;
+      movedLines?: {
+        skuCode: string;
+        batchNo: string;
+        fromLocationCode: string;
+        toLocationCode: string;
+        quantity: number;
+      }[];
+    }>(`/api/orders/${orderNo}/putaway`, {
+      method: 'POST',
+      body: JSON.stringify({ targets }),
     }),
   inventory: () => request<InventoryRow[]>('/api/inventory'),
   /** 效期看板（M14）：全仓批次分层清单（读直查投影，切页挂载即刷新） */

@@ -24,6 +24,12 @@ export {
   type StocktakeRecord,
   type StocktakeLineRecord,
 } from './views/stocktake-view.js';
+export { PartnerView, type PartnerRecord, type PartnerKind } from './views/partner-view.js';
+export {
+  PickingView,
+  type PickingRecord,
+  type PickingLineRecord,
+} from './views/picking-view.js';
 
 export {
   ORDER_TRANSITIONS,
@@ -58,6 +64,12 @@ export type {
   StocktakeCreatedPayload,
   StocktakeCountedPayload,
   StocktakeStateChangedPayload,
+  PartnerCreatedPayload,
+  PartnerUpdatedPayload,
+  PickingCreatedPayload,
+  PickingPickedPayload,
+  PickingStateChangedPayload,
+  PickingLinePayload,
 } from './events/catalog.js';
 
 export { migrateWms } from './db/migrations.js';
@@ -68,6 +80,22 @@ export type { WmsSettings } from './config/wms-settings.js';
 
 export { listOrdersWithLines, withOrderLines } from './queries/order-queries.js';
 export type { OrderWithLines } from './queries/order-queries.js';
+export { listPickingsWithLines, withPickingLines } from './queries/picking-queries.js';
+export type { PickingWithLines, PickingLineWithMeta } from './queries/picking-queries.js';
+export {
+  getDashboardOverview,
+  getFlowTrend,
+  getLocationDistribution,
+  getOrderStats,
+  getAlertSummary,
+} from './queries/dashboard-queries.js';
+export type {
+  DashboardOverview,
+  FlowTrendPoint,
+  LocationDistribution,
+  OrderStateCount,
+  AlertSummary,
+} from './queries/dashboard-queries.js';
 export {
   getExpiryBoard,
   listHoldRows,
@@ -115,4 +143,17 @@ export {
   StocktakeNotOpenError,
   StocktakeLinesUncountedError,
   StocktakeScopeViolationError,
+  PartnerAlreadyExistsError,
+  PartnerNotFoundError,
+  PartnerKindMismatchError,
+  PutawayLineNotFoundError,
+  PutawaySourceShortError,
+  PickingNotFoundError,
+  PickingExistsError,
+  PickingNotOpenError,
+  PickingIncompleteError,
+  PickingOverPickError,
+  PickingOrderStateError,
+  PickingLineNotFoundError,
+  PickingNoOrdersError,
 } from './errors.js';

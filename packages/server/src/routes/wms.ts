@@ -1,12 +1,20 @@
 import { Hono } from 'hono';
 import {
+  getAlertSummary,
+  getDashboardOverview,
   getExpiryBoard,
+  getFlowTrend,
+  getLocationDistribution,
+  getOrderStats,
   getStocktakeDetail,
   listHoldRows,
   listInventorySummary,
   listOrdersWithLines,
+  listPickingsWithLines,
   listStocktakes,
+  PickingNotFoundError,
   StocktakeNotFoundError,
+  withPickingLines,
 } from '@one/wms';
 import type { OrderDirection } from '@one/wms';
 import type { AppContext } from '../context.js';
@@ -50,6 +58,85 @@ export function wmsRoutes(ctx: AppContext): Hono {
       const body = await c.req.json();
       return c.json(await ctx.ws.tools.invoke('wms.sku.create', body, actorOf(ctx)), 201);
     })
+    // ── 往来单位（M21：供应商/客户统一档案；q = 编码/名称模糊）──
+    .get('/partners', (c) => {
+      const kind = c.req.query('kind');
+      const q = c.req.query('q');
+      let rows =
+        kind === 'supplier' || kind === 'customer' ? ctx.ws.partners.list(kind) : ctx.ws.partners.list();
+      if (q) {
+        const kw = q.toLowerCase();
+        rows = rows.filter(
+          (p) => p.partnerCode.toLowerCase().includes(kw) || p.name.toLowerCase().includes(kw),
+        );
+      }
+      return c.json(rows);
+    })
+    .post('/partners', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.partner.create', body, actorOf(ctx)), 201);
+    })
+    .put('/partners/:partnerCode', async (c) => {
+      const body = await c.req.json();
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.partner.update',
+          { ...body, partnerCode: c.req.param('partnerCode') },
+          actorOf(ctx),
+        ),
+      );
+    })
+    // ── 拣货单（M21：聚合「拣货中」出库单；实拣记实，关单统一扣减）──
+    .get('/pickings', (c) => {
+      const state = c.req.query('state');
+      return c.json(listPickingsWithLines(ctx.ws, state || undefined));
+    })
+    .get('/pickings/:no', (c) => {
+      const picking = ctx.ws.pickings.byNo(c.req.param('no'));
+      if (!picking) throw new PickingNotFoundError(c.req.param('no'));
+      return c.json(withPickingLines(ctx.ws, picking));
+    })
+    .post('/pickings', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.picking.create', body, actorOf(ctx)), 201);
+    })
+    .post('/pickings/:no/pick', async (c) => {
+      const body = await c.req.json();
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.picking.pick',
+          { ...body, pickingNo: c.req.param('no') },
+          actorOf(ctx),
+        ),
+      );
+    })
+    .post('/pickings/:no/close', async (c) => {
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.picking.close',
+          { pickingNo: c.req.param('no') },
+          actorOf(ctx),
+        ),
+      );
+    })
+    .post('/pickings/:no/cancel', async (c) => {
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.picking.cancel',
+          { pickingNo: c.req.param('no') },
+          actorOf(ctx),
+        ),
+      );
+    })
+    // ── 运营看板（M21）：五维度各自独立端点（独立拉取/失效/扩展新维度）──
+    .get('/dashboard/overview', (c) => c.json(getDashboardOverview(ctx.ws)))
+    .get('/dashboard/flow-trend', (c) => {
+      const days = Number(c.req.query('days') ?? '14');
+      return c.json(getFlowTrend(ctx.ws, Number.isInteger(days) && days > 0 && days <= 90 ? days : 14));
+    })
+    .get('/dashboard/locations', (c) => c.json(getLocationDistribution(ctx.ws)))
+    .get('/dashboard/orders', (c) => c.json(getOrderStats(ctx.ws)))
+    .get('/dashboard/alerts', (c) => c.json(getAlertSummary(ctx.ws)))
     // ── 单据 ────────────────────────────────────────────
     .get('/orders', (c) => {
       const q = c.req.query('direction');
@@ -65,6 +152,20 @@ export function wmsRoutes(ctx: AppContext): Hono {
       const result = await ctx.ws.tools.invoke(
         'wms.order.transition',
         { orderNo: c.req.param('orderNo'), to: body.to },
+        actorOf(ctx),
+      );
+      return c.json(result);
+    })
+    // 上架确认与归位（M21，module.putaway）：body.targets 可选，缺省 = 纯确认
+    .post('/orders/:orderNo/putaway', async (c) => {
+      const body = await c.req.json().catch(() => ({}));
+      const result = await ctx.ws.tools.invoke(
+        'wms.order.putaway',
+        {
+          orderNo: c.req.param('orderNo'),
+          targets:
+            body.targets && body.targets.length > 0 ? body.targets : undefined,
+        },
         actorOf(ctx),
       );
       return c.json(result);

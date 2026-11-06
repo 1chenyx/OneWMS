@@ -101,8 +101,8 @@ export default function AgentsPage() {
     setSaving(true);
     try {
       await api.proposeAgents(agents, '更新 AI 助手定义');
-      message.success('已生成助手定义提议——请到「配置确认」页确认后生效');
-      navigate('proposals');
+      message.success('已生成助手定义提议——请到「AI 对话」页确认后生效');
+      navigate('chat');
     } catch (e) {
       message.error(
         e instanceof ApiError ? e.message : `提交失败：${e instanceof Error ? e.message : String(e)}`,
