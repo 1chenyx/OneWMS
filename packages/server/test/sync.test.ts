@@ -46,7 +46,7 @@ describe('同步端点（服务方角色）', () => {
     };
     expect(hello.nodeId).toBe(ctx.core.nodeId);
     expect(hello.workspaceId).toBe('ws-hello');
-    expect(hello.profileVersion).toBe(9); // core.wms + core.ai + core.memory + putaway + reversal + partial + reservation + return + asn
+    expect(hello.profileVersion).toBe(10); // core.wms + core.ai + core.memory + putaway + reversal + partial + reservation + return + asn + replenish
     expect(hello.eventCount).toBeGreaterThan(0);
     // 种子字段提供者通道（actor 带节点后缀；M6 起归属 core.wms manifest 安装）
     expect(Object.keys(hello.watermarks).some((k) => k.startsWith('module:core.wms@'))).toBe(true);

@@ -118,6 +118,8 @@ export function createAgentFromDef(
         tools,
         invoke: (toolId, args) => ws.tools.invoke(toolId, args, actor),
         maxSteps: options.maxSteps,
+        // 常驻瘦 schema；tools.load 在编排层把一组的完整说明升进下一轮
+        catalog: true,
       }),
     stream: (userText, history) =>
       streamAgent(userText, {
@@ -132,6 +134,8 @@ export function createAgentFromDef(
         },
         maxSteps: options.maxSteps,
         history,
+        catalog: true,
+        sessionToolIds: sessionTools.map((tool) => tool.meta.id),
       }),
   };
 }

@@ -161,6 +161,11 @@ export interface OrderCreatedPayload {
    * 缺省 = 直接入库，状态仍是 created。
    */
   readonly asn?: { readonly expectedAt?: string };
+  /**
+   * 补货单（module.replenish）。true = 按安全库存缺口开出的普通入库单。
+   * 缺省 = 不是补货单。只有 wms.replenish.create 会写上。
+   */
+  readonly replenishment?: boolean;
   readonly lines: readonly OrderLinePayload[];
   readonly note?: string;
 }

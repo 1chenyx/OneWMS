@@ -141,6 +141,7 @@ export function migrateWms(db: SqliteDatabase): void {
         partner_id   TEXT,
         return_of_order_id TEXT,
         expected_at  TEXT,
+        replenishment INTEGER NOT NULL DEFAULT 0,
         note         TEXT,
         ext_data     TEXT NOT NULL DEFAULT '{}',
         created_at   TEXT NOT NULL,
@@ -162,6 +163,11 @@ export function migrateWms(db: SqliteDatabase): void {
     const orderColsAfterReturn = db.pragma('table_info(wms_order)') as { name: string }[];
     if (orderColsAfterReturn.length > 0 && !orderColsAfterReturn.some((c) => c.name === 'expected_at')) {
       db.exec(`ALTER TABLE wms_order ADD COLUMN expected_at TEXT`);
+    }
+    // 补货标记。老库加列，不重建（旧单据都不是补货单，保持 0）
+    const orderColsAfterExpected = db.pragma('table_info(wms_order)') as { name: string }[];
+    if (orderColsAfterExpected.length > 0 && !orderColsAfterExpected.some((c) => c.name === 'replenishment')) {
+      db.exec(`ALTER TABLE wms_order ADD COLUMN replenishment INTEGER NOT NULL DEFAULT 0`);
     }
 
     // 状态冲突队列（投影，可丢）：from 对不上的 state_changed 落在这里，不改单据状态。

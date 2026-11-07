@@ -410,6 +410,32 @@ export class AsnExpectedAtError extends CoreError {
   }
 }
 
+// ── 补货（module.replenish）─────────────────────────
+
+/** 模块关闭时拒绝生成补货单。低库存预警不受影响。 */
+export class ReplenishDisabledError extends CoreError {
+  constructor() {
+    super(
+      'WMS_REPLENISH_DISABLED',
+      '补货已关闭（module.replenish）。低库存预警仍在；请在设置里重新启用该模块后再生成补货单。',
+    );
+  }
+}
+
+/** 没有可补的数量。不产生事件。 */
+export class ReplenishEmptyError extends CoreError {
+  constructor() {
+    super('WMS_REPLENISH_EMPTY', '没有需要补的货');
+  }
+}
+
+/** 指定的 SKU 当前没有正的补货缺口（已停用、不缺、或在途已经盖住） */
+export class ReplenishNotShortError extends CoreError {
+  constructor(skuCode: string) {
+    super('WMS_REPLENISH_NOT_SHORT', `SKU ${skuCode} 没有需要补的数量`);
+  }
+}
+
 /** 上架源桶余量不足（该行收货入库的库位/批次余量已被挪用） */
 export class PutawaySourceShortError extends CoreError {
   constructor(skuCode: string, locationCode: string, batchNo: string, needed: number, available: number) {

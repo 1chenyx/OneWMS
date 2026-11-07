@@ -87,6 +87,8 @@ export type { WmsSettings } from './config/wms-settings.js';
 
 export { listOrdersWithLines, listOrdersWithLinesPage, withOrderLines } from './queries/order-queries.js';
 export { getReturnable } from './queries/return-queries.js';
+export { getReplenishment } from './queries/replenish-queries.js';
+export type { ReplenishmentSuggestion } from './queries/replenish-queries.js';
 export type { ReturnableLine, ReturnableView } from './queries/return-queries.js';
 export type { OrderWithLines } from './queries/order-queries.js';
 export { toListPage } from './queries/page.js';
@@ -182,6 +184,9 @@ export {
   AsnDirectionError,
   AsnWithReturnError,
   AsnExpectedAtError,
+  ReplenishDisabledError,
+  ReplenishEmptyError,
+  ReplenishNotShortError,
   PickingNotFoundError,
   PickingExistsError,
   PickingNotOpenError,

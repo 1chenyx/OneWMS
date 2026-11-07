@@ -28,6 +28,8 @@ import { partialManifest } from './partial-manifest.js';
 import { reservationManifest } from './reservation-manifest.js';
 import { returnManifest } from './return-manifest.js';
 import { asnManifest } from './asn-manifest.js';
+import { replenishManifest } from './replenish-manifest.js';
+import { createReplenishTools } from './tools/replenish-tools.js';
 
 /**
  * WmsDomain —— 领域装配器：把仓储领域「挂载」到一个内核实例上。
@@ -48,6 +50,7 @@ export class WmsDomain {
   readonly #reservationManifest: ModuleManifest;
   readonly #returnManifest: ModuleManifest;
   readonly #asnManifest: ModuleManifest;
+  readonly #replenishManifest: ModuleManifest;
   readonly #cache = new Map<string, WmsWorkspace>();
 
   private constructor(core: OneCore) {
@@ -59,7 +62,8 @@ export class WmsDomain {
     // core.wms 的 tools 数组——它由 module.putaway manifest 单独声明（双声明冲突）
     const toolDefs = createWmsTools((id) => this.workspace(id));
     const putawayToolDefs = createPutawayTools((id) => this.workspace(id));
-    for (const tool of [...toolDefs, ...putawayToolDefs]) bus.register(tool);
+    const replenishToolDefs = createReplenishTools((id) => this.workspace(id));
+    for (const tool of [...toolDefs, ...putawayToolDefs, ...replenishToolDefs]) bus.register(tool);
     this.#manifest = wmsManifest(toolDefs);
     this.#putawayManifest = putawayManifest(putawayToolDefs);
     this.#reversalManifest = reversalManifest();
@@ -67,6 +71,7 @@ export class WmsDomain {
     this.#reservationManifest = reservationManifest();
     this.#returnManifest = returnManifest();
     this.#asnManifest = asnManifest();
+    this.#replenishManifest = replenishManifest(replenishToolDefs);
     core.exposeModuleRegistry().registerManifest(this.#manifest);
     core.exposeModuleRegistry().registerManifest(this.#putawayManifest);
     core.exposeModuleRegistry().registerManifest(this.#reversalManifest);
@@ -74,6 +79,7 @@ export class WmsDomain {
     core.exposeModuleRegistry().registerManifest(this.#reservationManifest);
     core.exposeModuleRegistry().registerManifest(this.#returnManifest);
     core.exposeModuleRegistry().registerManifest(this.#asnManifest);
+    core.exposeModuleRegistry().registerManifest(this.#replenishManifest);
   }
 
   /** 把领域挂到内核上（幂等心智：attach 两次 = 工具覆盖注册 + 表 IF NOT EXISTS + 目录覆盖登记） */
@@ -96,6 +102,7 @@ export class WmsDomain {
         this.#reservationManifest,
         this.#returnManifest,
         this.#asnManifest,
+        this.#replenishManifest,
       );
       this.#cache.set(workspaceId, ws);
     }
@@ -141,6 +148,7 @@ export class WmsWorkspace {
   readonly #reservationManifest: ModuleManifest;
   readonly #returnManifest: ModuleManifest;
   readonly #asnManifest: ModuleManifest;
+  readonly #replenishManifest: ModuleManifest;
   #cursor = -1;
 
   constructor(
@@ -154,6 +162,7 @@ export class WmsWorkspace {
     reservationManifest: ModuleManifest,
     returnManifest: ModuleManifest,
     asnManifest: ModuleManifest,
+    replenishManifest: ModuleManifest,
   ) {
     this.#facade = core.workspace(workspaceId);
     this.#db = db;
@@ -165,6 +174,7 @@ export class WmsWorkspace {
     this.#reservationManifest = reservationManifest;
     this.#returnManifest = returnManifest;
     this.#asnManifest = asnManifest;
+    this.#replenishManifest = replenishManifest;
     this.events = this.#facade.events;
     this.fields = this.#facade.fields;
     this.tools = this.#facade.tools;
@@ -185,6 +195,7 @@ export class WmsWorkspace {
     this.#installOptional(this.#reservationManifest);
     this.#installOptional(this.#returnManifest);
     this.#installOptional(this.#asnManifest);
+    this.#installOptional(this.#replenishManifest);
   }
 
   /**

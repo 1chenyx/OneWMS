@@ -12,6 +12,7 @@ import {
   listInventorySummaryPage,
   listLedger,
   getReturnable,
+  getReplenishment,
   listOrdersWithLines,
   listOrdersWithLinesPage,
   listPickingsWithLines,
@@ -186,6 +187,12 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/dashboard/locations', (c) => c.json(getLocationDistribution(ctx.ws)))
     .get('/dashboard/orders', (c) => c.json(getOrderStats(ctx.ws)))
     .get('/dashboard/alerts', (c) => c.json(getAlertSummary(ctx.ws)))
+    // ── 补货建议（module.replenish）：读建议；写走 wms.replenish.create ──
+    .get('/replenishment', (c) => c.json(getReplenishment(ctx.ws)))
+    .post('/replenishment', async (c) => {
+      const body = await c.req.json().catch(() => ({}));
+      return c.json(await ctx.ws.tools.invoke('wms.replenish.create', body, actorOf(ctx)), 201);
+    })
     // ── 单据 ────────────────────────────────────────────
     .get('/orders', (c) => {
       const q = c.req.query('direction');

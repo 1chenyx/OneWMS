@@ -62,6 +62,11 @@ export interface RunAgentDeps {
    * 完整说明升进下一轮；该调用不进 invoke。缺省关闭，编排单测保持原样透传。
    */
   catalog?: boolean;
+  /**
+   * 会话壳工具 id（ui.ask、本轮附件）。不进目录分组，始终以完整 schema 附在清单末尾。
+   * ui.ask 即使不在此列也会被当作会话工具。
+   */
+  sessionToolIds?: readonly string[];
 }
 
 /**
@@ -75,7 +80,7 @@ export async function runAgent(userText: string, deps: RunAgentDeps): Promise<Ag
   const messages: AgentMessage[] = [{ role: 'user', text: userText }];
   const invocations: AgentInvocation[] = [];
   let steps = 0;
-  const catalog = startCatalog(tools, messages, deps.catalog === true);
+  const catalog = startCatalog(tools, messages, deps.catalog === true, deps.sessionToolIds);
 
   for (;;) {
     if (++steps > maxSteps) throw new AgentStepLimitError(maxSteps);
@@ -162,7 +167,7 @@ export async function* streamAgent(
 
   const messages: AgentMessage[] = [...(deps.history ?? []), { role: 'user', text: userText }];
   let steps = 0;
-  const catalog = startCatalog(tools, messages, deps.catalog === true);
+  const catalog = startCatalog(tools, messages, deps.catalog === true, deps.sessionToolIds);
 
   for (;;) {
     if (++steps > maxSteps) throw new AgentStepLimitError(maxSteps);
@@ -250,19 +255,23 @@ export async function* streamAgent(
 interface CatalogRuntime {
   domain: AgentToolMeta[];
   session: AgentToolMeta[];
+  sessionIds: Set<string>;
   expanded: Set<string>;
 }
 
-/** 从本轮工具里拆出业务工具与会话壳（ui.ask）。目录关闭时返回 undefined */
+/** 从本轮工具里拆出业务工具与会话壳。目录关闭时返回 undefined */
 function startCatalog(
   tools: AgentToolMeta[],
   messages: AgentMessage[],
   enabled: boolean,
+  sessionToolIds: readonly string[] = [],
 ): CatalogRuntime | undefined {
   if (!enabled) return undefined;
+  const sessionIds = new Set(['ui.ask', ...sessionToolIds]);
   return {
-    domain: tools.filter((t) => t.id !== 'ui.ask' && t.id !== TOOLS_LOAD_ID),
-    session: tools.filter((t) => t.id === 'ui.ask'),
+    domain: tools.filter((t) => !sessionIds.has(t.id) && t.id !== TOOLS_LOAD_ID),
+    session: tools.filter((t) => sessionIds.has(t.id)),
+    sessionIds,
     expanded: expandedGroupsFromHistory(messages),
   };
 }
@@ -282,7 +291,7 @@ function settleCatalog(call: ToolCallRequest, catalog: CatalogRuntime): ToolCall
     if (outcome.ok && outcome.group) catalog.expanded.add(outcome.group);
     return { callId: call.callId, toolId: call.toolId, ok: outcome.ok, payload: outcome.payload };
   }
-  const blocked = catalogBlock(call.toolId, catalog.domain, catalog.expanded);
+  const blocked = catalogBlock(call.toolId, catalog.domain, catalog.expanded, catalog.sessionIds);
   if (!blocked) return undefined;
   return { callId: call.callId, toolId: call.toolId, ok: false, payload: blocked };
 }

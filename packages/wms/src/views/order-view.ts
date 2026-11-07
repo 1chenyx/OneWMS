@@ -29,6 +29,8 @@ export interface OrderRecord {
   readonly returnOfOrderId: string | null;
   /** 预计到货日（module.asn）。null = 没填，或不是预报单 */
   readonly expectedAt: string | null;
+  /** 补货单（module.replenish）。false = 普通出入库 */
+  readonly replenishment: boolean;
   readonly note: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -67,6 +69,7 @@ interface OrderRow {
   partner_id: string | null;
   return_of_order_id: string | null;
   expected_at: string | null;
+  replenishment: number;
   note: string | null;
   created_at: string;
   updated_at: string;
@@ -116,6 +119,7 @@ function rowToRecord(row: OrderRow): OrderRecord {
     partnerId: row.partner_id,
     returnOfOrderId: row.return_of_order_id,
     expectedAt: row.expected_at,
+    replenishment: row.replenishment === 1,
     note: row.note,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -147,8 +151,8 @@ export class OrderView {
         if (this.#byIdRaw(p.orderId)) return; // 已应用过（幂等）
         this.db
           .prepare(
-            `INSERT INTO wms_order (id, workspace_id, order_no, direction, state, partner_id, return_of_order_id, expected_at, note, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
+            `INSERT INTO wms_order (id, workspace_id, order_no, direction, state, partner_id, return_of_order_id, expected_at, replenishment, note, ext_data, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
           )
           .run(
             p.orderId,
@@ -159,6 +163,7 @@ export class OrderView {
             p.partnerId ?? null,
             p.returnOfOrderId ?? null,
             p.asn?.expectedAt ?? null,
+            p.replenishment === true ? 1 : 0,
             p.note ?? null,
             env.createdAt,
             env.createdAt,

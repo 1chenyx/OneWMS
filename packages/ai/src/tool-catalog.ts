@@ -181,8 +181,9 @@ export function catalogBlock(
   toolId: string,
   domain: readonly AgentToolMeta[],
   expanded: ReadonlySet<string>,
+  sessionIds?: ReadonlySet<string>,
 ): { error: string } | undefined {
-  if (toolId === TOOLS_LOAD_ID || toolId === 'ui.ask') return undefined;
+  if (toolId === TOOLS_LOAD_ID || toolId === 'ui.ask' || sessionIds?.has(toolId)) return undefined;
   if (!domain.some((t) => t.id === toolId)) {
     return { error: `工具 ${toolId} 不在该助手的授权范围内` };
   }

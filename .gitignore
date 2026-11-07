@@ -17,6 +17,8 @@ data/
 # 运行/测试日志输出
 *.log
 *-out.txt
+.trae/
+.github/
 
 # 历史遗留的散落产物（已统一收进 dist/）
 release/

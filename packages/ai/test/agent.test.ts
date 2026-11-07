@@ -489,3 +489,90 @@ describe('streamAgent：ui.ask 挂起/唤醒', () => {
     expect(invoked).toEqual(['wms.inventory.query']);
   });
 });
+
+describe('工具目录：瘦 schema 与 tools.load', () => {
+  const orderTool: AgentToolMeta = {
+    id: 'wms.order.create',
+    label: '创建出入库单',
+    description: '创建一张入库单或出库单。预报、退货和分配策略的完整规则在这里。',
+    parameters: {
+      type: 'object',
+      properties: {
+        direction: { type: 'string', enum: ['in', 'out'], description: '单据方向' },
+        lines: { type: 'array', description: '每行 { skuCode, quantity }', items: { type: 'object' } },
+      },
+      required: ['direction', 'lines'],
+    },
+    permission: 'write',
+  };
+
+  it('常驻只给摘要；tools.load 不进总线，下一轮附上完整说明', async () => {
+    const { provider, requests } = scriptedProvider([
+      { text: '', toolCalls: [{ callId: 'c1', toolId: 'tools.load', args: { group: 'order' } }] },
+      { text: '', toolCalls: [{ callId: 'c2', toolId: 'wms.order.create', args: { direction: 'in', lines: [] } }] },
+      { text: '开好了', toolCalls: [] },
+    ]);
+    const invoked: string[] = [];
+    const result = await runAgent('开一张入库单', {
+      provider,
+      system: 'SYS',
+      tools: [orderTool],
+      catalog: true,
+      invoke: async (toolId) => {
+        invoked.push(toolId);
+        return { orderNo: 'IN-1' };
+      },
+    });
+
+    expect(invoked).toEqual(['wms.order.create']);
+    expect(requests[0].tools.find((t) => t.id === 'wms.order.create')?.description).toBe('创建一张入库单或出库单');
+    expect(requests[0].tools.find((t) => t.id === 'wms.order.create')?.parameters.properties?.direction?.description).toBeUndefined();
+    expect(requests[1].tools.find((t) => t.id === 'wms.order.create')?.description).toContain('分配策略');
+    expect(result.invocations[0]).toMatchObject({ toolId: 'tools.load', ok: true });
+    expect(result.text).toBe('开好了');
+  });
+
+  it('未知组和不在授权里的工具都不进总线', async () => {
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [{ callId: 'c1', toolId: 'tools.load', args: { group: 'nope' } }] },
+      { text: '', toolCalls: [{ callId: 'c2', toolId: 'wms.inventory.adjust', args: {} }] },
+      { text: '不行', toolCalls: [] },
+    ]);
+    const invoked: string[] = [];
+    const result = await runAgent('试试', {
+      provider,
+      system: 'SYS',
+      tools: [orderTool],
+      catalog: true,
+      invoke: async (toolId) => {
+        invoked.push(toolId);
+        return {};
+      },
+    });
+    expect(invoked).toEqual([]);
+    expect(result.invocations[0].ok).toBe(false);
+    expect(result.invocations[1].ok).toBe(false);
+    expect(JSON.stringify(result.invocations[1].payload)).toContain('不在该助手的授权范围内');
+  });
+
+  it('流式：历史里加载过的组，下一句直接带完整说明', async () => {
+    const { provider, requests } = scriptedProvider([{ text: '好', toolCalls: [] }]);
+    const gen = streamAgent('继续开单', {
+      provider,
+      system: 'SYS',
+      tools: [orderTool, { ...demoTools[0], id: 'ui.ask', label: '问', description: '问', parameters: { type: 'object', properties: {} }, permission: 'read' }],
+      catalog: true,
+      sessionToolIds: ['ui.ask'],
+      history: [
+        { role: 'user', text: '开单' },
+        { role: 'tool-calls', calls: [{ callId: 'c0', toolId: 'tools.load', args: { group: 'order' } }] },
+        { role: 'tool-results', results: [{ callId: 'c0', toolId: 'tools.load', ok: true, payload: { group: 'order', toolIds: ['wms.order.create'] } }] },
+        { role: 'assistant', text: '要开哪种？' },
+      ],
+      invoke: async () => ({}),
+    });
+    await gen.next();
+    expect(requests[0].tools.find((t) => t.id === 'wms.order.create')?.description).toContain('分配策略');
+    expect(requests[0].tools.map((t) => t.id)).toContain('ui.ask');
+  });
+});
