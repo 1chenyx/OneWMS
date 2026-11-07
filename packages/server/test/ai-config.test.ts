@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 function setup(options?: {
-  aiConfigEnv?: { kind: 'openai-compatible' | 'ollama'; model: string; baseUrl?: string };
+  aiConfigEnv?: { kind: 'openai-compatible' | 'ollama'; model: string; baseUrl?: string; apiKey?: string };
 }) {
   dir = mkdtempSync(join(tmpdir(), 'onewms-ai-config-'));
   const env = options?.aiConfigEnv;
@@ -74,6 +74,53 @@ describe('GET /api/ai-config：默认态', () => {
     expect(data.configured).toBe(true);
     expect(data.source).toBe('env');
     expect(data.config.model).toBe('env-model');
+  });
+});
+
+describe('GET /api/ai-config/models', () => {
+  it('未配置 → 空清单', async () => {
+    const app = setup();
+    const res = await app.request('/api/ai-config/models');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ models: [] });
+  });
+
+  it('端点不可达 → 只回当前模型', async () => {
+    const app = setup({
+      aiConfigEnv: { kind: 'openai-compatible', model: 'env-model', baseUrl: 'http://127.0.0.1:9/v1' },
+    });
+    const res = await app.request('/api/ai-config/models');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ models: ['env-model'] });
+  });
+
+  it('列出接入点上的模型，当前模型排在最前，密钥不出现在响应里', async () => {
+    let authorization = '';
+    const server = createServer((req, res) => {
+      authorization = String(req.headers.authorization ?? '');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'qwen3:14b' }, { id: 'env-model' }, { id: '' }, { id: 3 }] }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      const app = setup({
+        aiConfigEnv: {
+          kind: 'openai-compatible',
+          model: 'env-model',
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          apiKey: 'secret-key',
+        },
+      });
+      const res = await app.request('/api/ai-config/models');
+      expect(res.status).toBe(200);
+      const body = await res.text();
+      expect(JSON.parse(body)).toEqual({ models: ['env-model', 'qwen3:14b'] });
+      expect(body).not.toContain('secret-key');
+      expect(authorization).toBe('Bearer secret-key');
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    }
   });
 });
 

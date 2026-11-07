@@ -34,6 +34,7 @@ export default function ToolRun({
           border: 0,
           padding: '6px 10px',
           cursor: 'pointer',
+          whiteSpace: 'normal',
         }}
       >
         <Typography.Text type="secondary">{label}</Typography.Text>

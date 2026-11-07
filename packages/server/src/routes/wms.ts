@@ -13,6 +13,9 @@ import {
   listLedger,
   getReturnable,
   getReplenishment,
+  listWarehouses,
+  listWarehouseStock,
+  presentLocation,
   listOrdersWithLines,
   listOrdersWithLinesPage,
   listPickingsWithLines,
@@ -330,10 +333,33 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/locations', (c) => {
       const q = c.req.query('q') || undefined;
       const page = readListPage(c.req.query('limit'), c.req.query('offset'));
-      if (!page) return c.json(ctx.ws.locations.list(q));
+      if (!page) return c.json(ctx.ws.locations.list(q).map((location) => presentLocation(ctx.ws, location)));
       const { rows, total } = ctx.ws.locations.listPage({ q, ...page });
-      return c.json({ total, ...page, hasMore: page.offset + rows.length < total, rows });
+      return c.json({
+        total,
+        ...page,
+        hasMore: page.offset + rows.length < total,
+        rows: rows.map((location) => presentLocation(ctx.ws, location)),
+      });
     })
+    .get('/warehouses', (c) => c.json(listWarehouses(ctx.ws)))
+    .post('/warehouses', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.warehouse.create', body, actorOf(ctx)), 201);
+    })
+    .put('/warehouses/:warehouseCode', async (c) => {
+      const body = await c.req.json();
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.warehouse.update',
+          { ...body, warehouseCode: c.req.param('warehouseCode') },
+          actorOf(ctx),
+        ),
+      );
+    })
+    .get('/warehouses/:warehouseCode/stock', (c) =>
+      c.json(listWarehouseStock(ctx.ws, c.req.param('warehouseCode'))),
+    )
     .post('/locations', async (c) => {
       const body = await c.req.json();
       return c.json(await ctx.ws.tools.invoke('wms.location.create', body, actorOf(ctx)), 201);

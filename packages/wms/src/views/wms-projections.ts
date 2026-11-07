@@ -7,6 +7,7 @@ import { PartnerView } from './partner-view.js';
 import { PickingView } from './picking-view.js';
 import { SkuView } from './sku-view.js';
 import { StocktakeView } from './stocktake-view.js';
+import { WarehouseView } from './warehouse-view.js';
 
 /** WMS 投影组：统一事件应用顺序与投影清理，供增量追账和全量重放共用。 */
 export class WmsProjections {
@@ -17,6 +18,7 @@ export class WmsProjections {
   readonly inventory: InventoryView;
   readonly stocktakes: StocktakeView;
   readonly pickings: PickingView;
+  readonly warehouses: WarehouseView;
 
   constructor(
     private readonly db: Database.Database,
@@ -31,11 +33,13 @@ export class WmsProjections {
     this.stocktakes = new StocktakeView(db, workspaceId, this.inventory);
     // 拣货行展示联查 SKU（投影层互不依赖——联查走查询层；此处仅事件分发）。
     this.pickings = new PickingView(db, workspaceId);
+    this.warehouses = new WarehouseView(db, workspaceId);
   }
 
   applyEvent(envelope: EventEnvelope): void {
     this.skus.applyEvent(envelope);
     this.locations.applyEvent(envelope);
+    this.warehouses.applyEvent(envelope);
     this.partners.applyEvent(envelope);
     this.orders.applyEvent(envelope);
     this.inventory.applyEvent(envelope);
@@ -46,6 +50,7 @@ export class WmsProjections {
   clear(): void {
     this.db.prepare(`DELETE FROM wms_sku WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_location WHERE workspace_id = ?`).run(this.workspaceId);
+    this.db.prepare(`DELETE FROM wms_warehouse WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_partner WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_order WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_order_line WHERE workspace_id = ?`).run(this.workspaceId);

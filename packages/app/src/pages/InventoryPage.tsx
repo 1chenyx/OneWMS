@@ -10,6 +10,7 @@ import type { InventoryListPage } from '../api/wms-api';
 import { useAppNav } from '../app-nav';
 import ScanInput from '../components/ScanInput';
 import PageHeader from '../components/PageHeader';
+import ReplenishModal from '../components/ReplenishModal';
 import { InventorySheetPort } from '../components/sheet-specs';
 import { serverPagination, monoCell, numCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
@@ -43,6 +44,7 @@ export default function InventoryPage() {
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [preset, setPreset] = useState<InventoryRow | null>(null);
   const [holdRow, setHoldRow] = useState<InventoryRow | null>(null);
+  const [replenishOpen, setReplenishOpen] = useState(false);
 
   /** 低库存判定（M20）：安全库存 > 0 且可用量 < 阈值（与 wms.inventory.lowstock 工具同一口径） */
   const isLow = (r: InventoryRow) => r.reorderPoint > 0 && r.available < r.reorderPoint;
@@ -86,6 +88,7 @@ export default function InventoryPage() {
   };
 
   const reservationOn = snapshot.data?.modules['module.reservation']?.enabled === true;
+  const replenishOn = snapshot.data?.modules['module.replenish']?.enabled === true;
   const showReserved =
     reservationOn ||
     (isListPage(payload) ? payload.hasReserved : loaded.some((r) => (r.reserved ?? 0) > 0));
@@ -190,6 +193,7 @@ export default function InventoryPage() {
             <Checkbox checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)}>
               只看低库存
             </Checkbox>
+            {replenishOn ? <Button onClick={() => setReplenishOpen(true)}>生成补货单</Button> : null}
             <InventorySheetPort reservationOn={reservationOn} />
             <Button type="primary" icon={<EditOutlined />} onClick={() => openAdjust(null)}>
               库存调整
@@ -212,6 +216,7 @@ export default function InventoryPage() {
         />
         <AdjustModal open={adjustOpen} preset={preset} onClose={() => setAdjustOpen(false)} />
         <HoldModal row={holdRow} onClose={() => setHoldRow(null)} />
+        {replenishOn ? <ReplenishModal open={replenishOpen} onClose={() => setReplenishOpen(false)} /> : null}
       </Card>
     </div>
   );

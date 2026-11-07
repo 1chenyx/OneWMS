@@ -6,7 +6,7 @@ import { createVercelLlmProvider, resolveLanguageModel } from '@one/ai';
 import { createAppContext, type AppContext } from './context.js';
 import { apiErrorHandler } from './errors.js';
 import { readAiConfig } from './ai-config.js';
-import { readAiConfigFile, resolveAiConfigPath } from './ai-config-store.js';
+import { activeProvider, readAiCatalog, resolveAiConfigPath } from './ai-config-store.js';
 import {
   lastBackupAtFromDir,
   performBackup,
@@ -66,7 +66,8 @@ export function start(): void {
   }
   // AI 配置优先级（M17）：配置页保存的文件 > 启动环境变量；两者皆无 = AI 关闭。
   const aiConfigPath = resolveAiConfigPath(dbPath);
-  const fileAi = aiConfigPath ? readAiConfigFile(aiConfigPath) : undefined;
+  const aiCatalog = aiConfigPath ? readAiCatalog(aiConfigPath) : undefined;
+  const fileAi = aiCatalog ? activeProvider(aiCatalog) : undefined;
   const envAi = readAiConfig();
   const ai = fileAi ?? envAi;
   const provider = ai ? createVercelLlmProvider(resolveLanguageModel(ai)) : undefined;
@@ -78,6 +79,7 @@ export function start(): void {
     aiConfigPath,
     aiConfigSource: fileAi ? 'file' : envAi ? 'env' : 'none',
     aiConfigEnv: envAi,
+    aiCatalog,
     backupDir: resolveBackupDir(dbPath),
     backupIntervalMs: resolveBackupIntervalMs(),
     backupKeep: resolveBackupKeep(),

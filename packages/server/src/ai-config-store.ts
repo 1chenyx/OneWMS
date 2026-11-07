@@ -25,6 +25,27 @@ export function resolveAiConfigPath(dbPath: string, env: NodeJS.ProcessEnv = pro
   return resolve(dirname(resolve(dbPath)), AI_CONFIG_FILE);
 }
 
+/** 一条已保存的模型（同一厂商可以有多条，靠模型名区分） */
+export interface AiModelProfile {
+  id: string;
+  /** 厂商预设 id；自定义地址为 custom */
+  vendorId: string;
+  label: string;
+  kind: AiProviderKind;
+  model: string;
+  baseUrl?: string;
+  apiKey?: string;
+}
+
+/** 配置文件 v2：多模型 + 当前使用的那一条 */
+export interface AiConfigCatalog {
+  version: 2;
+  activeId: string | null;
+  profiles: AiModelProfile[];
+}
+
+export const EMPTY_AI_CATALOG: AiConfigCatalog = { version: 2, activeId: null, profiles: [] };
+
 export type ParseResult = { ok: true; config: AiProviderConfig } | { ok: false; message: string };
 
 /**
@@ -58,25 +79,101 @@ export function parseAiConfigInput(raw: unknown): ParseResult {
   };
 }
 
-/** 读配置文件：不存在/损坏/不合法 → undefined（按未配置处理，不阻断启动） */
-export function readAiConfigFile(path: string): AiProviderConfig | undefined {
+/** 旧的单模型文件 → 一条目录（读到 v1 时升级，不丢密钥） */
+export function catalogFromProvider(config: AiProviderConfig, id = 'legacy'): AiConfigCatalog {
+  return {
+    version: 2,
+    activeId: id,
+    profiles: [
+      {
+        id,
+        vendorId: 'custom',
+        label: config.model,
+        kind: config.kind,
+        model: config.model,
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+      },
+    ],
+  };
+}
+
+/** 当前使用的那条 → 进程级 AiProviderConfig（聊天与备份的生效面） */
+export function activeProvider(catalog: AiConfigCatalog): AiProviderConfig | undefined {
+  const profile =
+    catalog.profiles.find((item) => item.id === catalog.activeId) ?? catalog.profiles[0];
+  if (!profile) return undefined;
+  return {
+    kind: profile.kind,
+    model: profile.model,
+    baseUrl: profile.baseUrl,
+    apiKey: profile.apiKey,
+  };
+}
+
+function parseProfile(raw: unknown): AiModelProfile | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const body = raw as Record<string, unknown>;
+  const parsed = parseAiConfigInput({
+    kind: body.kind,
+    model: body.model,
+    baseUrl: body.baseUrl,
+    apiKey: body.apiKey,
+  });
+  if (!parsed.ok) return undefined;
+  const id = typeof body.id === 'string' ? body.id.trim() : '';
+  if (!id) return undefined;
+  const vendorId = typeof body.vendorId === 'string' && body.vendorId.trim() ? body.vendorId.trim() : 'custom';
+  const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim() : parsed.config.model;
+  return { id, vendorId, label, ...parsed.config };
+}
+
+/**
+ * 读配置目录。v2 读多模型；v1 单对象升级成一条。
+ * 不存在、损坏、没有合法条目 → undefined（按未配置处理，不阻断启动）。
+ */
+export function readAiCatalog(path: string): AiConfigCatalog | undefined {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, 'utf-8'));
   } catch {
-    return undefined; // 不存在或 JSON 损坏
-  }
-  const parsed = parseAiConfigInput(raw);
-  if (!parsed.ok) {
-    console.warn(`[one-server] AI 配置文件不合法，已忽略（${path}）：${parsed.message}`);
     return undefined;
   }
-  return parsed.config;
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+    const body = raw as Record<string, unknown>;
+    if (body.version === 2 && Array.isArray(body.profiles)) {
+      const profiles = body.profiles.map(parseProfile).filter((item): item is AiModelProfile => item !== undefined);
+      if (profiles.length === 0) {
+        console.warn(`[one-server] AI 配置文件没有合法模型，已忽略（${path}）`);
+        return undefined;
+      }
+      const requested = typeof body.activeId === 'string' ? body.activeId : '';
+      const activeId = profiles.some((item) => item.id === requested) ? requested : profiles[0]!.id;
+      return { version: 2, activeId, profiles };
+    }
+  }
+  const legacy = parseAiConfigInput(raw);
+  if (!legacy.ok) {
+    console.warn(`[one-server] AI 配置文件不合法，已忽略（${path}）：${legacy.message}`);
+    return undefined;
+  }
+  return catalogFromProvider(legacy.config);
 }
 
-/** 写配置文件（覆盖式——页面保存的就是完整配置） */
+/** 读当前生效的那一条（备份与启动用）。无文件 → undefined */
+export function readAiConfigFile(path: string): AiProviderConfig | undefined {
+  const catalog = readAiCatalog(path);
+  return catalog ? activeProvider(catalog) : undefined;
+}
+
+/** 写整份目录（覆盖式） */
+export function writeAiCatalog(path: string, catalog: AiConfigCatalog): void {
+  writeFileSync(path, JSON.stringify(catalog, null, 2), 'utf-8');
+}
+
+/** 把单条配置写成只有它的目录（旧备份恢复） */
 export function writeAiConfigFile(path: string, config: AiProviderConfig): void {
-  writeFileSync(path, JSON.stringify(config, null, 2), 'utf-8');
+  writeAiCatalog(path, catalogFromProvider(config));
 }
 
 /** 删配置文件（关闭 AI：回到 env 兜底或彻底关闭）；不存在 = 幂等成功 */

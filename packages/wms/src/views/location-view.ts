@@ -20,6 +20,8 @@ export interface LocationRecord {
   readonly id: string;
   readonly locationCode: string;
   readonly name: string;
+  /** 所属仓库。null = 未分仓（模块关闭时的老库位都是这样） */
+  readonly warehouseId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -28,6 +30,7 @@ interface LocationRow {
   id: string;
   location_code: string;
   name: string;
+  warehouse_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -37,6 +40,7 @@ function rowToRecord(row: LocationRow): LocationRecord {
     id: row.id,
     locationCode: row.location_code,
     name: row.name,
+    warehouseId: row.warehouse_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -56,20 +60,39 @@ export class LocationView {
         if (this.#byIdRaw(p.locationId)) return; // 已应用过（幂等）
         this.db
           .prepare(
-            `INSERT INTO wms_location (id, workspace_id, location_code, name, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_location (id, workspace_id, location_code, name, warehouse_id, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
           )
-          .run(p.locationId, this.workspaceId, p.locationCode, p.name, env.createdAt, env.createdAt);
+          .run(
+            p.locationId,
+            this.workspaceId,
+            p.locationCode,
+            p.name,
+            p.warehouseId ?? null,
+            env.createdAt,
+            env.createdAt,
+          );
         break;
       }
       case WMS_EVENT_TYPES.locationUpdated: {
         const p = env.payload as LocationUpdatedPayload;
+        const touchWarehouse = p.warehouseId !== undefined;
         this.db
           .prepare(
-            `UPDATE wms_location SET name = COALESCE(?, name), updated_at = ?
+            `UPDATE wms_location
+             SET name = COALESCE(?, name),
+                 warehouse_id = CASE WHEN ? = 1 THEN ? ELSE warehouse_id END,
+                 updated_at = ?
              WHERE workspace_id = ? AND id = ?`,
           )
-          .run(p.name ?? null, env.createdAt, this.workspaceId, p.locationId);
+          .run(
+            p.name ?? null,
+            touchWarehouse ? 1 : 0,
+            touchWarehouse ? p.warehouseId : null,
+            env.createdAt,
+            this.workspaceId,
+            p.locationId,
+          );
         break;
       }
     }

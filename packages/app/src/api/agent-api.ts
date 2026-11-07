@@ -71,6 +71,8 @@ export const agentApi = {
     request<AiConfigStatus>('/api/ai-config', {
       method: 'DELETE',
     }),
+  /** 当前接入点上可选的模型名（失败时至少包含正在用的那个） */
+  aiModels: () => request<{ models: string[] }>('/api/ai-config/models'),
   /** 连通测试（body 缺省用当前生效配置打一轮最小补全） */
   testAiConfig: (body?: AiConfigInput) =>
     request<AiTestResult>('/api/ai-config/test', {

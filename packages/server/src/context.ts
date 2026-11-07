@@ -10,6 +10,12 @@ import {
   type LlmProvider,
 } from '@one/ai';
 import { DEFAULT_BACKUP_INTERVAL_MS, DEFAULT_BACKUP_KEEP } from './backup/backup-service.js';
+import {
+  deleteAiConfigFile,
+  EMPTY_AI_CATALOG,
+  writeAiCatalog,
+  type AiConfigCatalog,
+} from './ai-config-store.js';
 import { createPeerStore, type PeerStore } from './sync/peer-store.js';
 
 /**
@@ -52,6 +58,8 @@ export interface AppContext {
   readonly aiConfigPath: string | null;
   /** 启动时的 env 配置（配置页「关闭 AI」删除文件后的回落面） */
   readonly aiConfigEnv: AiProviderConfig | undefined;
+  /** 页面保存的多模型目录（空目录 = 没有页面配置；生效的那条在 aiConfig） */
+  aiCatalog: AiConfigCatalog;
   /** 自动备份目录（null = 宿主无落盘位，备份整体禁用） */
   readonly backupDir: string | null;
   /** 自动备份间隔（毫秒；0 = 只手动备份，不起定时器） */
@@ -64,6 +72,11 @@ export interface AppContext {
   listeningPort: number | null;
   /** 热更新：重建 provider + 切换来源（config=undefined 即关闭 AI） */
   applyAiConfig(config: AiProviderConfig | undefined, source: AiConfigSource): void;
+  /**
+   * 换整份模型目录并热切到 activeId。
+   * 目录空则删文件，回落到启动时的 env 配置。
+   */
+  commitCatalog(catalog: AiConfigCatalog): void;
   close(): void;
 }
 
@@ -78,6 +91,8 @@ export function createAppContext(options: {
   aiConfigSource?: AiConfigSource;
   /** 缺省 = aiConfig（启动注入即 env 面） */
   aiConfigEnv?: AiProviderConfig;
+  /** 缺省空目录。真实启动传入从配置文件读出的目录 */
+  aiCatalog?: AiConfigCatalog;
   /** 缺省 null（测试宿主不落盘）；真实宿主传 resolveBackupDir(dbPath) */
   backupDir?: string | null;
   /** 缺省一天一次；0 = 关闭定时备份 */
@@ -108,6 +123,7 @@ export function createAppContext(options: {
     aiConfigSource: options.aiConfigSource ?? (options.aiConfig ? 'env' : 'none'),
     aiConfigPath: options.aiConfigPath ?? null,
     aiConfigEnv: options.aiConfigEnv ?? options.aiConfig,
+    aiCatalog: options.aiCatalog ?? { ...EMPTY_AI_CATALOG, profiles: [] },
     backupDir: options.backupDir ?? null,
     backupIntervalMs: options.backupIntervalMs ?? DEFAULT_BACKUP_INTERVAL_MS,
     backupKeep: options.backupKeep ?? DEFAULT_BACKUP_KEEP,
@@ -117,6 +133,23 @@ export function createAppContext(options: {
       ctx.provider = config ? createVercelLlmProvider(resolveLanguageModel(config)) : undefined;
       ctx.aiConfig = config;
       ctx.aiConfigSource = source;
+    },
+    commitCatalog(catalog) {
+      ctx.aiCatalog = catalog;
+      if (ctx.aiConfigPath !== null) {
+        if (catalog.profiles.length === 0) deleteAiConfigFile(ctx.aiConfigPath);
+        else writeAiCatalog(ctx.aiConfigPath, catalog);
+      }
+      const active = catalog.profiles.find((item) => item.id === catalog.activeId) ?? catalog.profiles[0];
+      if (active) {
+        ctx.applyAiConfig(
+          { kind: active.kind, model: active.model, baseUrl: active.baseUrl, apiKey: active.apiKey },
+          'file',
+        );
+      } else {
+        const fallback = ctx.aiConfigEnv;
+        ctx.applyAiConfig(fallback, fallback ? 'env' : 'none');
+      }
     },
     close: () => core.close(),
   };

@@ -48,6 +48,32 @@ export class LocationNotFoundError extends CoreError {
   }
 }
 
+// ── 多仓（module.warehouse）─────────────────────────
+
+/** 模块关闭时拒绝新建仓库，也拒绝把库位划进仓库。 */
+export class WarehouseDisabledError extends CoreError {
+  constructor() {
+    super(
+      'WMS_WAREHOUSE_DISABLED',
+      '多仓已关闭（module.warehouse）。请去掉仓库参数，或在设置里重新启用该模块。',
+    );
+  }
+}
+
+/** 仓库编码已存在 */
+export class WarehouseAlreadyExistsError extends CoreError {
+  constructor(warehouseCode: string) {
+    super('WMS_WAREHOUSE_EXISTS', `仓库编码已存在: ${warehouseCode}`);
+  }
+}
+
+/** 仓库不存在 */
+export class WarehouseNotFoundError extends CoreError {
+  constructor(warehouseCode: string) {
+    super('WMS_WAREHOUSE_NOT_FOUND', `仓库不存在: ${warehouseCode}`);
+  }
+}
+
 /** 批次效期不一致（M11：同 SKU 同批次首个非空效期登记后，后继流水必须一致） */
 export class BatchExpiryMismatchError extends CoreError {
   constructor(skuCode: string, batchNo: string, known: string, given: string) {

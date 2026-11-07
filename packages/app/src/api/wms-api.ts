@@ -55,7 +55,6 @@ export interface Order {
   lines: OrderLine[];
 }
 
-/** GET /api/orders/:orderNo/returnable */
 /** GET /api/replenishment */
 export interface ReplenishmentSuggestion {
   skuCode: string;
@@ -70,6 +69,7 @@ export interface ReplenishmentSuggestion {
   suggestedQty: number;
 }
 
+/** GET /api/orders/:orderNo/returnable */
 export interface ReturnableLine {
   skuCode: string;
   name: string;

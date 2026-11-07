@@ -12,6 +12,7 @@ export { WmsDomain, WmsWorkspace } from './wms.js';
 
 export { SkuView, type SkuRecord } from './views/sku-view.js';
 export { LocationView, type LocationRecord } from './views/location-view.js';
+export { WarehouseView, type WarehouseRecord } from './views/warehouse-view.js';
 export {
   OrderView,
   type OrderRecord,
@@ -61,6 +62,9 @@ export type {
   SkuCreatedPayload,
   SkuUpdatedPayload,
   LocationCreatedPayload,
+  LocationUpdatedPayload,
+  WarehouseCreatedPayload,
+  WarehouseUpdatedPayload,
   OrderCreatedPayload,
   OrderStateChangedPayload,
   OrderConflictResolvedPayload,
@@ -89,6 +93,8 @@ export { listOrdersWithLines, listOrdersWithLinesPage, withOrderLines } from './
 export { getReturnable } from './queries/return-queries.js';
 export { getReplenishment } from './queries/replenish-queries.js';
 export type { ReplenishmentSuggestion } from './queries/replenish-queries.js';
+export { listWarehouses, listWarehouseStock, presentLocation } from './queries/warehouse-queries.js';
+export type { WarehouseListRow, WarehouseStock, WarehouseStockRow } from './queries/warehouse-queries.js';
 export type { ReturnableLine, ReturnableView } from './queries/return-queries.js';
 export type { OrderWithLines } from './queries/order-queries.js';
 export { toListPage } from './queries/page.js';
@@ -187,6 +193,9 @@ export {
   ReplenishDisabledError,
   ReplenishEmptyError,
   ReplenishNotShortError,
+  WarehouseDisabledError,
+  WarehouseAlreadyExistsError,
+  WarehouseNotFoundError,
   PickingNotFoundError,
   PickingExistsError,
   PickingNotOpenError,

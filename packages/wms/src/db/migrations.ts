@@ -101,11 +101,34 @@ export function migrateWms(db: SqliteDatabase): void {
         workspace_id  TEXT NOT NULL,
         location_code TEXT NOT NULL,
         name          TEXT NOT NULL,
+        warehouse_id  TEXT,
         created_at    TEXT NOT NULL,
         updated_at    TEXT NOT NULL,
         UNIQUE (workspace_id, location_code)
       );
       CREATE INDEX IF NOT EXISTS idx_wms_location_ws ON wms_location (workspace_id);
+    `);
+    const locationCols = db.pragma('table_info(wms_location)') as { name: string }[];
+    if (locationCols.length > 0 && !locationCols.some((c) => c.name === 'warehouse_id')) {
+      db.exec(`ALTER TABLE wms_location ADD COLUMN warehouse_id TEXT`);
+    }
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_wms_location_warehouse ON wms_location (workspace_id, warehouse_id)`,
+    );
+
+    // ── 仓库（module.warehouse）：库位的上一层。不进库存主键。
+    //    老库加表即可，库位仍以编码为身份；未划仓的库位 warehouse_id 保持 NULL。──
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_warehouse (
+        id             TEXT NOT NULL PRIMARY KEY,
+        workspace_id   TEXT NOT NULL,
+        warehouse_code TEXT NOT NULL,
+        name           TEXT NOT NULL,
+        created_at     TEXT NOT NULL,
+        updated_at     TEXT NOT NULL,
+        UNIQUE (workspace_id, warehouse_code)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_warehouse_ws ON wms_warehouse (workspace_id);
     `);
 
     // ── 往来单位主数据（M21：供应商/客户统一实体，kind 区分；

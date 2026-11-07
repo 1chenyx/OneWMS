@@ -114,6 +114,10 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     expect(req.tools.map((t) => t.id)).not.toContain('profile.propose');
     expect(req.tools.map((t) => t.id).sort()).toEqual([
       'core.oplog.query',
+      'profile.field.query',
+      'profile.module.query',
+      'profile.overview',
+      'profile.workflow.query',
       'tools.load',
       'wms.inventory.adjust',
       'wms.inventory.expiring',
@@ -127,6 +131,9 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
       'wms.location.create',
       'wms.location.list',
       'wms.location.update',
+      'wms.order.conflict.accept',
+      'wms.order.conflict.dismiss',
+      'wms.order.conflict.list',
       'wms.order.create',
       'wms.order.putaway',
       'wms.order.query',
@@ -139,6 +146,7 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
       'wms.picking.create',
       'wms.picking.pick',
       'wms.picking.query',
+      'wms.replenish.create',
       'wms.sku.archive',
       'wms.sku.create',
       'wms.sku.resolve',

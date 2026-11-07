@@ -27,6 +27,21 @@ function parseWhen(when: string): WhenPattern | undefined {
 }
 
 /**
+ * 把 when 说成人话。nameOf 把模块 id 换成展示名；对不上时调用方应退回 id。
+ * 空条件是「无额外条件」；语法无法识别时原样带回，不假装放行。
+ */
+export function describeWhenCondition(
+  when: string | undefined,
+  nameOf: (moduleId: string) => string,
+): string {
+  if (when === undefined || when.trim() === '') return '无额外条件';
+  const parsed = parseWhen(when);
+  if (!parsed) return `条件无法识别：${when}`;
+  const name = nameOf(parsed.moduleId);
+  return parsed.negated ? `仅当「${name}」未启用` : `仅当「${name}」启用`;
+}
+
+/**
  * 求值单个 when 条件（moduleId 为完整模块 id，如 module.putaway）：
  *  - when 为 undefined / 空串 → 无条件成立（true）
  *  - `{moduleId}.enabled` → 已安装且启用

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import { PaperClipOutlined, SendOutlined } from '@ant-design/icons';
-import { Alert, App as AntApp, Badge, Button, Card, Input, List, Segmented, Space, Spin, Tag, Typography } from 'antd';
+import { forwardRef, useEffect, useRef, useState } from 'react';
+import type { ButtonProps } from 'antd';
+import { DownOutlined, PaperClipOutlined, SendOutlined } from '@ant-design/icons';
+import { Alert, App as AntApp, Badge, Button, Card, Dropdown, Input, List, Space, Spin, Tag, Typography } from 'antd';
 import { api } from '../api/client';
 import type { AgentDef, ChatAttachmentPayload, ChatInvocation } from '../api/client';
 import { useAiConfig, useProposals } from '../api/hooks';
@@ -17,9 +18,9 @@ import PageHeader from '../components/PageHeader';
 /**
  * AI 对话面板（M12：SSE 流式 + 会话化；M16：多助手切换）：
  *  - 状态在 ChatProvider（App 级 context）——切页不丢对话；
- *  - 输入区上方 Segmented 切换助手（选项来自 GET /api/agents；「使用 AI」与
- *    「配置 AI」分离——定义改动走管理页 + 对话页确认，聊天里只有切换权）；
- *    切换 = 换新会话 + 清空历史（流式中锁定）；
+ *  - 输入框底部两个下拉：切换助手（选项来自 GET /api/agents）、切换模型
+ *    （同一接入点上的模型名，选项来自 GET /api/ai-config/models）。
+ *    切换助手 = 换新会话 + 清空历史（流式中锁定）；切换模型不换会话；
  *  - 待确认提议面板：慢通道的人工拍板收敛在本页（配置确认页已并入）——
  *    AI 对话里的 profile.propose、助手管理/AI 记忆的保存提议都出现在顶部
  *    面板，展开详情即可直接确认/拒绝，不再单独设页跳转；
@@ -27,6 +28,40 @@ import PageHeader from '../components/PageHeader';
  *  - 成功的操作展开后仍可去对应管理页；
  *  - 输入区可以带上 Excel、CSV 或文本，用户说怎么处理，助手就怎么处理。
  */
+
+/** 输入框底栏的可点控件：浅底圆角，悬停再深一点 */
+const ComposerChip = forwardRef<HTMLButtonElement, ButtonProps>(function ComposerChip(
+  { children, style, disabled, onMouseEnter, onMouseLeave, ...rest },
+  ref,
+) {
+  const [hover, setHover] = useState(false);
+  return (
+    <Button
+      {...rest}
+      ref={ref}
+      type="text"
+      size="small"
+      disabled={disabled}
+      onMouseEnter={(event) => {
+        setHover(true);
+        onMouseEnter?.(event);
+      }}
+      onMouseLeave={(event) => {
+        setHover(false);
+        onMouseLeave?.(event);
+      }}
+      style={{
+        background: disabled ? '#f5f5f5' : hover ? '#e4e4e4' : '#f0f0f0',
+        borderRadius: 999,
+        paddingInline: 12,
+        ...style,
+      }}
+    >
+      {children}
+    </Button>
+  );
+});
+
 export default function ChatPage() {
   const { message } = AntApp.useApp();
   const chat = useChatSession();
@@ -35,6 +70,8 @@ export default function ChatPage() {
   const [files, setFiles] = useState<ChatAttachmentPayload[]>([]);
   const [readingFile, setReadingFile] = useState(false);
   const [agents, setAgents] = useState<AgentDef[]>([]);
+  const [remoteModels, setRemoteModels] = useState<string[]>([]);
+  const [dragOver, setDragOver] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -70,6 +107,18 @@ export default function ChatPage() {
       alive = false;
     };
   }, []);
+
+  // 同一接入点上可选的模型（失败就只靠当前配置名）
+  useEffect(() => {
+    let alive = true;
+    api
+      .aiModels()
+      .then((listed) => alive && setRemoteModels(listed.models))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [aiConfigQuery.data?.config?.model]);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: 1e9, behavior: 'smooth' });
@@ -109,6 +158,15 @@ export default function ChatPage() {
       setReadingFile(false);
     })();
   };
+
+  const agentName = agents.find((agent) => agent.id === chat.agentId)?.name;
+  const agentModel = agents.find((agent) => agent.id === chat.agentId)?.model;
+  const configModel = aiConfigQuery.data?.config?.model;
+  const shownModel = chat.model ?? agentModel ?? configModel;
+  const modelOptions = [
+    ...new Set([shownModel, configModel, ...remoteModels, ...agents.map((agent) => agent.model)].filter((id): id is string => Boolean(id))),
+  ];
+  const acceptDrop = !chat.isStreaming && !readingFile;
 
   return (
     <div
@@ -215,41 +273,64 @@ export default function ChatPage() {
             {chat.isStreaming ? <Spin tip="思考中…" /> : null}
           </Space>
         </div>
-        {files.length > 0 ? (
-          <Space size={4} wrap style={{ marginTop: 12 }}>
-            {files.map((file) => (
-              <Tag
-                key={file.id}
-                closable={!chat.isStreaming}
-                onClose={() => setFiles((prev) => prev.filter((item) => item.id !== file.id))}
-              >
-                {file.name}
-                {file.kind === 'table' ? ` · ${file.rows.length} 行` : ''}
-              </Tag>
-            ))}
-          </Space>
-        ) : null}
-        <Space.Compact style={{ marginTop: 12 }} block>
-          <Input.TextArea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onPressEnter={(e) => {
-              if (!e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
+        <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+          <div
+            aria-label="对话输入"
+            onDragEnter={(e) => {
+              e.preventDefault();
+              if (acceptDrop) setDragOver(true);
             }}
-            placeholder="输入指令，Enter 发送（Shift+Enter 换行）。可以先导入文件再说怎么处理"
-            autoSize={{ minRows: 1, maxRows: 4 }}
-            disabled={chat.isStreaming}
-          />
-          <Button type="primary" icon={<SendOutlined />} onClick={send} loading={chat.isStreaming || readingFile}>
-            发送
-          </Button>
-        </Space.Compact>
-        {/* 助手切换（M16）：流式中锁定；定义的管理入口在「助手管理」页（高权限分离） */}
-        <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <Space size={8} wrap>
+            onDragOver={(e) => {
+              e.preventDefault();
+              if (e.dataTransfer) e.dataTransfer.dropEffect = acceptDrop ? 'copy' : 'none';
+            }}
+            onDragLeave={(e) => {
+              if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+              setDragOver(false);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              if (acceptDrop) onPickFiles(e.dataTransfer.files);
+            }}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              border: `1px solid ${dragOver ? '#1677ff' : '#d9d9d9'}`,
+              borderRadius: 8,
+              background: chat.isStreaming ? '#f5f5f5' : dragOver ? '#e6f4ff' : '#fff',
+              padding: '8px 8px 4px 12px',
+            }}
+          >
+            {files.length > 0 ? (
+              <Space size={4} wrap style={{ marginBottom: 4 }}>
+                {files.map((file) => (
+                  <Tag
+                    key={file.id}
+                    closable={!chat.isStreaming}
+                    onClose={() => setFiles((prev) => prev.filter((item) => item.id !== file.id))}
+                  >
+                    {file.name}
+                    {file.kind === 'table' ? ` · ${file.rows.length} 行` : ''}
+                  </Tag>
+                ))}
+              </Space>
+            ) : null}
+            <Input.TextArea
+              value={input}
+              variant="borderless"
+              rows={3}
+              onChange={(e) => setInput(e.target.value)}
+              onPressEnter={(e) => {
+                if (!e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              placeholder="输入指令，Enter 发送（Shift+Enter 换行）。可以把 Excel、CSV 或文本拖进这里，再说怎么处理"
+              disabled={chat.isStreaming}
+              style={{ padding: '4px 0', resize: 'none' }}
+            />
             <input
               ref={fileRef}
               type="file"
@@ -259,21 +340,49 @@ export default function ChatPage() {
               style={{ display: 'none' }}
               onChange={(e) => onPickFiles(e.target.files)}
             />
-            <Button
-              icon={<PaperClipOutlined />}
-              disabled={chat.isStreaming || readingFile}
-              onClick={() => fileRef.current?.click()}
-            >
-              导入文件
-            </Button>
-          </Space>
-          <Segmented
-            value={chat.agentId}
-            onChange={(v) => chat.setAgentId(v as string)}
-            disabled={chat.isStreaming}
-            options={agents.map((a) => ({ label: a.name, value: a.id, title: a.description }))}
-          />
-          <Typography.Link onClick={() => navigate('agents')}>管理助手</Typography.Link>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Dropdown
+                trigger={['click']}
+                disabled={chat.isStreaming || agents.length === 0}
+                menu={{
+                  selectable: true,
+                  selectedKeys: [chat.agentId],
+                  items: agents.map((agent) => ({
+                    key: agent.id,
+                    label: agent.name,
+                    title: agent.description || undefined,
+                  })),
+                  onClick: ({ key }) => chat.setAgentId(String(key)),
+                }}
+              >
+                <ComposerChip>
+                  {agentName ? `助手：${agentName}` : '助手'} <DownOutlined aria-hidden />
+                </ComposerChip>
+              </Dropdown>
+              <Dropdown
+                trigger={['click']}
+                disabled={chat.isStreaming || modelOptions.length === 0}
+                menu={{
+                  selectable: true,
+                  selectedKeys: shownModel ? [shownModel] : [],
+                  style: { maxHeight: 280, overflow: 'auto' },
+                  items: modelOptions.map((id) => ({ key: id, label: id })),
+                  onClick: ({ key }) => chat.setModel(String(key)),
+                }}
+              >
+                <ComposerChip style={{ maxWidth: 240 }}>
+                  {shownModel ? `模型：${shownModel}` : '模型'} <DownOutlined aria-hidden />
+                </ComposerChip>
+              </Dropdown>
+              <div style={{ flex: 1 }} />
+              <ComposerChip icon={<PaperClipOutlined />} disabled={!acceptDrop} onClick={() => fileRef.current?.click()}>
+                导入文件
+              </ComposerChip>
+            </div>
+          </div>
+          <Button type="primary" icon={<SendOutlined />} onClick={send} loading={chat.isStreaming || readingFile}>
+            发送
+          </Button>
         </div>
       </Card>
     </div>

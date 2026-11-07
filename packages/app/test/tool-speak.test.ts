@@ -53,6 +53,27 @@ describe('工具调用人话', () => {
     expect(summary).toBe('做了 2 项（创建商品、开出入库单）');
   });
 
+  it('加载工具说明只说组名', () => {
+    const spoken = speakInvocation(
+      inv({
+        toolId: 'tools.load',
+        args: { group: 'order' },
+        ok: true,
+        payload: { group: 'order', toolIds: ['wms.order.create'] },
+      }),
+    );
+    expect(spoken.title).toBe('加载了 order 的完整说明');
+    expect(spoken.title).not.toContain('wms.');
+  });
+
+  it('项目实况查询说人话，不露出工具名', () => {
+    const spoken = speakInvocation(
+      inv({ toolId: 'profile.workflow.query', args: { workflowId: 'inbound' }, ok: true, payload: {} }),
+    );
+    expect(spoken.title).toBe('查了流程 inbound');
+    expect(spoken.title).not.toContain('profile.');
+  });
+
   it('按表格处理的结果说出新建、更新和没做成的行', () => {
     const spoken = speakInvocation(
       inv({

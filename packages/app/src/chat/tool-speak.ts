@@ -57,6 +57,10 @@ const ACTION: Record<string, string> = {
   'memory.save': '记下一条',
   'memory.forget': '忘掉一条记忆',
   'core.oplog.query': '查操作记录',
+  'profile.overview': '查看项目概况',
+  'profile.workflow.query': '查询流程',
+  'profile.module.query': '查询功能',
+  'profile.field.query': '查询字段',
   'tools.load': '加载工具说明',
   'chat.attachment.read': '查看附件',
   'chat.attachment.apply': '按表格处理',
@@ -305,6 +309,20 @@ function successTitle(
       return { title: `看了记忆${countSuffix(raw)}`, details: [] };
     case 'core.oplog.query':
       return { title: `查了操作记录${countSuffix(raw)}`, details: [] };
+    case 'profile.overview':
+      return { title: '看了当前项目概况', details: [] };
+    case 'profile.workflow.query': {
+      const id = str(args.workflowId);
+      return { title: id ? `查了流程 ${id}` : '查了全部流程', details: [] };
+    }
+    case 'profile.module.query': {
+      const id = str(args.moduleId);
+      return { title: id ? `查了功能 ${id}` : '查了全部功能', details: [] };
+    }
+    case 'profile.field.query': {
+      const entity = str(args.entity);
+      return { title: entity ? `查了 ${entity} 的字段` : '查了可配置字段', details: [] };
+    }
     case 'tools.load': {
       const group = str(args.group) ?? str(payload?.group);
       return { title: group ? `加载了 ${group} 的完整说明` : '加载了工具说明', details: [] };

@@ -17,6 +17,8 @@ export const WMS_EVENT_TYPES = {
   skuUpdated: 'wms.sku.updated',
   locationCreated: 'wms.location.created',
   locationUpdated: 'wms.location.updated',
+  warehouseCreated: 'wms.warehouse.created',
+  warehouseUpdated: 'wms.warehouse.updated',
   partnerCreated: 'wms.partner.created',
   partnerUpdated: 'wms.partner.updated',
   orderCreated: 'wms.order.created',
@@ -98,12 +100,32 @@ export interface LocationCreatedPayload {
   readonly locationId: string;
   readonly locationCode: string;
   readonly name: string;
+  /** 所属仓库（module.warehouse）。缺省 = 未分仓 */
+  readonly warehouseId?: string;
 }
 
 /** 库位更名（LWW：只携带变更字段；locationCode 是业务键不可改——历史单据引用它） */
 export interface LocationUpdatedPayload {
   readonly locationId: string;
   readonly locationCode: string;
+  readonly name?: string;
+  /**
+   * 所属仓库。缺省 = 不改。null = 划出仓库。
+   * 只有 module.warehouse 启用时工具才会写这个字段。
+   */
+  readonly warehouseId?: string | null;
+}
+
+export interface WarehouseCreatedPayload {
+  readonly warehouseId: string;
+  readonly warehouseCode: string;
+  readonly name: string;
+}
+
+/** 仓库更名。warehouseCode 是业务键，不可改。 */
+export interface WarehouseUpdatedPayload {
+  readonly warehouseId: string;
+  readonly warehouseCode: string;
   readonly name?: string;
 }
 

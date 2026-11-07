@@ -75,7 +75,7 @@ describe('GET /api/health 与 /api/profile/snapshot', () => {
       schema: { entities: Record<string, { extensions: Array<{ key: string }> }> };
       workflows: Record<string, unknown>;
     };
-    expect(snap.version).toBe(10); // core.wms + core.ai + core.memory + putaway + reversal + partial + reservation + return + asn + replenish
+    expect(snap.version).toBe(11); // core.wms + core.ai + core.memory + putaway + reversal + partial + reservation + return + asn + replenish + warehouse
     const keys = snap.schema.entities.sku!.extensions.map((f) => f.key).sort();
     expect(keys).toEqual(['category', 'spec', 'unit']);
     expect(Object.keys(snap.workflows).sort()).toEqual(['inbound', 'outbound']);
@@ -95,6 +95,20 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     const app = setup(scriptedProvider([{ text: '好的', toolCalls: [] }]));
     const res = await post(app, '/api/chat/sessions/s1/message', { message: '   ' });
     expect(res.status).toBe(400);
+  });
+
+  it('model 非法 → 400，不开始这一轮', async () => {
+    const app = setup(scriptedProvider([{ text: '好的', toolCalls: [] }]));
+    const res = await post(app, '/api/chat/sessions/s1/message', { message: '你好', model: '有空格 不行' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { message: string }).message).toBe('模型名无效');
+  });
+
+  it('model 与当前配置相同 → 仍走进程通道', async () => {
+    const app = setup(scriptedProvider([{ text: '好的', toolCalls: [] }]));
+    const res = await post(app, '/api/chat/sessions/s1/message', { message: '你好', model: 'test-model' });
+    expect(res.status).toBe(200);
+    expect(parseSse(await res.text()).at(-1)?.event).toBe('turn-done');
   });
 
   it('agentId 未知 → 404 AGENT_NOT_FOUND（M16）', async () => {

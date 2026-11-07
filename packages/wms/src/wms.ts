@@ -30,6 +30,9 @@ import { returnManifest } from './return-manifest.js';
 import { asnManifest } from './asn-manifest.js';
 import { replenishManifest } from './replenish-manifest.js';
 import { createReplenishTools } from './tools/replenish-tools.js';
+import { warehouseManifest } from './warehouse-manifest.js';
+import { createWarehouseTools } from './tools/warehouse-tools.js';
+import { WarehouseView } from './views/warehouse-view.js';
 
 /**
  * WmsDomain —— 领域装配器：把仓储领域「挂载」到一个内核实例上。
@@ -51,6 +54,7 @@ export class WmsDomain {
   readonly #returnManifest: ModuleManifest;
   readonly #asnManifest: ModuleManifest;
   readonly #replenishManifest: ModuleManifest;
+  readonly #warehouseManifest: ModuleManifest;
   readonly #cache = new Map<string, WmsWorkspace>();
 
   private constructor(core: OneCore) {
@@ -63,7 +67,10 @@ export class WmsDomain {
     const toolDefs = createWmsTools((id) => this.workspace(id));
     const putawayToolDefs = createPutawayTools((id) => this.workspace(id));
     const replenishToolDefs = createReplenishTools((id) => this.workspace(id));
-    for (const tool of [...toolDefs, ...putawayToolDefs, ...replenishToolDefs]) bus.register(tool);
+    const warehouseToolDefs = createWarehouseTools((id) => this.workspace(id));
+    for (const tool of [...toolDefs, ...putawayToolDefs, ...replenishToolDefs, ...warehouseToolDefs]) {
+      bus.register(tool);
+    }
     this.#manifest = wmsManifest(toolDefs);
     this.#putawayManifest = putawayManifest(putawayToolDefs);
     this.#reversalManifest = reversalManifest();
@@ -72,6 +79,7 @@ export class WmsDomain {
     this.#returnManifest = returnManifest();
     this.#asnManifest = asnManifest();
     this.#replenishManifest = replenishManifest(replenishToolDefs);
+    this.#warehouseManifest = warehouseManifest(warehouseToolDefs);
     core.exposeModuleRegistry().registerManifest(this.#manifest);
     core.exposeModuleRegistry().registerManifest(this.#putawayManifest);
     core.exposeModuleRegistry().registerManifest(this.#reversalManifest);
@@ -80,6 +88,7 @@ export class WmsDomain {
     core.exposeModuleRegistry().registerManifest(this.#returnManifest);
     core.exposeModuleRegistry().registerManifest(this.#asnManifest);
     core.exposeModuleRegistry().registerManifest(this.#replenishManifest);
+    core.exposeModuleRegistry().registerManifest(this.#warehouseManifest);
   }
 
   /** 把领域挂到内核上（幂等心智：attach 两次 = 工具覆盖注册 + 表 IF NOT EXISTS + 目录覆盖登记） */
@@ -103,6 +112,7 @@ export class WmsDomain {
         this.#returnManifest,
         this.#asnManifest,
         this.#replenishManifest,
+        this.#warehouseManifest,
       );
       this.#cache.set(workspaceId, ws);
     }
@@ -137,6 +147,7 @@ export class WmsWorkspace {
   readonly inventory: InventoryView;
   readonly stocktakes: StocktakeView;
   readonly pickings: PickingView;
+  readonly warehouses: WarehouseView;
 
   readonly #facade: WorkspaceFacade;
   readonly #db: Database.Database;
@@ -149,6 +160,7 @@ export class WmsWorkspace {
   readonly #returnManifest: ModuleManifest;
   readonly #asnManifest: ModuleManifest;
   readonly #replenishManifest: ModuleManifest;
+  readonly #warehouseManifest: ModuleManifest;
   #cursor = -1;
 
   constructor(
@@ -163,6 +175,7 @@ export class WmsWorkspace {
     returnManifest: ModuleManifest,
     asnManifest: ModuleManifest,
     replenishManifest: ModuleManifest,
+    warehouseManifest: ModuleManifest,
   ) {
     this.#facade = core.workspace(workspaceId);
     this.#db = db;
@@ -175,6 +188,7 @@ export class WmsWorkspace {
     this.#returnManifest = returnManifest;
     this.#asnManifest = asnManifest;
     this.#replenishManifest = replenishManifest;
+    this.#warehouseManifest = warehouseManifest;
     this.events = this.#facade.events;
     this.fields = this.#facade.fields;
     this.tools = this.#facade.tools;
@@ -187,6 +201,7 @@ export class WmsWorkspace {
     this.inventory = this.#projections.inventory;
     this.stocktakes = this.#projections.stocktakes;
     this.pickings = this.#projections.pickings;
+    this.warehouses = this.#projections.warehouses;
     this.sync();
     this.#installBaseModule(manifest);
     this.#installOptional(this.#putawayManifest);
@@ -196,6 +211,7 @@ export class WmsWorkspace {
     this.#installOptional(this.#returnManifest);
     this.#installOptional(this.#asnManifest);
     this.#installOptional(this.#replenishManifest);
+    this.#installOptional(this.#warehouseManifest);
   }
 
   /**

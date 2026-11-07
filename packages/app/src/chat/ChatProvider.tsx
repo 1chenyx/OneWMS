@@ -10,6 +10,8 @@ import type { ChatAttachmentChip, ChatAttachmentPayload, ChatInvocation, ChatStr
  *  - sessionId 页面生命周期唯一（server 内存会话的 key，刷新即新会话）；
  *  - agentId（M16）：当前助手；切换 = 换新 sessionId + 清空 turns——
  *    server 侧每条消息按 agentId 现场装配，历史按助手隔离；
+ *  - model：这一次对话选用的模型名。没选时不传，服务端用助手或当前配置；
+ *    切换模型不换会话；
  *  - send() 消费 SSE 流，事件归约到最后一个 turn（单在途流，靠 isStreaming 串行）；
  *  - ui.ask 挂起（步骤3）：ask 事件落一张问卡，answerAsk 提交回答后
  *    tool-result 事件沿原 SSE 流回填卡片（会话仍 isStreaming，输入区锁定）；
@@ -37,6 +39,10 @@ interface ChatSessionValue {
   agentId: string;
   /** 切换助手：换新会话 + 清空历史（每条消息由 server 按定义现场装配） */
   setAgentId(agentId: string): void;
+  /** 用户在输入框里选定的模型；未选为 undefined（沿用助手或当前配置） */
+  model?: string;
+  /** 切换模型：下一轮用这个名字，对话历史保留 */
+  setModel(model: string): void;
   send(text: string, attachments?: ChatAttachmentPayload[]): Promise<void>;
   /** 回答挂起中的 ui.ask（answer 传 null 表示跳过） */
   answerAsk(callId: string, answer: string | null): Promise<void>;
@@ -92,8 +98,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [agentId, setAgentIdState] = useState('general');
+  const [model, setModelState] = useState<string | undefined>(undefined);
   const sessionIdRef = useRef<string>(newSessionId());
   const agentIdRef = useRef('general');
+  const modelRef = useRef<string | undefined>(undefined);
   const streamingRef = useRef(false);
 
   /** 切换助手（M16）：流式中不切（在途轮次属于旧助手）；换会话 + 清历史 */
@@ -103,6 +111,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     sessionIdRef.current = newSessionId();
     setAgentIdState(next);
     setTurns([]);
+  }, []);
+
+  /** 切换模型不换会话。流式中锁定，避免同一轮中途改通道。 */
+  const setModel = useCallback((next: string) => {
+    const name = next.trim();
+    if (!name || name === modelRef.current || streamingRef.current) return;
+    modelRef.current = name;
+    setModelState(name);
   }, []);
 
   const send = useCallback(
@@ -129,15 +145,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       ]);
 
       try {
-        await streamChatMessage(
-          sessionIdRef.current,
-          trimmed,
-          agentIdRef.current,
-          (ev) => {
-            setTurns((prev) => applyEvent(prev, ev));
-          },
-          files,
-        );
+        const onEvent = (ev: ChatStreamEvent) => {
+          setTurns((prev) => applyEvent(prev, ev));
+        };
+        const chosen = modelRef.current;
+        if (chosen) {
+          await streamChatMessage(sessionIdRef.current, trimmed, agentIdRef.current, onEvent, files, chosen);
+        } else {
+          await streamChatMessage(sessionIdRef.current, trimmed, agentIdRef.current, onEvent, files);
+        }
       } catch (e) {
         const errMsg =
           e instanceof ApiError && e.code === 'AI_NOT_CONFIGURED'
@@ -171,8 +187,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ turns, isStreaming, agentId, setAgentId, send, answerAsk }),
-    [turns, isStreaming, agentId, setAgentId, send, answerAsk],
+    () => ({ turns, isStreaming, agentId, setAgentId, model, setModel, send, answerAsk }),
+    [turns, isStreaming, agentId, setAgentId, model, setModel, send, answerAsk],
   );
   return <ChatSessionContext.Provider value={value}>{children}</ChatSessionContext.Provider>;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App as AntApp, ConfigProvider } from 'antd';
 import ProposalDetail from '../src/components/ProposalDetail';
@@ -21,6 +21,7 @@ const rejectMock = vi.fn();
 const streamMock = vi.fn();
 const answerMock = vi.fn();
 const agentsMock = vi.fn();
+const modelsMock = vi.fn();
 // 默认已配置（不弹引导卡）；未配置引导用例内覆盖返回值
 const aiConfigMock = vi.fn(() => ({ isLoading: false, data: { configured: true, source: 'file' } }));
 
@@ -60,16 +61,10 @@ vi.mock('../src/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/api/client')>();
   return {
     ...actual,
-    streamChatMessage: (
-      sessionId: string,
-      message: string,
-      agentId: string,
-      onEvent: (ev: ChatStreamEvent) => void,
-      attachments?: unknown,
-    ) => streamMock(sessionId, message, agentId, onEvent, attachments),
+    streamChatMessage: (...args: unknown[]) => streamMock(...args),
     answerChatAsk: (sessionId: string, callId: string, answer: string | null) =>
       answerMock(sessionId, callId, answer),
-    api: { ...actual.api, agents: () => agentsMock() },
+    api: { ...actual.api, agents: () => agentsMock(), aiModels: () => modelsMock() },
   };
 });
 
@@ -144,6 +139,7 @@ describe('ChatPage：SSE 流式', () => {
       ],
       tools: [],
     });
+    modelsMock.mockResolvedValue({ models: ['test-model', 'qwen3:8b'] });
   });
 
   it('发送 → 工具卡（执行中→成功回填）与流式助手回复可见', async () => {
@@ -228,7 +224,15 @@ describe('ChatPage：SSE 流式', () => {
     });
   });
 
-  it('助手切换（M16）：Segmented 选项来自目录 → 切换清空历史 → 消息携带新 agentId', async () => {
+  it('拖进文本文件后出现在输入框里', async () => {
+    render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+    expect(screen.getByRole('textbox')).toHaveAttribute('rows', '3');
+    const file = new File(['记一笔'], '备注.txt', { type: 'text/plain' });
+    fireEvent.drop(screen.getByLabelText('对话输入'), { dataTransfer: { files: [file] } });
+    expect(await screen.findByText('备注.txt')).toBeInTheDocument();
+  });
+
+  it('助手切换（M16）：下拉选项来自目录 → 切换清空历史 → 消息携带新 agentId', async () => {
     const sids: string[] = [];
     streamMock.mockImplementation(
       async (sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
@@ -240,9 +244,9 @@ describe('ChatPage：SSE 流式', () => {
     const user = userEvent.setup();
     render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
 
-    // 切换器渲染目录选项
-    expect(await screen.findByText('通用助手')).toBeInTheDocument();
-    expect(screen.getByText('只读助手')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '助手：通用助手' })).toBeInTheDocument();
+    expect(screen.queryByText('管理助手')).not.toBeInTheDocument();
+    expect(screen.queryByText('只读助手')).not.toBeInTheDocument();
 
     // general 一轮对话
     await user.click(screen.getByRole('textbox'));
@@ -251,7 +255,8 @@ describe('ChatPage：SSE 流式', () => {
     expect(await screen.findByText('好的。')).toBeInTheDocument();
 
     // 切到只读助手：历史清空（换会话）；新消息携带 readonly + 新 sessionId
-    await user.click(screen.getByText('只读助手'));
+    await user.click(screen.getByRole('button', { name: '助手：通用助手' }));
+    await user.click(await screen.findByRole('menuitem', { name: '只读助手' }));
     expect(screen.queryByText('查库存')).not.toBeInTheDocument(); // 旧 turn 已清
     await user.click(screen.getByRole('textbox'));
     await user.keyboard('再查一次');
@@ -261,6 +266,35 @@ describe('ChatPage：SSE 流式', () => {
     expect(streamMock).toHaveBeenNthCalledWith(1, sids[0], '查库存', 'general', expect.any(Function), undefined);
     expect(streamMock).toHaveBeenNthCalledWith(2, sids[1], '再查一次', 'readonly', expect.any(Function), undefined);
     expect(sids[0]).not.toBe(sids[1]); // 切换 = 换新会话（历史按助手隔离）
+  });
+
+  it('切换模型不换会话，下一条消息带上模型名', async () => {
+    streamMock.mockImplementation(async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
+      onEvent({ type: 'text-delta', text: '好的。' });
+      onEvent({ type: 'turn-done', steps: 1 });
+    });
+    const user = userEvent.setup();
+    render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('先说一句');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+    expect(await screen.findByText('好的。')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '模型' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'qwen3:8b' }));
+    expect(screen.getByText('先说一句')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('换模型再问');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+    expect(streamMock).toHaveBeenLastCalledWith(
+      expect.any(String),
+      '换模型再问',
+      'general',
+      expect.any(Function),
+      undefined,
+      'qwen3:8b',
+    );
   });
 
   it('未配置 AI（503）→ 友好错误提示落卡片', async () => {

@@ -65,9 +65,20 @@ interface ChatSession {
   pendingAsk?: PendingAsk;
 }
 
+/** 对话里点选的模型名：空着表示沿用助手或当前配置 */
+const MODEL_NAME = /^[\w.:/+@-]{1,80}$/;
+
+function readRequestedModel(raw: unknown): { ok: true; model?: string } | { ok: false; message: string } {
+  if (raw === undefined || raw === null || raw === '') return { ok: true };
+  if (typeof raw !== 'string' || !MODEL_NAME.test(raw.trim())) {
+    return { ok: false, message: '模型名无效' };
+  }
+  return { ok: true, model: raw.trim() };
+}
+
 /**
- * 解析本条消息的 LLM 通道：agent 定义了 model 且异于进程配置 → 现场重建
- * 轻量 provider（模型覆盖，M16）；否则用进程级通道。
+ * 解析本条消息的 LLM 通道：指定了 model 且异于进程配置 → 现场重建
+ * 轻量 provider（同一接入点换模型）；否则用进程级通道。
  */
 function providerFor(ctx: AppContext, base: LlmProvider, model: string | undefined): LlmProvider {
   const cfg = ctx.aiConfig;
@@ -111,8 +122,17 @@ export function chatRoutes(ctx: AppContext): Hono {
           503,
         );
       }
-      const body = await c.req.json().catch(() => ({}) as { message?: unknown; agentId?: unknown; attachments?: unknown });
+      const body = await c.req.json().catch(() => ({}) as {
+        message?: unknown;
+        agentId?: unknown;
+        attachments?: unknown;
+        model?: unknown;
+      });
       const message = typeof body.message === 'string' ? body.message.trim() : '';
+      const requested = readRequestedModel(body.model);
+      if (!requested.ok) {
+        return c.json({ code: 'BAD_REQUEST', message: requested.message }, 400);
+      }
       const taken = takeAttachments(body.attachments);
       if (!taken.ok) {
         return c.json({ code: 'BAD_REQUEST', message: taken.message }, 400);
@@ -141,7 +161,7 @@ export function chatRoutes(ctx: AppContext): Hono {
       // 现场装配（M16）：定义 → 工具授权 + 人设 prompt + 模型覆盖 + actor；
       // 记忆注入（快照以消息为粒度——上轮提取结果下一轮对话即生效）
       // 本会话有附件时才挂查看/落库工具。只读助手没有业务写权限，不能落库。
-      const agentProvider = providerFor(ctx, base, def.model);
+      const agentProvider = providerFor(ctx, base, requested.model ?? def.model);
       ctx.memory.sync();
       const catalog = ctx.ws.tools.list();
       const allowApply = def.tools.some((id) => {

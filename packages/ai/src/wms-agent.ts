@@ -38,7 +38,10 @@ const UI_ASK_TOOL: AgentToolMeta = {
 export interface WmsAgent {
   /** 审计标识：'ai:{助手id}'（oplog actor 字段的取值） */
   readonly actor: string;
-  /** 暴露给模型的工具清单（快照，构造时取自工具总线；不含会话壳附加的 ui.ask） */
+  /**
+   * 授权工具快照（构造时取自工具总线，不含 ui.ask / tools.load）。
+   * 送给模型的是目录呈现：一行摘要，tools.load 之后该组才换成完整说明。
+   */
   readonly tools: AgentToolMeta[];
   /** 运行一次自然语言任务（单轮任务式；会话管理是前端壳的职责） */
   run(userText: string): Promise<AgentRunResult>;

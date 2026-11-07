@@ -39,14 +39,14 @@ export interface NavItem {
 export interface NavCategory {
   key: CategoryKey;
   label: string;
-  /** rail tooltip 与二级面板副标题，用来说明分组语义 */
+  /** 悬停浮窗的副标题，用来说明分组语义 */
   description: string;
   icon: NavIcon;
   items: NavItem[];
 }
 
 /**
- * 两级导航配置（左侧 rail 只放大类，二级面板放大类下的功能）。
+ * 两级导航配置（左侧 rail 只放大类，悬停后浮窗列出该类下的功能）。
  * 分组原则：看板 = 只读分析视图（运营/效期，后续报表往这里挂）；作业 = 高频
  * 日常运营（出入库/库存/盘点）；档案 = 基础主数据（SKU，后续供应商/客户/库位
  * 等往这里挂）；智能助手 = AI 的使用与配置（对话/助手/记忆/模型）；系统 = 应

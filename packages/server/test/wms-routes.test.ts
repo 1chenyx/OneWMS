@@ -545,7 +545,16 @@ describe('盘点端点（M17：清单进度 / 明细联查 / 录实盘 / 关单�
 
     const locRes = await app.request('/api/locations');
     const locs = (await locRes.json()) as Array<{ locationCode: string; name: string }>;
-    expect(locs).toEqual([{ id: expect.any(String), locationCode: 'A-01', name: '一号架', createdAt: expect.any(String), updatedAt: expect.any(String) }]);
+    expect(locs).toEqual([{
+      id: expect.any(String),
+      locationCode: 'A-01',
+      name: '一号架',
+      warehouseId: null,
+      warehouseCode: null,
+      warehouseName: null,
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    }]);
 
     const res = await post(app, '/api/stocktakes', { note: '月度大盘' });
     expect(res.status).toBe(201);
@@ -993,5 +1002,49 @@ describe('补货端点（module.replenish）', () => {
     const again = await post(app, '/api/replenishment', {});
     expect(again.status).toBe(400);
     expect(((await again.json()) as { code: string }).code).toBe('WMS_REPLENISH_EMPTY');
+  });
+});
+
+describe('多仓端点（module.warehouse）', () => {
+  it('建仓库、把库位划进去、按仓库看库存', async () => {
+    const app = setup();
+    const created = await post(app, '/api/warehouses', { warehouseCode: 'WH-1', name: '一号仓' });
+    expect(created.status).toBe(201);
+
+    const loc = await post(app, '/api/locations', { locationCode: 'A-01', name: '一号架', warehouseCode: 'WH-1' });
+    expect(loc.status).toBe(201);
+
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 4, reason: '期初', locationCode: 'A-01' });
+
+    const locs = (await (await app.request('/api/locations')).json()) as {
+      locationCode: string;
+      warehouseId: string | null;
+      warehouseCode: string | null;
+      warehouseName: string | null;
+    }[];
+    expect(locs).toEqual([
+      expect.objectContaining({
+        locationCode: 'A-01',
+        warehouseCode: 'WH-1',
+        warehouseName: '一号仓',
+      }),
+    ]);
+    expect(locs[0]!.warehouseId).toEqual(expect.any(String));
+
+    const stockRes = await app.request('/api/warehouses/WH-1/stock');
+    expect(stockRes.status).toBe(200);
+    const stock = (await stockRes.json()) as {
+      warehouseCode: string;
+      rows: { skuCode: string; locationCode: string; quantity: number }[];
+    };
+    expect(stock.warehouseCode).toBe('WH-1');
+    expect(stock.rows).toEqual([
+      expect.objectContaining({ skuCode: 'A-1', locationCode: 'A-01', quantity: 4 }),
+    ]);
+
+    const missing = await app.request('/api/warehouses/NOPE/stock');
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { code: string }).code).toBe('WMS_WAREHOUSE_NOT_FOUND');
   });
 });
