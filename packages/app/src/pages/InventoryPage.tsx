@@ -9,6 +9,7 @@ import { useAppNav } from '../app-nav';
 import ScanInput from '../components/ScanInput';
 import PageHeader from '../components/PageHeader';
 import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { fmtQty } from '../lib/format';
 
 /**
  * 库存页：清单（流水汇总投影 + SKU 联查）+ 手工调整 + 冻结管理（M19）
@@ -69,7 +70,7 @@ export default function InventoryPage() {
       align: 'right',
       onCell: numCell,
       sorter: (a, b) => a.quantity - b.quantity,
-      render: (v: number) => <Typography.Text strong>{v}</Typography.Text>,
+      render: (v: number, r) => <Typography.Text strong>{fmtQty(v, r.unit)}</Typography.Text>,
     },
     {
       title: '冻结量',
@@ -78,8 +79,8 @@ export default function InventoryPage() {
       align: 'right',
       onCell: numCell,
       sorter: (a, b) => a.held - b.held,
-      render: (v: number) =>
-        v > 0 ? <Typography.Text type="warning">{v}</Typography.Text> : <Typography.Text type="secondary">-</Typography.Text>,
+      render: (v: number, r) =>
+        v > 0 ? <Typography.Text type="warning">{fmtQty(v, r.unit)}</Typography.Text> : <Typography.Text type="secondary">-</Typography.Text>,
     },
     {
       title: '可用量',
@@ -92,10 +93,10 @@ export default function InventoryPage() {
       render: (v: number, r) =>
         v < 0 || isLow(r) ? (
           <Typography.Text type="danger" strong={isLow(r)}>
-            {v}
+            {fmtQty(v, r.unit)}
           </Typography.Text>
         ) : (
-          v
+          fmtQty(v, r.unit)
         ),
     },
     {
@@ -245,7 +246,7 @@ function HoldModal({ row, onClose }: { row: InventoryRow | null; onClose: () => 
           label="追加冻结数量"
           rules={[{ required: true, message: '请输入数量' }]}
         >
-          <InputNumber style={{ width: '100%' }} min={1} precision={0} placeholder="如 10" />
+          <InputNumber style={{ width: '100%' }} min={0.001} precision={3} placeholder="如 10 或 0.5" />
         </Form.Item>
         <Form.Item name="reason" label="原因（可选，如 质检隔离 / 客订预留）">
           <Input />
@@ -327,7 +328,7 @@ function AdjustModal({
             },
           ]}
         >
-          <InputNumber style={{ width: '100%' }} precision={0} placeholder="如 20 或 -5" />
+          <InputNumber style={{ width: '100%' }} precision={3} placeholder="如 20 / -5 / 0.5" />
         </Form.Item>
         <Form.Item name="reason" label="原因（可选，如 盘点 / 报损 / 期初）">
           <Input />

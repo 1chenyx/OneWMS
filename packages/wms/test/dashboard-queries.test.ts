@@ -61,6 +61,15 @@ describe('运营看板：总览', () => {
     expect(o.activeHoldCount).toBe(1);
     expect(o.openPickingCount).toBe(0);
   });
+
+  it('A2 软停用：archived 档不计入 skuCount（其余计数不受影响）', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: '螺丝' });
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'B-2', name: '螺母' });
+    expect(getDashboardOverview(ws).skuCount).toBe(2);
+
+    await ws.tools.invoke('wms.sku.archive', { skuCode: 'B-2' });
+    expect(getDashboardOverview(ws).skuCount).toBe(1);
+  });
 });
 
 describe('运营看板：流量趋势', () => {

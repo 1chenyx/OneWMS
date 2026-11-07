@@ -9,11 +9,13 @@ export function useProfileSnapshot() {
 // ── SKU ──────────────────────────────────────────────
 
 /** SKU 清单（q = 编码/名称/条码 模糊搜索，M18；空串 = 全量）。queryKey 带 q，
- *  搜索翻页互不串缓存；invalidateQueries({ queryKey: ['skus'] }) 前缀匹配仍全失效。 */
-export function useSkus(q?: string) {
+ *  搜索翻页互不串缓存；invalidateQueries({ queryKey: ['skus'] }) 前缀匹配仍全失效。
+ *  A2：默认只回启用档；includeArchived = 回全量（SKU 管理页「显示已停用」）。 */
+export function useSkus(q?: string, includeArchived?: boolean) {
   return useQuery({
-    queryKey: ['skus', q ?? ''],
-    queryFn: () => api.skus(q ? { q } : undefined),
+    queryKey: ['skus', q ?? '', includeArchived ? 'all' : 'active'],
+    queryFn: () =>
+      api.skus(q || includeArchived ? { ...(q ? { q } : {}), ...(includeArchived ? { includeArchived } : {}) } : undefined),
   });
 }
 
@@ -22,6 +24,51 @@ export function useCreateSku() {
   return useMutation({
     mutationFn: api.createSku,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['skus'] }),
+  });
+}
+
+/** 编辑 SKU 档案：改条码/安全库存会影响库存页预警与扫码识别，一并失效 */
+export function useUpdateSku() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: {
+      skuCode: string;
+      body: {
+        name?: string;
+        barcode?: string;
+        reorderPoint?: number;
+        unit?: string;
+        extData?: Record<string, unknown>;
+      };
+    }) => api.updateSku(params.skuCode, params.body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['skus'] });
+      void qc.invalidateQueries({ queryKey: ['inventory'] });
+    },
+  });
+}
+
+/** 停用/恢复（A2 软停用）：dashboard 的 SKU 数随之变化，一并失效 */
+export function useArchiveSku() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (skuCode: string) => api.archiveSku(skuCode),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['skus'] });
+      void qc.invalidateQueries({ queryKey: ['inventory'] });
+      void qc.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
+export function useUnarchiveSku() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (skuCode: string) => api.unarchiveSku(skuCode),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['skus'] });
+      void qc.invalidateQueries({ queryKey: ['dashboard'] });
+    },
   });
 }
 
@@ -136,6 +183,35 @@ export function useDashboardAlerts() {
 
 // ── 单据 ─────────────────────────────────────────────
 
+export function useOrderConflicts() {
+  return useQuery({
+    queryKey: ['order-conflicts'],
+    queryFn: api.orderConflicts,
+  });
+}
+
+export function useAcceptConflict() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.acceptConflict,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['order-conflicts'] });
+      void qc.invalidateQueries({ queryKey: ['orders'] });
+      void qc.invalidateQueries({ queryKey: ['inventory'] });
+    },
+  });
+}
+
+export function useDismissConflict() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.dismissConflict,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['order-conflicts'] });
+    },
+  });
+}
+
 export function useOrders(direction?: 'in' | 'out') {
   return useQuery({ queryKey: ['orders', direction ?? 'all'], queryFn: () => api.orders(direction) });
 }
@@ -151,10 +227,15 @@ export function useCreateOrder() {
 export function useTransitionOrder() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (params: { orderNo: string; to: string }) => api.transitionOrder(params.orderNo, params.to),
-    // 出库扣减改桶余量 → 效期看板/运营看板随之变（M14/M21）
+    mutationFn: (params: {
+      orderNo: string;
+      to: string;
+      lines?: { skuCode: string; quantity: number; locationCode?: string; batchNo?: string }[];
+    }) => api.transitionOrder(params.orderNo, params.to, params.lines),
+    // 出库扣减改桶余量 → 效期看板/运营看板/库存随之变
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['orders'] });
+      void qc.invalidateQueries({ queryKey: ['inventory'] });
       void qc.invalidateQueries({ queryKey: ['expiry-board'] });
       void qc.invalidateQueries({ queryKey: ['dashboard'] });
     },
@@ -237,7 +318,30 @@ export function useExpiryBoard() {
 
 /** 实体库位清单（盘点范围勾选的数据源；DEFAULT 虚拟桶不在列） */
 export function useLocations() {
-  return useQuery({ queryKey: ['locations'], queryFn: api.locations });
+  return useQuery({ queryKey: ['locations'], queryFn: () => api.locations() });
+}
+
+/** 库位增改：影响盘点范围勾选与库存分布看板，一并失效 */
+function useInvalidateLocations() {
+  const qc = useQueryClient();
+  return () => {
+    void qc.invalidateQueries({ queryKey: ['locations'] });
+    void qc.invalidateQueries({ queryKey: ['dashboard'] });
+  };
+}
+
+export function useCreateLocation() {
+  const invalidate = useInvalidateLocations();
+  return useMutation({ mutationFn: api.createLocation, onSuccess: invalidate });
+}
+
+export function useUpdateLocation() {
+  const invalidate = useInvalidateLocations();
+  return useMutation({
+    mutationFn: (params: { locationCode: string; body: { name?: string } }) =>
+      api.updateLocation(params.locationCode, params.body),
+    onSuccess: invalidate,
+  });
 }
 
 export function useStocktakes() {
@@ -371,7 +475,41 @@ export function useNodeHello(pollMs?: number) {
 }
 
 export function useSyncRun() {
-  return useMutation({ mutationFn: api.syncRun });
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.syncRun,
+    // 同步可能刚把对端的数据拉进来（账本变 → 所有投影变），全量失效让页面重取
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
+// ── 已配对同步节点（扫码组网）──────────────────────────
+
+/** 本端局域网地址（NodeTab 二维码的值来源） */
+export function useLanAddress() {
+  return useQuery({ queryKey: ['lan-address'], queryFn: api.lanAddress });
+}
+
+/** 已配对节点清单（服务端 data/peers.json，重启仍在） */
+export function useSyncPeers() {
+  return useQuery({ queryKey: ['sync-peers'], queryFn: api.syncPeersList });
+}
+
+/** 添加节点：服务端握手通过后会立刻同步一轮——清单与全部业务数据都可能变了，全量失效 */
+export function useAddSyncPeer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.syncPeerAdd,
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
+export function useRemoveSyncPeer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.syncPeerRemove,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sync-peers'] }),
+  });
 }
 
 /** 迁移导入后事件账本已变——节点名片与业务列表一并失效 */
@@ -414,4 +552,39 @@ export function useClearAiConfig() {
 /** 连通测试不改变服务端状态——无需失效缓存 */
 export function useTestAiConfig() {
   return useMutation({ mutationFn: api.testAiConfig });
+}
+
+// ── 自动备份（滚动保留）──────────────────────────────────
+
+/** 备份清单（服务端定时轮会自己写入新份，切页挂载即刷新） */
+export function useBackups() {
+  return useQuery({ queryKey: ['backups'], queryFn: api.backupList });
+}
+
+export function useCreateBackup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.backupCreate,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['backups'] }),
+  });
+}
+
+/**
+ * 恢复 = 整个账本可能变了（连 AI 配置也可能被备份带回）——
+ * 逐个列举要失效的键迟早漏，这里直接全量失效，让所有页面重取。
+ */
+export function useRestoreBackup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.backupRestore,
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
+export function useDeleteBackup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.backupRemove,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['backups'] }),
+  });
 }

@@ -97,6 +97,57 @@ describe('SKU 端点', () => {
     const data = (await res.json()) as { code: string };
     expect(data.code).toBe('WMS_SKU_BARCODE_EXISTS');
   });
+
+  // ── 软停用 + 单位（A2/A3）────────────────────────────
+
+  it('archive 端点：停用后默认列表隐藏，includeArchived=1 回全量，条码查询不受过滤', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝', barcode: '6901', unit: 'kg' });
+    await post(app, '/api/skus', { skuCode: 'B-2', name: '螺母' });
+
+    const archiveRes = await app.request('/api/skus/A-1/archive', { method: 'POST' });
+    expect(archiveRes.status).toBe(200);
+    expect(((await archiveRes.json()) as { status: string }).status).toBe('archived');
+
+    // 默认只回 active
+    const def = (await (await app.request('/api/skus')).json()) as Array<{ skuCode: string }>;
+    expect(def.map((s) => s.skuCode)).toEqual(['B-2']);
+
+    // includeArchived=1 回全量
+    const all = (await (await app.request('/api/skus?includeArchived=1')).json()) as Array<{
+      skuCode: string;
+      status?: string;
+    }>;
+    expect(all).toHaveLength(2);
+    expect(all.find((s) => s.skuCode === 'A-1')!.status).toBe('archived');
+
+    // 条码精确查询不过滤（扫码定位语义）
+    const byBc = (await (await app.request('/api/skus?barcode=6901')).json()) as Array<{
+      skuCode: string;
+    }>;
+    expect(byBc.map((s) => s.skuCode)).toEqual(['A-1']);
+
+    // unarchive 恢复
+    await app.request('/api/skus/A-1/unarchive', { method: 'POST' });
+    const restored = (await (await app.request('/api/skus')).json()) as Array<{ skuCode: string }>;
+    expect(restored).toHaveLength(2);
+  });
+
+  it('创建/更新带 unit → 投影返回带 unit（null 兜底）', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '散装螺丝', unit: 'kg' });
+    const putRes = await app.request('/api/skus/A-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '散装螺丝改' }),
+    });
+    expect(putRes.status).toBe(200);
+    const list = (await (await app.request('/api/skus')).json()) as Array<{
+      skuCode: string;
+      unit: string | null;
+    }>;
+    expect(list[0]!.unit).toBe('kg');
+  });
 });
 
 describe('单据端点', () => {
@@ -129,10 +180,28 @@ describe('单据端点', () => {
       lines: Array<{ skuCode: string; name: string; quantity: number; locationCode: string; batchNo: string }>;
     }>;
     expect(orders).toHaveLength(1);
-    // M21：行携带目标库位/批次（上架归位的源桶维度）
+    // M21：行携带目标库位/批次（上架归位的源桶维度）；A1/A3：unit + batchExpiryDate
     expect(orders[0]!.lines).toEqual([
-      { skuCode: 'A-1', name: '螺丝', quantity: 100, locationCode: 'DEFAULT', batchNo: 'DEFAULT' },
-      { skuCode: 'B-2', name: '螺母', quantity: 50, locationCode: 'DEFAULT', batchNo: 'DEFAULT' },
+      {
+        skuCode: 'A-1',
+        name: '螺丝',
+        quantity: 100,
+        unit: null,
+        locationCode: 'DEFAULT',
+        batchNo: 'DEFAULT',
+        batchExpiryDate: null,
+        fulfilledQty: null,
+      },
+      {
+        skuCode: 'B-2',
+        name: '螺母',
+        quantity: 50,
+        unit: null,
+        locationCode: 'DEFAULT',
+        batchNo: 'DEFAULT',
+        batchExpiryDate: null,
+        fulfilledQty: null,
+      },
     ]);
 
     // 方向过滤：out 为空
@@ -229,7 +298,7 @@ describe('库存端点', () => {
       name: string;
       quantity: number;
     }>;
-    // M19：行含冻结三件套（无冻结时 held 0 / available = quantity）；M20 附 reorderPoint
+    // M19：行含冻结三件套（无冻结时 held 0 / available = quantity）；M20 附 reorderPoint；A3 附 unit
     expect(rows).toEqual([
       {
         skuId: expect.any(String),
@@ -239,6 +308,7 @@ describe('库存端点', () => {
         held: 0,
         available: 30,
         reorderPoint: 0,
+        unit: null,
       },
     ]);
 
@@ -514,7 +584,7 @@ describe('盘点端点（M17：清单进度 / 明细联查 / 录实盘 / 关单�
     };
     expect(detail.scope).toEqual(['A-01']);
     expect(detail.lines).toEqual([
-      { skuCode: 'B-2', name: '螺母', locationCode: 'A-01', batchNo: 'DEFAULT', expectedQty: 6, countedQty: null, bookQty: 6, delta: null },
+      { skuCode: 'B-2', name: '螺母', locationCode: 'A-01', batchNo: 'DEFAULT', unit: null, expectedQty: 6, countedQty: null, bookQty: 6, delta: null },
     ]);
 
     // 范围外库位（B-2@DEFAULT 桶不在 A-01 范围）→ 拒
@@ -568,6 +638,7 @@ describe('盘点端点（M17：清单进度 / 明细联查 / 录实盘 / 关单�
         held: 0,
         available: 7,
         reorderPoint: 0,
+        unit: null,
       },
       {
         skuId: expect.any(String),
@@ -577,6 +648,7 @@ describe('盘点端点（M17：清单进度 / 明细联查 / 录实盘 / 关单�
         held: 0,
         available: 11,
         reorderPoint: 0,
+        unit: null,
       }, // 6 + 5
     ]);
   });
@@ -639,6 +711,7 @@ describe('冻结端点（M19）', () => {
         held: 4,
         available: 6,
         reorderPoint: 0,
+        unit: null,
       },
     ]);
 

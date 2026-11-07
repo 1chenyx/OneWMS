@@ -22,10 +22,28 @@ import type { InitialFilter } from '../src/app-nav';
  */
 
 const createSkuMock = vi.fn();
+const updateSkuMock = vi.fn();
+const archiveSkuMock = vi.fn();
+const unarchiveSkuMock = vi.fn();
 const transitionMock = vi.fn();
+const acceptConflictMock = vi.fn();
+const dismissConflictMock = vi.fn();
 const adjustMock = vi.fn();
 const createHoldMock = vi.fn();
 const releaseHoldMock = vi.fn();
+
+/** 短收短发开关。默认关，避免其它流转用例出现数量框。 */
+let partialEnabled = false;
+
+/** 单据冲突队列。默认空，避免其它用例被警告条干扰。 */
+let conflictsFixture: {
+  eventId: string;
+  orderNo: string;
+  fromState: string;
+  toState: string;
+  actualState: string;
+  status: string;
+}[] = [];
 
 /** snapshot fixture：spec 可见 / category 隐藏（与默认种子的可见性差异即为测试点） */
 const snapshotFixture = {
@@ -75,6 +93,7 @@ const skusFixture = [
     skuCode: 'A-1',
     barcode: '6901234567892',
     reorderPoint: 50,
+    unit: '个',
     name: '螺丝',
     extData: { spec: '6204-2RS', category: '标准件' },
     createdAt: '2026-10-30T08:00:00.000Z',
@@ -85,6 +104,7 @@ const skusFixture = [
     skuCode: 'B-2',
     barcode: null,
     reorderPoint: 0,
+    unit: null,
     name: '螺母',
     extData: {},
     createdAt: '2026-10-30T08:00:00.000Z',
@@ -105,10 +125,10 @@ const ordersFixture = [
   },
 ];
 
-/** 库存 fixture（M19 冻结三件套 + M20 安全库存：A-1 低库存（可用 25 < 50），B-2 充足） */
+/** 库存 fixture（M19 冻结三件套 + M20 安全库存：A-1 低库存（可用 25 < 50），B-2 充足；A3 单位） */
 const inventoryFixture = [
-  { skuId: 's-1', skuCode: 'A-1', name: '螺丝', quantity: 30, held: 5, available: 25, reorderPoint: 50 },
-  { skuId: 's-2', skuCode: 'B-2', name: '螺母', quantity: 8, held: 0, available: 8, reorderPoint: 5 },
+  { skuId: 's-1', skuCode: 'A-1', name: '螺丝', quantity: 30, held: 5, available: 25, reorderPoint: 50, unit: '个' },
+  { skuId: 's-2', skuCode: 'B-2', name: '螺母', quantity: 8, held: 0, available: 8, reorderPoint: 5, unit: null },
 ];
 
 /** 活动冻结 fixture（M19，与 inventoryFixture 的 held=5 对应） */
@@ -129,14 +149,28 @@ const expiryFixture = {
 };
 
 vi.mock('../src/api/hooks', () => ({
-  useProfileSnapshot: () => ({ isLoading: false, data: snapshotFixture }),
+  useProfileSnapshot: () => ({
+    isLoading: false,
+    data: partialEnabled
+      ? {
+          ...snapshotFixture,
+          modules: { 'module.partial': { enabled: true, version: '0.1.0', settings: {} } },
+        }
+      : snapshotFixture,
+  }),
   useSkus: () => ({ isLoading: false, data: skusFixture }),
   usePartners: () => ({ isLoading: false, data: [] }),
   useCreateSku: () => ({ mutateAsync: createSkuMock, isPending: false }),
+  useUpdateSku: () => ({ mutateAsync: updateSkuMock, isPending: false }),
+  useArchiveSku: () => ({ mutateAsync: archiveSkuMock, isPending: false }),
+  useUnarchiveSku: () => ({ mutateAsync: unarchiveSkuMock, isPending: false }),
   useOrders: () => ({ isLoading: false, data: ordersFixture }),
   useCreateOrder: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useTransitionOrder: () => ({ mutateAsync: transitionMock, isPending: false, variables: undefined }),
   usePutawayOrder: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useOrderConflicts: () => ({ isLoading: false, data: conflictsFixture }),
+  useAcceptConflict: () => ({ mutate: acceptConflictMock, mutateAsync: vi.fn(), isPending: false }),
+  useDismissConflict: () => ({ mutate: dismissConflictMock, mutateAsync: vi.fn(), isPending: false }),
   useLocations: () => ({ isLoading: false, data: [] }),
   useInventory: () => ({ isLoading: false, data: inventoryFixture }),
   useAdjustInventory: () => ({ mutateAsync: adjustMock, isPending: false }),
@@ -181,12 +215,17 @@ function NavigateThenMount({
 afterEach(() => {
   cleanup();
   document.body.innerHTML = '';
+  conflictsFixture = [];
+  partialEnabled = false;
 });
 
 describe('SkusPage：动态列（Profile 消费闭环）', () => {
-  beforeEach(() => createSkuMock.mockReset());
+  beforeEach(() => {
+    createSkuMock.mockReset();
+    updateSkuMock.mockReset();
+  });
 
-  it('可见字段成列、隐藏字段消失、extData 值进列；条码列：有码显码、无码显 -', () => {
+  it('可见字段成列、隐藏字段消失、extData 值进列；条码列：有码显码、无码显 -；单位列（A3）', () => {
     render(wrap(<SkusPage />));
     expect(screen.getByText('规格')).toBeInTheDocument(); // 动态列表头
     expect(screen.queryByText('分类')).not.toBeInTheDocument(); // visible:false → 列不渲染
@@ -194,15 +233,17 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
     expect(screen.getByText('A-1')).toBeInTheDocument(); // 固定列
     expect(screen.getByText('条码')).toBeInTheDocument(); // 固定列（M18）
     expect(screen.getByText('安全库存')).toBeInTheDocument(); // 固定列（M20）
+    expect(screen.getByText('单位')).toBeInTheDocument(); // 固定列（A3）
     const rowA = screen.getByText('A-1').closest('tr')!; // 有码行
     expect(within(rowA).getByText('6901234567892')).toBeInTheDocument();
     expect(within(rowA).getByText('50')).toBeInTheDocument(); // 安全库存（M20）
-    const rowB = screen.getByText('B-2').closest('tr')!; // 无码行（扩展列同为 -，条码列也补 -）
+    expect(within(rowA).getByText('个')).toBeInTheDocument(); // 单位（A3）
+    const rowB = screen.getByText('B-2').closest('tr')!; // 无码行（扩展列同为 -，条码/单位列也补 -）
     expect(within(rowB).queryByText('6901234567892')).not.toBeInTheDocument();
     expect(within(rowB).getAllByText('-').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('新建表单只出现可见扩展字段，提交收集 extData 与条码', async () => {
+  it('新建表单只出现可见扩展字段，提交收集 extData 与条码（A3：含单位输入）', async () => {
     createSkuMock.mockResolvedValueOnce({ skuId: 's-2', skuCode: 'A-2', name: '轴承' });
     const user = userEvent.setup();
     render(wrap(<SkusPage />));
@@ -210,16 +251,18 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
     await user.click(screen.getByRole('button', { name: /新建 SKU/ }));
     await user.type(screen.getByLabelText('SKU 编码'), 'A-2');
     await user.type(screen.getByLabelText('名称'), '轴承');
+    await user.type(screen.getByLabelText(/单位/), 'kg');
     await user.type(screen.getByLabelText('规格'), '6204');
     await user.type(screen.getByLabelText(/条码/), ' 6901234567892 ');
     await user.type(screen.getByLabelText(/安全库存/), '60');
     expect(screen.queryByLabelText('分类')).not.toBeInTheDocument(); // 隐藏字段无输入项
 
-    await user.click(screen.getByRole('button', { name: 'OK' })); // Modal 确认（默认 locale）
+    await user.click(screen.getByRole('button', { name: '创建' })); // 新建态 okText
     await waitFor(() =>
       expect(createSkuMock).toHaveBeenCalledWith({
         skuCode: 'A-2',
         name: '轴承',
+        unit: 'kg', // A3：单位随档案提交（空白不提交 = 不设置）
         barcode: '6901234567892', // trim 后提交；空白条码不提交该字段
         reorderPoint: 60, // M20：>0 才提交（留空/0 不提交 = 不预警）
         extData: { spec: '6204' },
@@ -253,7 +296,11 @@ describe('ScanInput：扫码枪输入（M18）', () => {
 });
 
 describe('OrdersPage：workflows 驱动流转', () => {
-  beforeEach(() => transitionMock.mockReset());
+  beforeEach(() => {
+    transitionMock.mockReset();
+    acceptConflictMock.mockReset();
+    dismissConflictMock.mockReset();
+  });
 
   it('状态标签来自 workflows.states；流转菜单只含合法后继', async () => {
     const user = userEvent.setup();
@@ -286,6 +333,51 @@ describe('OrdersPage：workflows 驱动流转', () => {
       expect(transitionMock).toHaveBeenCalledWith({ orderNo: 'IN-20261030-1', to: 'received' }),
     );
   });
+
+  it('状态冲突：列出待裁决，接受与驳回走对应 mutation', async () => {
+    conflictsFixture = [
+      {
+        eventId: 'evt-1',
+        orderNo: 'IN-20261030-1',
+        fromState: 'created',
+        toState: 'canceled',
+        actualState: 'received',
+        status: 'open',
+      },
+    ];
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage />));
+
+    expect(screen.getByText('有单据状态冲突待裁决')).toBeInTheDocument();
+    expect(screen.getByText(/停在 received，另一条事件要改成 canceled/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '接受' }));
+    expect(acceptConflictMock).toHaveBeenCalledWith('evt-1', expect.any(Object));
+
+    await user.click(screen.getByRole('button', { name: '驳回' }));
+    expect(dismissConflictMock).toHaveBeenCalledWith('evt-1', expect.any(Object));
+  });
+
+  it('短收：模块开启时确认框可改实收，少收才把 lines 交给转移', async () => {
+    partialEnabled = true;
+    transitionMock.mockResolvedValueOnce({ orderNo: 'IN-20261030-1', from: 'created', to: 'received' });
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage />));
+
+    await user.click(screen.getByRole('button', { name: /流转/ }));
+    await user.click(await screen.findByRole('menuitem', { name: '已收货' }));
+    const qty = await screen.findByRole('spinbutton', { name: 'A-1 实收数量' });
+    await user.clear(qty);
+    await user.type(qty, '40');
+    await user.click(await screen.findByRole('button', { name: 'OK' }));
+    await waitFor(() =>
+      expect(transitionMock).toHaveBeenCalledWith({
+        orderNo: 'IN-20261030-1',
+        to: 'received',
+        lines: [{ skuCode: 'A-1', locationCode: undefined, batchNo: undefined, quantity: 40 }],
+      }),
+    );
+  });
 });
 
 describe('InventoryPage：清单与调整', () => {
@@ -301,10 +393,10 @@ describe('InventoryPage：清单与调整', () => {
     render(wrap(<InventoryPage />));
 
     expect(screen.getByText('A-1')).toBeInTheDocument();
-    expect(screen.getByText('30')).toBeInTheDocument(); // 余量
+    expect(screen.getByText('30 个')).toBeInTheDocument(); // 余量（A3：带单位）
     expect(screen.getByText('冻结量')).toBeInTheDocument(); // M19 列
     expect(screen.getByText('可用量')).toBeInTheDocument();
-    expect(screen.getByText('25')).toBeInTheDocument(); // 可用 = 30 − 冻结 5
+    expect(screen.getByText('25 个')).toBeInTheDocument(); // 可用 = 30 − 冻结 5（A3：带单位）
     expect(screen.getByText('安全库存')).toBeInTheDocument(); // M20 列（低库存 A-1 的可用量标红）
 
     // fixture 两行（A-1/B-2）各有调整/冻结按钮——按行作用域点击，避免全局撞重

@@ -113,6 +113,7 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     // 工具授权按定义过滤：general = 全量 − profile.propose（改配置是高权限，M16 移出默认）
     expect(req.tools.map((t) => t.id)).not.toContain('profile.propose');
     expect(req.tools.map((t) => t.id).sort()).toEqual([
+      'core.oplog.query',
       'wms.inventory.adjust',
       'wms.inventory.expiring',
       'wms.inventory.hold',
@@ -121,12 +122,26 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
       'wms.inventory.move',
       'wms.inventory.query',
       'wms.inventory.release',
+      'wms.ledger.query',
       'wms.location.create',
       'wms.location.list',
+      'wms.location.update',
       'wms.order.create',
+      'wms.order.putaway',
+      'wms.order.query',
       'wms.order.transition',
+      'wms.partner.create',
+      'wms.partner.list',
+      'wms.partner.update',
+      'wms.picking.cancel',
+      'wms.picking.close',
+      'wms.picking.create',
+      'wms.picking.pick',
+      'wms.picking.query',
+      'wms.sku.archive',
       'wms.sku.create',
       'wms.sku.resolve',
+      'wms.sku.unarchive',
       'wms.sku.update',
       'wms.stocktake.cancel',
       'wms.stocktake.close',
@@ -237,9 +252,11 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     expect(pending[0].note).toBe('用户要求隐藏规格字段');
 
     // ③ 人工确认（不走工具总线——确认权不可委托）→ 纯字段轨道：
-    //    version 不变（无 config.change），落 1 条 registry.field.visibility_changed
+    //    version 不变（无 config.change），落 1 条 registry.field.visibility_changed。
+    //    基线版本随构造期模块安装而变（base=1 + M21 putaway=2），断言「不变」而非硬编码
+    const baseVersion = ws.profile.getSnapshot().version;
     const confirmed = ws.profile.confirm(pending[0].proposalId, 'user:human');
-    expect(confirmed.newVersion).toBe(1); // 种子 workflows 的版本，字段轨道不动版本
+    expect(confirmed.newVersion).toBe(baseVersion); // 字段轨道不动版本
     expect(ws.fields.get('sku', 'spec')!.visible).toBe(false);
     const visibilityEvents = EVENTS().filter((e) => e.type === 'registry.field.visibility_changed');
     expect(visibilityEvents).toHaveLength(1);

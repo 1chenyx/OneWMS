@@ -291,8 +291,8 @@ describe('install：双轨落账 + 审计', () => {
     expect(inbound.states.find((s) => s.id === 'created')?.providedBy).toBeUndefined(); // 基础态无标记
     expect(inbound.transitions).toEqual([
       { from: 'created', to: 'done' },
-      { from: 'created', to: 'inspecting' },
-      { from: 'inspecting', to: 'done' },
+      { from: 'created', to: 'inspecting', providedBy: 'module.expiry' },
+      { from: 'inspecting', to: 'done', providedBy: 'module.expiry' },
     ]);
     core.close();
   });

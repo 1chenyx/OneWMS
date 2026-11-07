@@ -1,7 +1,10 @@
 import type { ComponentType } from 'react';
 import { Layout, Menu, Tooltip, theme } from 'antd';
 import SkusPage from './pages/SkusPage';
+import LocationsPage from './pages/LocationsPage';
 import PartnersPage from './pages/PartnersPage';
+import DataPortPage from './pages/DataPortPage';
+import LabelsPage from './pages/LabelsPage';
 import OrdersPage from './pages/OrdersPage';
 import PickingsPage from './pages/PickingsPage';
 import DashboardPage from './pages/DashboardPage';
@@ -26,7 +29,10 @@ import Topbar from './components/Topbar';
 const PAGE_COMPONENTS: Record<Page, ComponentType> = {
   dashboard: DashboardPage,
   skus: SkusPage,
+  locations: LocationsPage,
   partners: PartnersPage,
+  dataPort: DataPortPage,
+  labels: LabelsPage,
   orders: OrdersPage,
   pickings: PickingsPage,
   inventory: InventoryPage,

@@ -16,10 +16,13 @@ export const WMS_EVENT_TYPES = {
   skuCreated: 'wms.sku.created',
   skuUpdated: 'wms.sku.updated',
   locationCreated: 'wms.location.created',
+  locationUpdated: 'wms.location.updated',
   partnerCreated: 'wms.partner.created',
   partnerUpdated: 'wms.partner.updated',
   orderCreated: 'wms.order.created',
   orderStateChanged: 'wms.order.state_changed',
+  orderConflictDismissed: 'wms.order.conflict_dismissed',
+  orderConflictAccepted: 'wms.order.conflict_accepted',
   inventoryAdjusted: 'wms.inventory.adjusted',
   inventoryHeld: 'wms.inventory.held',
   inventoryReleased: 'wms.inventory.released',
@@ -64,6 +67,8 @@ export interface SkuCreatedPayload {
   readonly barcode?: string;
   /** 安全库存（M20，可选）：低库存预警阈值；0 = 不预警（缺省）。预警按可用量（余量−冻结）判定 */
   readonly reorderPoint?: number;
+  /** 单位（A3，可选）：数量单位（如 kg / 箱 / 件）；空 = 数量不显示单位（兼容存量） */
+  readonly unit?: string;
   /** 字段注册表驱动的扩展字段（§5.2：核心列固定 + ext_data JSON 列） */
   readonly extData?: Record<string, unknown>;
 }
@@ -76,6 +81,14 @@ export interface SkuUpdatedPayload {
   readonly barcode?: string;
   /** 安全库存（M20，可选）：显式传才改；传 0 = 关闭该 SKU 的预警 */
   readonly reorderPoint?: number;
+  /** 单位（A3，可选）：显式传才改；空串 = 清空单位 */
+  readonly unit?: string;
+  /**
+   * 档案状态（A2 软停用）：active = 启用（缺省）；archived = 已停用。
+   * 只由 wms.sku.archive / wms.sku.unarchive 两个专用工具写入（不开放给通用 update）——
+   * 停用 = 从列表/选择器隐藏 + 退出低库存/效期预警；剩余库存照常可扣（数据一条不动）。
+   */
+  readonly status?: 'active' | 'archived';
   readonly extData?: Record<string, unknown>;
 }
 
@@ -83,6 +96,13 @@ export interface LocationCreatedPayload {
   readonly locationId: string;
   readonly locationCode: string;
   readonly name: string;
+}
+
+/** 库位更名（LWW：只携带变更字段；locationCode 是业务键不可改——历史单据引用它） */
+export interface LocationUpdatedPayload {
+  readonly locationId: string;
+  readonly locationCode: string;
+  readonly name?: string;
 }
 
 // ── 往来单位（partner）payload ────────────────────────────────
@@ -136,6 +156,14 @@ export interface OrderCreatedPayload {
   readonly note?: string;
 }
 
+/** 一次转移之后某行的净入账（module.partial）。正=净入库，负=净出库，0=冲平或实数为零 */
+export interface OrderFulfillmentPayload {
+  readonly skuId: string;
+  readonly locationId?: string;
+  readonly batchNo?: string;
+  readonly quantity: number;
+}
+
 export interface OrderStateChangedPayload {
   readonly orderId: string;
   readonly orderNo: string;
@@ -143,6 +171,18 @@ export interface OrderStateChangedPayload {
   /** 状态词汇由流程配置定义（模块可贡献新状态）——事件是事实记录，不持词汇表权威（M8） */
   readonly from: string;
   readonly to: string;
+  /**
+   * 本转移改写的行净入账。缺省 = 这些行仍按订单数量理解（旧事件、整单入账）。
+   * 只在短收短发或冲销已记账的行时出现。
+   */
+  readonly fulfillments?: readonly OrderFulfillmentPayload[];
+}
+
+/** 关闭一条状态冲突（驳回或接受）。eventId 是冲突的那条 state_changed */
+export interface OrderConflictResolvedPayload {
+  readonly eventId: string;
+  readonly orderId: string;
+  readonly orderNo: string;
 }
 
 export interface InventoryAdjustedPayload {

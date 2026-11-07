@@ -318,6 +318,72 @@ export class InventoryView {
   }
 
   /**
+   * 流水分页查询（AI 工具 wms.ledger.query 的数据源）：
+   * skuId/locationId/orderId 精确过滤，from/to 为 ISO 时间闭区间
+   * （created_at 字典序比较成立）。最新在前（created_at DESC, event_id DESC）；
+   * total 与行同条件——分页壳计算 hasMore 的依据。
+   */
+  listLedgerPage(opts: {
+    skuId?: string;
+    locationId?: string;
+    orderId?: string;
+    from?: string;
+    to?: string;
+    limit: number;
+    offset: number;
+  }): { rows: LedgerRecord[]; total: number } {
+    const where: string[] = ['workspace_id = ?'];
+    const args: unknown[] = [this.workspaceId];
+    if (opts.skuId) {
+      where.push('sku_id = ?');
+      args.push(opts.skuId);
+    }
+    if (opts.locationId) {
+      where.push('location_id = ?');
+      args.push(opts.locationId);
+    }
+    if (opts.orderId) {
+      where.push('order_id = ?');
+      args.push(opts.orderId);
+    }
+    if (opts.from) {
+      where.push('created_at >= ?');
+      args.push(opts.from);
+    }
+    if (opts.to) {
+      where.push('created_at <= ?');
+      args.push(opts.to);
+    }
+    const whereSql = where.join(' AND ');
+    const total = (
+      this.db
+        .prepare(`SELECT COUNT(*) AS total FROM wms_inventory_ledger WHERE ${whereSql}`)
+        .get(...args) as { total: number }
+    ).total;
+    const rows = this.db
+      .prepare<unknown[], LedgerRow>(
+        `SELECT * FROM wms_inventory_ledger WHERE ${whereSql}
+         ORDER BY created_at DESC, event_id DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(...args, opts.limit, opts.offset) as unknown as LedgerRow[];
+    return {
+      rows: rows.map((r) => ({
+        eventId: r.event_id,
+        skuId: r.sku_id,
+        locationId: r.location_id,
+        batchNo: r.batch_no,
+        batchExpiryDate: r.batch_expiry_date,
+        delta: r.delta,
+        reason: r.reason,
+        orderId: r.order_id,
+        createdAt: r.created_at,
+      })),
+      total,
+    };
+  }
+
+  /**
    * 出入库日流量聚合（M21，运营看板）：近 N 天逐日正/负流水合计。
    * 上架移库（reason: putaway:*）成对 ± 净零——计入会虚增双向流量，排除；
    * 盘点差异/调整是真实库存变化，计入。group by 走 ledger 的 created_at

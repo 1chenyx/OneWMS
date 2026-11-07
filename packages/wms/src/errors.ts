@@ -149,6 +149,20 @@ export class HoldExceedsStockError extends CoreError {
   }
 }
 
+/** 冲突队列里没有这条事件 */
+export class OrderConflictNotFoundError extends CoreError {
+  constructor(eventId: string) {
+    super('WMS_CONFLICT_NOT_FOUND', `状态冲突不存在: ${eventId}`);
+  }
+}
+
+/** 冲突已经接受或驳回 */
+export class OrderConflictClosedError extends CoreError {
+  constructor(eventId: string) {
+    super('WMS_CONFLICT_CLOSED', `状态冲突已裁决: ${eventId}`);
+  }
+}
+
 /** 冻结单不存在（M19：活动冻结里找不到该 holdId——从未创建或已释放） */
 export class HoldNotFoundError extends CoreError {
   constructor(holdId: string) {
@@ -157,8 +171,8 @@ export class HoldNotFoundError extends CoreError {
 }
 
 /**
- * 投影期状态冲突：state_changed 事件的 from 与投影当前态不匹配。
- * 唯一真冲突（§8.3）——v1 直接抛错停下；冲突队列 + 人工裁决是里程碑 5 的事。
+ * 历史错误码。投影不再抛出：from 对不上的 state_changed 进入冲突队列。
+ * 保留类型，避免已编译的调用方断开。
  */
 export class OrderStateConflictError extends CoreError {
   constructor(orderNo: string, eventFrom: string, actual: string) {
@@ -254,6 +268,46 @@ export class PutawayOnlyInboundError extends CoreError {
 export class PutawayLineNotFoundError extends CoreError {
   constructor(orderNo: string, lineKey: string) {
     super('WMS_PUTAWAY_LINE_NOT_FOUND', `入库单 ${orderNo} 中找不到匹配的上架行: ${lineKey}`);
+  }
+}
+
+// ── 短收短发（module.partial）────────────────────────
+
+/** 模块关闭时拒绝改少数量。不传 lines 时仍按订单数量整单入账。 */
+export class PartialDisabledError extends CoreError {
+  constructor() {
+    super(
+      'WMS_PARTIAL_DISABLED',
+      '短收短发已关闭（module.partial）。这次转移请按订单数量整单入账，或在设置里重新启用该模块。',
+    );
+  }
+}
+
+/** 实收/实发对不上单据行，或同一行指定了两次 */
+export class PartialLineNotFoundError extends CoreError {
+  constructor(lineKey: string) {
+    super('WMS_PARTIAL_LINE', `单据里没有这条明细，或实收/实发重复指定了它: ${lineKey}`);
+  }
+}
+
+/** 实收/实发大于订单数量 */
+export class PartialQtyExceededError extends CoreError {
+  constructor(lineKey: string, ordered: number, actual: number) {
+    super('WMS_PARTIAL_QTY', `明细 ${lineKey} 的实收/实发 ${actual} 大于订单数量 ${ordered}`);
+  }
+}
+
+/** 已经入过账的行，冲销只能按已入账数量，不能再改 */
+export class PartialUnwindError extends CoreError {
+  constructor(lineKey: string, posted: number, asked: number) {
+    super('WMS_PARTIAL_UNWIND', `明细 ${lineKey} 已入账 ${posted}，冲销不能改成 ${asked}`);
+  }
+}
+
+/** 这次转移不动库存，不接受实收/实发 */
+export class PartialNotOnPostError extends CoreError {
+  constructor() {
+    super('WMS_PARTIAL_NOT_ON_POST', '这次转移不动库存，不能改实收/实发数量');
   }
 }
 

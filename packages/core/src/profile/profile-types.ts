@@ -34,11 +34,21 @@ export interface WorkflowState {
   providedBy?: string;
 }
 
+/**
+ * 转移上的库存效应（可选）。缺省表示领域按目标状态的约定处理。
+ * none = 进入该转移明确不动库存（覆盖约定）。
+ */
+export type WorkflowEffect = 'increase' | 'decrease' | 'check' | 'none';
+
 export interface WorkflowTransition {
   from: string;
   to: string;
   /** v1 只认 `module.{id}.enabled` / `!module.{id}.enabled`（§5.3 表达式口子） */
   when?: string;
+  /** 本转移的库存效应；缺省 = 不覆盖领域约定 */
+  effect?: WorkflowEffect;
+  /** 贡献该转移的模块。卸载时按此摘除，即使两端状态不属于该模块 */
+  providedBy?: string;
 }
 
 export interface WorkflowDef {

@@ -23,6 +23,8 @@ import { createPutawayTools } from './tools/putaway-tools.js';
 import { isWmsEventType } from './events/catalog.js';
 import { wmsManifest } from './wms-manifest.js';
 import { putawayManifest } from './putaway-manifest.js';
+import { reversalManifest } from './reversal-manifest.js';
+import { partialManifest } from './partial-manifest.js';
 
 /**
  * WmsDomain —— 领域装配器：把仓储领域「挂载」到一个内核实例上。
@@ -38,6 +40,8 @@ export class WmsDomain {
   readonly #db: Database.Database;
   readonly #manifest: ModuleManifest;
   readonly #putawayManifest: ModuleManifest;
+  readonly #reversalManifest: ModuleManifest;
+  readonly #partialManifest: ModuleManifest;
   readonly #cache = new Map<string, WmsWorkspace>();
 
   private constructor(core: OneCore) {
@@ -52,8 +56,12 @@ export class WmsDomain {
     for (const tool of [...toolDefs, ...putawayToolDefs]) bus.register(tool);
     this.#manifest = wmsManifest(toolDefs);
     this.#putawayManifest = putawayManifest(putawayToolDefs);
+    this.#reversalManifest = reversalManifest();
+    this.#partialManifest = partialManifest();
     core.exposeModuleRegistry().registerManifest(this.#manifest);
     core.exposeModuleRegistry().registerManifest(this.#putawayManifest);
+    core.exposeModuleRegistry().registerManifest(this.#reversalManifest);
+    core.exposeModuleRegistry().registerManifest(this.#partialManifest);
   }
 
   /** 把领域挂到内核上（幂等心智：attach 两次 = 工具覆盖注册 + 表 IF NOT EXISTS + 目录覆盖登记） */
@@ -65,7 +73,15 @@ export class WmsDomain {
   workspace(workspaceId: string): WmsWorkspace {
     let ws = this.#cache.get(workspaceId);
     if (!ws) {
-      ws = new WmsWorkspace(workspaceId, this.#core, this.#db, this.#manifest, this.#putawayManifest);
+      ws = new WmsWorkspace(
+        workspaceId,
+        this.#core,
+        this.#db,
+        this.#manifest,
+        this.#putawayManifest,
+        this.#reversalManifest,
+        this.#partialManifest,
+      );
       this.#cache.set(workspaceId, ws);
     }
     return ws;
@@ -105,6 +121,8 @@ export class WmsWorkspace {
   readonly #projections: WmsProjections;
   readonly #nodeId: string;
   readonly #putawayManifest: ModuleManifest;
+  readonly #reversalManifest: ModuleManifest;
+  readonly #partialManifest: ModuleManifest;
   #cursor = -1;
 
   constructor(
@@ -113,12 +131,16 @@ export class WmsWorkspace {
     db: Database.Database,
     manifest: ModuleManifest,
     putawayManifest: ModuleManifest,
+    reversalManifest: ModuleManifest,
+    partialManifest: ModuleManifest,
   ) {
     this.#facade = core.workspace(workspaceId);
     this.#db = db;
     this.#projections = new WmsProjections(db, workspaceId);
     this.#nodeId = core.nodeId;
     this.#putawayManifest = putawayManifest;
+    this.#reversalManifest = reversalManifest;
+    this.#partialManifest = partialManifest;
     this.events = this.#facade.events;
     this.fields = this.#facade.fields;
     this.tools = this.#facade.tools;
@@ -133,7 +155,9 @@ export class WmsWorkspace {
     this.pickings = this.#projections.pickings;
     this.sync();
     this.#installBaseModule(manifest);
-    this.#installPutawayModule();
+    this.#installOptional(this.#putawayManifest);
+    this.#installOptional(this.#reversalManifest);
+    this.#installOptional(this.#partialManifest);
   }
 
   /**
@@ -151,19 +175,15 @@ export class WmsWorkspace {
   }
 
   /**
-   * 上架模块种子（M21）：默认随构造安装（enabled=true → putaway 步骤立即可用）。
-   * try/catch 降级：老库若自定义过 inbound 流程（已手工加了 putaway 态或删了
-   * received 态）导致贡献校验失败，跳过安装并 log——上架不可用，但不阻塞打开
-   * 工作区。停用/卸载走 profile 慢通道（propose → confirm）。
+   * 可选业务模块：默认安装并启用。流程已被改到对不上贡献时降级跳过，
+   * 不阻塞打开工作区。停用走设置页慢通道。
    */
-  #installPutawayModule(): void {
+  #installOptional(manifest: ModuleManifest): void {
     try {
-      this.modules.install(this.#putawayManifest, {
-        actor: `module:${this.#putawayManifest.id}@${this.#nodeId}`,
-      });
+      this.modules.install(manifest, { actor: `module:${manifest.id}@${this.#nodeId}` });
     } catch (e) {
       console.warn(
-        `[module.putaway] 安装降级（流程贡献校验未过，上架步骤不可用）：${
+        `[${manifest.id}] 安装降级（流程贡献校验未过，该模块不可用）：${
           e instanceof Error ? e.message : String(e)
         }`,
       );

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { SendOutlined } from '@ant-design/icons';
-import { Badge, Button, Card, Input, List, Segmented, Space, Spin, Typography } from 'antd';
+import { Alert, Badge, Button, Card, Input, List, Segmented, Space, Spin, Typography } from 'antd';
 import { api } from '../api/client';
 import type { AgentDef } from '../api/client';
-import { useProposals } from '../api/hooks';
+import { useAiConfig, useProposals } from '../api/hooks';
 import { useChatSession } from '../chat/ChatProvider';
 import { useAppNav } from '../app-nav';
 import ProposalDetail from '../components/ProposalDetail';
@@ -35,6 +35,10 @@ export default function ChatPage() {
   const proposalsQuery = useProposals();
   const proposals = proposalsQuery.data;
   const [activeProposalId, setActiveProposalId] = useState<string | null>(null);
+
+  // AI 未配置引导：检测到未配置即在顶部展示引导卡（AiConfigPage 保存后缓存失效、返回即消失）
+  const aiConfigQuery = useAiConfig();
+  const aiUnconfigured = aiConfigQuery.data !== undefined && !aiConfigQuery.data.configured;
 
   // 对话里 profile.propose 刚成功 → 立即刷新待确认面板（不等 5s 轮询）。
   // refetch 经 ref 中转：依赖只留 proposeCount，避免查询对象身份变化触发回流。
@@ -85,6 +89,20 @@ export default function ChatPage() {
       }}
     >
       <PageHeader title="AI 对话" subtitle="自然语言出入库 / 改配置" />
+      {/* AI 未配置引导卡：配置保存成功后自动消失 */}
+      {aiUnconfigured ? (
+        <Alert
+          type="info"
+          showIcon
+          message="尚未配置 AI 服务"
+          description="完成模型配置后即可用自然语言管理仓库（支持 OpenAI 兼容云 API 或本地 Ollama）。"
+          action={
+            <Button size="small" type="primary" onClick={() => navigate('ai-config')}>
+              去配置
+            </Button>
+          }
+        />
+      ) : null}
       {/* 待确认提议面板：仅在有 pending 提议时出现；确认/拒绝后列表失效即消失 */}
       {proposals && proposals.length > 0 ? (
         <Card
@@ -161,6 +179,11 @@ export default function ChatPage() {
                 {turn.failed ? (
                   <Typography.Paragraph type="danger" style={{ marginBottom: 0 }}>
                     {turn.failed}
+                    {turn.failedCode === 'AI_NOT_CONFIGURED' ? (
+                      <Typography.Link style={{ marginLeft: 8 }} onClick={() => navigate('ai-config')}>
+                        去配置
+                      </Typography.Link>
+                    ) : null}
                   </Typography.Paragraph>
                 ) : null}
               </div>

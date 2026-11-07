@@ -15,7 +15,12 @@ import {
   listStocktakes,
   type StocktakeLineState,
 } from '../queries/stocktake-queries.js';
-import { codeOfLocation, resolveBatch, resolveLocation } from '../state/inventory-policy.js';
+import {
+  assertNonNegativeQty,
+  codeOfLocation,
+  resolveBatch,
+  resolveLocation,
+} from '../state/inventory-policy.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
 export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
@@ -83,7 +88,7 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
     id: 'wms.stocktake.count',
     label: '录入盘点实盘数',
     description:
-      '为盘点单录入一个桶（SKU×库位×批次）的实盘数 countedQty（实际清点数量，≥0 的整数；0 表示盘亏到零）。locationCode 缺省为默认库位 DEFAULT，batchNo 缺省为虚拟批次 DEFAULT。同桶可重复录入——后录覆盖先录（重盘修正）。账面没有余量的桶也可以录（货架上真有货而账面为零 = 盘盈，关单时自动补库存）。库位必须在盘点范围内，否则拒绝。',
+      '为盘点单录入一个桶（SKU×库位×批次）的实盘数 countedQty（实际清点数量，≥0，支持 3 位小数；0 表示盘亏到零）。locationCode 缺省为默认库位 DEFAULT，batchNo 缺省为虚拟批次 DEFAULT。同桶可重复录入——后录覆盖先录（重盘修正）。账面没有余量的桶也可以录（货架上真有货而账面为零 = 盘盈，关单时自动补库存）。库位必须在盘点范围内，否则拒绝。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -92,7 +97,7 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
         skuCode: { type: 'string', description: 'SKU 编码' },
         locationCode: { type: 'string', description: '库位编码（可选，缺省 DEFAULT）' },
         batchNo: { type: 'string', description: '批次号（可选，缺省虚拟批次 DEFAULT）' },
-        countedQty: { type: 'integer', minimum: 0, description: '实盘数量（≥0 的整数）' },
+        countedQty: { type: 'number', minimum: 0, description: '实盘数量（≥0，支持 3 位小数）' },
       },
       required: ['stocktakeNo', 'skuCode', 'countedQty'],
     },
@@ -102,9 +107,7 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
       const st = ws.stocktakes.byNo(params.stocktakeNo);
       if (!st) throw new StocktakeNotFoundError(params.stocktakeNo);
       if (st.state !== 'created') throw new StocktakeNotOpenError(params.stocktakeNo, st.state);
-      if (!Number.isInteger(params.countedQty) || params.countedQty < 0) {
-        throw new Error('TOOL_REJECTED: countedQty 必须是 ≥0 的整数');
-      }
+      const countedQty = assertNonNegativeQty(params.countedQty, 'countedQty');
       const sku = ws.skus.byCode(params.skuCode);
       if (!sku) throw new SkuNotFoundError(params.skuCode);
       const loc = resolveLocation(ws, params.locationCode);
@@ -120,7 +123,7 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
         locationId: loc.locationId,
         locationCode: loc.locationCode,
         batchNo: batch.batchNo,
-        countedQty: params.countedQty,
+        countedQty,
       });
       ws.sync();
       const line = ws.stocktakes
@@ -134,7 +137,7 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
         skuCode: sku.skuCode,
         locationCode: loc.locationCode,
         batchNo: batch.batchNo,
-        countedQty: params.countedQty,
+        countedQty,
         expectedQty: line?.expectedQty ?? 0,
         bookQty: ws.inventory.quantityOf(sku.id, loc.locationId, batch.batchNo),
       };

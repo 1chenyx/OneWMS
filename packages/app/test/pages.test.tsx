@@ -5,7 +5,7 @@ import { App as AntApp, ConfigProvider } from 'antd';
 import ProposalDetail from '../src/components/ProposalDetail';
 import ChatPage from '../src/pages/ChatPage';
 import { ChatProvider } from '../src/chat/ChatProvider';
-import { AppNavProvider } from '../src/app-nav';
+import { AppNavProvider, useAppNav } from '../src/app-nav';
 import { ApiError } from '../src/api/client';
 import type { ChatStreamEvent } from '../src/api/client';
 import type { Proposal } from '@one/core';
@@ -21,6 +21,8 @@ const rejectMock = vi.fn();
 const streamMock = vi.fn();
 const answerMock = vi.fn();
 const agentsMock = vi.fn();
+// 默认已配置（不弹引导卡）；未配置引导用例内覆盖返回值
+const aiConfigMock = vi.fn(() => ({ isLoading: false, data: { configured: true, source: 'file' } }));
 
 const proposalFixture = {
   proposalId: 'p-1',
@@ -49,6 +51,7 @@ vi.mock('../src/api/hooks', () => ({
   useConfirmProposal: () => ({ mutateAsync: confirmMock, isPending: false }),
   useRejectProposal: () => ({ mutateAsync: rejectMock, isPending: false }),
   useProposals: () => ({ isLoading: false, data: [proposalFixture] }),
+  useAiConfig: () => aiConfigMock(),
 }));
 
 // SSE 消费 mock：保留模块其余导出（ApiError 等），替换流式入口 + api.agents
@@ -346,5 +349,52 @@ describe('ChatPage：SSE 流式', () => {
     await user.click(await screen.findByRole('button', { name: '应用' })); // popconfirm 确认
     expect(confirmMock).toHaveBeenCalledWith({ id: 'p-1' });
     expect(await screen.findByText(/已应用/)).toBeInTheDocument();
+  });
+});
+
+describe('ChatPage：AI 未配置引导', () => {
+  /** 探针：显示当前导航页，验证「去配置」的跳转结果 */
+  const NavProbe = () => {
+    const { page } = useAppNav();
+    return <span data-testid="nav-probe">{page}</span>;
+  };
+
+  beforeEach(() => {
+    aiConfigMock.mockImplementation(() => ({ isLoading: false, data: { configured: false, source: 'none' } }));
+  });
+  afterEach(() => {
+    // 恢复默认（已配置）——避免泄漏进其他 describe 的用例
+    aiConfigMock.mockImplementation(() => ({ isLoading: false, data: { configured: true, source: 'file' } }));
+  });
+
+  it('未配置 → 顶部引导卡可见，点「去配置」跳转 AI 模型页', async () => {
+    const user = userEvent.setup();
+    render(wrap(<><NavProbe /><ChatProvider><ChatPage /></ChatProvider></>));
+
+    expect(await screen.findByText('尚未配置 AI 服务')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '去配置' }));
+    expect(screen.getByTestId('nav-probe')).toHaveTextContent('ai-config');
+  });
+
+  it('已配置 → 不渲染引导卡', async () => {
+    aiConfigMock.mockImplementation(() => ({ isLoading: false, data: { configured: true, source: 'file' } }));
+    render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+
+    expect(await screen.findByText(/试试说/)).toBeInTheDocument();
+    expect(screen.queryByText('尚未配置 AI 服务')).not.toBeInTheDocument();
+  });
+
+  it('发送失败 AI_NOT_CONFIGURED → 红字旁「去配置」链接可跳转', async () => {
+    streamMock.mockRejectedValueOnce(new ApiError('AI_NOT_CONFIGURED', '未配置 AI', 503));
+    const user = userEvent.setup();
+    render(wrap(<><NavProbe /><ChatProvider><ChatPage /></ChatProvider></>));
+
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('你好');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+
+    expect(await screen.findByText(/未配置 AI 服务——/)).toBeInTheDocument();
+    await user.click(screen.getByText('去配置', { selector: 'a' })); // 红字旁链接（非引导卡按钮）
+    expect(screen.getByTestId('nav-probe')).toHaveTextContent('ai-config');
   });
 });

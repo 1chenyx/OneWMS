@@ -78,10 +78,15 @@ describe('拣货单：创建', () => {
 
     const withLines = listPickingsWithLines(ws)[0]!;
     expect(withLines.state).toBe('created');
-    expect(withLines.lines.map((l) => [l.orderNo, l.skuCode, l.suggestedBatchNo])).toEqual([
-      [o1, 'A-1', 'B-1'], // 显式批次行 → 建议桶 = 该批次
-      [o2, 'B-2', 'DEFAULT'], // 虚拟批次 + strict 缺省策略 → 建议 DEFAULT
-    ]);
+    // 投影按 order_no 排序（单号后缀是随机 UUID 片段）→ 断言按单号排序后比对
+    expect(
+      withLines.lines.map((l) => [l.orderNo, l.skuCode, l.suggestedBatchNo]).sort(),
+    ).toEqual(
+      [
+        [o1, 'A-1', 'B-1'], // 显式批次行 → 建议桶 = 该批次
+        [o2, 'B-2', 'DEFAULT'], // 虚拟批次 + strict 缺省策略 → 建议 DEFAULT
+      ].sort(),
+    );
   });
 
   it('虚拟批次 + fifo 策略 → 建议桶按余量桶装载', async () => {

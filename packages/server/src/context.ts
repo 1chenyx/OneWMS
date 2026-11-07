@@ -9,6 +9,8 @@ import {
   type AiProviderConfig,
   type LlmProvider,
 } from '@one/ai';
+import { DEFAULT_BACKUP_INTERVAL_MS, DEFAULT_BACKUP_KEEP } from './backup/backup-service.js';
+import { createPeerStore, type PeerStore } from './sync/peer-store.js';
 
 /**
  * 宿主装配（AppContext）——把内核/领域/AI 组合成一个进程级单例。
@@ -50,6 +52,16 @@ export interface AppContext {
   readonly aiConfigPath: string | null;
   /** 启动时的 env 配置（配置页「关闭 AI」删除文件后的回落面） */
   readonly aiConfigEnv: AiProviderConfig | undefined;
+  /** 自动备份目录（null = 宿主无落盘位，备份整体禁用） */
+  readonly backupDir: string | null;
+  /** 自动备份间隔（毫秒；0 = 只手动备份，不起定时器） */
+  readonly backupIntervalMs: number;
+  /** 备份滚动保留份数 */
+  readonly backupKeep: number;
+  /** 已配对同步节点清单（扫码组网；path=null 时只在进程内有效） */
+  readonly peers: PeerStore;
+  /** 实际监听端口（serve 回调写入；null = 未起端口的宿主，如测试 app.request） */
+  listeningPort: number | null;
   /** 热更新：重建 provider + 切换来源（config=undefined 即关闭 AI） */
   applyAiConfig(config: AiProviderConfig | undefined, source: AiConfigSource): void;
   close(): void;
@@ -66,6 +78,14 @@ export function createAppContext(options: {
   aiConfigSource?: AiConfigSource;
   /** 缺省 = aiConfig（启动注入即 env 面） */
   aiConfigEnv?: AiProviderConfig;
+  /** 缺省 null（测试宿主不落盘）；真实宿主传 resolveBackupDir(dbPath) */
+  backupDir?: string | null;
+  /** 缺省一天一次；0 = 关闭定时备份 */
+  backupIntervalMs?: number;
+  /** 缺省保留 7 份 */
+  backupKeep?: number;
+  /** 缺省纯内存清单（测试宿主不落盘）；真实宿主传 resolvePeersPath(dbPath) */
+  peersPath?: string | null;
 }): AppContext {
   const core = OneCore.open(options.dbPath);
   const ws = WmsDomain.attach(core).workspace(options.workspaceId);
@@ -88,6 +108,11 @@ export function createAppContext(options: {
     aiConfigSource: options.aiConfigSource ?? (options.aiConfig ? 'env' : 'none'),
     aiConfigPath: options.aiConfigPath ?? null,
     aiConfigEnv: options.aiConfigEnv ?? options.aiConfig,
+    backupDir: options.backupDir ?? null,
+    backupIntervalMs: options.backupIntervalMs ?? DEFAULT_BACKUP_INTERVAL_MS,
+    backupKeep: options.backupKeep ?? DEFAULT_BACKUP_KEEP,
+    peers: createPeerStore(options.peersPath ?? null),
+    listeningPort: null,
     applyAiConfig(config, source) {
       ctx.provider = config ? createVercelLlmProvider(resolveLanguageModel(config)) : undefined;
       ctx.aiConfig = config;

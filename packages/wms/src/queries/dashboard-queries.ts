@@ -30,7 +30,7 @@ export function getDashboardOverview(ws: WmsWorkspace): DashboardOverview {
     .list()
     .filter((o) => o.state !== 'done' && o.state !== 'canceled').length;
   return {
-    skuCount: ws.skus.list().length,
+    skuCount: ws.skus.list().filter((s) => (s.status ?? 'active') === 'active').length, // A2：停用档不计
     totalQuantity: inventory.reduce((s, r) => s + Math.max(0, r.quantity), 0),
     openOrderCount: openOrders,
     locationCount: ws.locations.list().length,

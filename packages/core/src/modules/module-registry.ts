@@ -190,6 +190,13 @@ export class ModuleRegistry {
           );
         }
       }
+      for (const t of c.transitions) {
+        if (wf.transitions.some((x) => x.from === t.from && x.to === t.to)) {
+          throw new ModuleConflictError(
+            `流程 ${wfId} 已存在转移 ${t.from}→${t.to}，与模块 ${manifest.id} 的贡献冲突（§6.3）`,
+          );
+        }
+      }
     }
 
     // ── 落事件（顺序固定：轨道 A → 轨道 B → 审计）────────
@@ -239,7 +246,11 @@ export class ModuleRegistry {
         });
       }
       for (const t of c.transitions) {
-        patch.push({ op: 'add', path: `/workflows/${wfId}/transitions/-`, value: t });
+        patch.push({
+          op: 'add',
+          path: `/workflows/${wfId}/transitions/-`,
+          value: { ...t, providedBy: manifest.id },
+        });
       }
     }
     const { newVersion } = this.profile.applyDirect(
@@ -270,8 +281,9 @@ export class ModuleRegistry {
   /**
    * 卸载模块（per-workspace）：
    *  - 字段处置委托 registry.unregisterModule（移交/软删除，M1 既有）；
-   *  - workflows 摘除 = providedBy={id} 的 states + 两端引用这些 states 的 transitions
-   *    （规则从数据推导——远端重放无需 manifest）；
+   *  - workflows 摘除 = providedBy={id} 的 states 与 transitions，
+   *    外加两端引用被摘状态的转移（老数据的转移可能没有 providedBy）；
+   *    规则从数据推导——远端重放无需 manifest；
    *  - modules 段移除；摘除 patch 过 applyDirect 校验（连通性兜底）。
    */
   uninstall(workspaceId: string, moduleId: string, opts?: { actor?: string }): ModuleUninstallReport {
@@ -285,15 +297,16 @@ export class ModuleRegistry {
     // 构造摘除 patch（先算后动；replace 整个流程定义——比逐条 remove 索引稳健）
     const patch: PatchOp[] = [];
     for (const [wfId, wf] of Object.entries(snapshot.workflows)) {
-      const removed = new Set(wf.states.filter((s) => s.providedBy === moduleId).map((s) => s.id));
-      if (removed.size === 0) continue;
+      const removedStates = new Set(wf.states.filter((s) => s.providedBy === moduleId).map((s) => s.id));
+      const states = wf.states.filter((s) => s.providedBy !== moduleId);
+      const transitions = wf.transitions.filter(
+        (t) => t.providedBy !== moduleId && !removedStates.has(t.from) && !removedStates.has(t.to),
+      );
+      if (states.length === wf.states.length && transitions.length === wf.transitions.length) continue;
       patch.push({
         op: 'replace',
         path: `/workflows/${wfId}`,
-        value: {
-          states: wf.states.filter((s) => s.providedBy !== moduleId),
-          transitions: wf.transitions.filter((t) => !removed.has(t.from) && !removed.has(t.to)),
-        },
+        value: { states, transitions },
       });
     }
     patch.push({ op: 'remove', path: `/modules/${moduleId}` });

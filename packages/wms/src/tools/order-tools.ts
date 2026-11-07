@@ -1,21 +1,27 @@
 import { randomUUID } from 'node:crypto';
-import { evalWhenCondition, type ToolDefinition } from '@one/core';
+import { evalWhenCondition, type ToolContext, type ToolDefinition } from '@one/core';
+import type { WmsWorkspace } from '../wms.js';
 import { readWmsSettings } from '../config/wms-settings.js';
-import { WMS_EVENT_TYPES } from '../events/catalog.js';
+import { DEFAULT_BATCH_NO, WMS_EVENT_TYPES } from '../events/catalog.js';
 import {
   OrderAlreadyExistsError,
   OrderNotFoundError,
+  PartialNotOnPostError,
   PartnerKindMismatchError,
   PartnerNotFoundError,
   SkuNotFoundError,
   WorkflowNotFoundError,
 } from '../errors.js';
 import { expandAllocatedLines } from '../state/batch-allocation.js';
-import { requiresAvailabilityCheck, stockEffectOf } from '../state/inventory-effect.js';
-import { assertOutboundBuckets } from '../state/outbound-guards.js';
+import { resolveTransitionEffect } from '../state/inventory-effect.js';
+import { assertOnHand, assertOutboundBuckets } from '../state/outbound-guards.js';
+import { resolvePostingMoves, type PostingRequest } from '../state/partial-qty.js';
 import {
   assertExpiryConsistent,
+  assertNonNegativeQty,
+  assertPositiveQty,
   codeOfLocation,
+  quantizeQty,
   resolveBatch,
   resolveLocation,
 } from '../state/inventory-policy.js';
@@ -24,7 +30,155 @@ import {
   WORKFLOW_BY_DIRECTION,
   type OrderDirection,
 } from '../state/order-state-machine.js';
+import { withOrderLines } from '../queries/order-queries.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
+
+export interface OrderTransitionResult {
+  orderNo: string;
+  from: string;
+  to: string;
+  adjustedLines?: { skuCode: string; locationCode: string; batchNo: string; delta: number }[];
+}
+
+/**
+ * 单据转移的命令实现（工具与冲突接受共用）。
+ * 校验失败抛错、零事件。调用方可以包在更大的 runAtomic 里。
+ */
+export function applyOrderTransition(
+  ws: WmsWorkspace,
+  ctx: ToolContext,
+  params: {
+    orderNo: string;
+    to: string;
+    lines?: { skuCode: string; locationCode?: string; batchNo?: string; quantity: number }[];
+  },
+): OrderTransitionResult {
+  ws.sync();
+  const order = ws.orders.byNo(params.orderNo);
+  if (!order) throw new OrderNotFoundError(params.orderNo);
+  const snapshot = ws.profile.getSnapshot();
+  const workflow = snapshot.workflows[WORKFLOW_BY_DIRECTION[order.direction]];
+  if (!workflow) throw new WorkflowNotFoundError(order.direction);
+  const activeTransitions = workflow.transitions.filter((t) =>
+    evalWhenCondition(t.when, snapshot.modules),
+  );
+  assertTransition(activeTransitions, order.direction, order.state, params.to);
+  const edge = activeTransitions.find((t) => t.from === order.state && t.to === params.to);
+  const settings = readWmsSettings(ws);
+  const resolved = resolveTransitionEffect(order.direction, params.to, edge?.effect, settings);
+  const requests = resolvePartialRequests(ws, params.lines);
+  if (!resolved.post && requests.length > 0) throw new PartialNotOnPostError();
+
+  const lines = ws.orders.lines(order.id);
+  const posted = resolved.post
+    ? resolvePostingMoves({
+        post: resolved.post,
+        moduleEnabled: snapshot.modules['module.partial']?.enabled === true,
+        lines,
+        requests,
+      })
+    : [];
+  const moving = posted.filter((line) => line.move > 0);
+  if (resolved.post === 'increase') {
+    for (const line of lines) {
+      const hit = moving.find(
+        (m) => m.skuId === line.skuId && m.locationId === line.locationId && m.batchNo === line.batchNo,
+      );
+      if (!hit || !line.batchExpiryDate) continue;
+      assertExpiryConsistent(
+        ws,
+        line.skuId,
+        ws.skus.byId(line.skuId)?.skuCode ?? line.skuId,
+        line.batchNo,
+        line.batchExpiryDate,
+      );
+    }
+  }
+  if (resolved.checkAvailability) {
+    const guardLines = resolved.post
+      ? moving.map((line) => ({
+          skuId: line.skuId,
+          locationId: line.locationId,
+          batchNo: line.batchNo,
+          quantity: line.move,
+        }))
+      : lines;
+    // 出库履约（预检或扣减）走完整守卫；入库冲销只验余量和冻结。只预检时按订单数量。
+    if (guardLines.length > 0) {
+      if (order.direction === 'out') assertOutboundBuckets(ws, guardLines);
+      else assertOnHand(ws, guardLines, { expiry: false, hold: true });
+    }
+  }
+
+  const fulfillments = posted
+    .filter((line) => line.nextPosted !== undefined)
+    .map((line) => ({
+      skuId: line.skuId,
+      locationId: line.locationId,
+      batchNo: line.batchNo,
+      quantity: line.nextPosted!,
+    }));
+  const adjustedLines: OrderTransitionResult['adjustedLines'] = [];
+  ws.runAtomic(() => {
+    ctx.appendEvent(WMS_EVENT_TYPES.orderStateChanged, {
+      orderId: order.id,
+      orderNo: order.orderNo,
+      direction: order.direction,
+      from: order.state,
+      to: params.to,
+      ...(fulfillments.length > 0 ? { fulfillments } : {}),
+    });
+    if (resolved.post) {
+      for (const line of moving) {
+        const src = lines.find(
+          (row) => row.skuId === line.skuId && row.locationId === line.locationId && row.batchNo === line.batchNo,
+        );
+        const skuCode = ws.skus.byId(line.skuId)?.skuCode ?? line.skuId;
+        const locationCode = codeOfLocation(ws, line.locationId);
+        const delta = resolved.post === 'increase' ? line.move : -line.move;
+        ctx.appendEvent(WMS_EVENT_TYPES.inventoryAdjusted, {
+          skuId: line.skuId,
+          skuCode,
+          delta,
+          reason: `order:${params.to}`,
+          locationId: line.locationId,
+          locationCode,
+          batchNo: line.batchNo,
+          batchExpiryDate: src?.batchExpiryDate ?? undefined,
+          orderId: order.id,
+          orderNo: order.orderNo,
+        });
+        adjustedLines!.push({ skuCode, locationCode, batchNo: line.batchNo, delta });
+      }
+    }
+  });
+  ws.sync();
+  return {
+    orderNo: order.orderNo,
+    from: order.state,
+    to: params.to,
+    adjustedLines: adjustedLines!.length > 0 ? adjustedLines : undefined,
+  };
+}
+
+/** 把调用方的实收/实发解析成行键。空数组视为没传。 */
+function resolvePartialRequests(
+  ws: WmsWorkspace,
+  raw: { skuCode: string; locationCode?: string; batchNo?: string; quantity: number }[] | undefined,
+): PostingRequest[] {
+  if (!raw?.length) return [];
+  return raw.map((line, i) => {
+    if (typeof line?.skuCode !== 'string' || !line.skuCode) {
+      throw new Error(`TOOL_REJECTED: 第 ${i + 1} 条实收/实发缺少 skuCode`);
+    }
+    const quantity = assertNonNegativeQty(line.quantity, `第 ${i + 1} 条实收/实发数量`);
+    const sku = ws.skus.byCode(line.skuCode);
+    if (!sku) throw new SkuNotFoundError(line.skuCode);
+    const location = resolveLocation(ws, line.locationCode);
+    const batchNo = !line.batchNo || line.batchNo === DEFAULT_BATCH_NO ? DEFAULT_BATCH_NO : line.batchNo;
+    return { skuId: sku.id, locationId: location.locationId, batchNo, quantity };
+  });
+}
 
 export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
   const orderCreate: ToolDefinition<{
@@ -46,7 +200,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     id: 'wms.order.create',
     label: '创建出入库单',
     description:
-      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正整数）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致），出库行指定批次则只扣该批次（不指定只扣 DEFAULT 批次，其他批次有货不救）。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。出库单可选 allocation 批次分配策略（strict=严格桶不分配 / fifo=先进先出 / fefo=先到期先出）：fifo/fefo 启用后未指定批次的行按策略在行库位内自动拆分为具体批次行（一行可拆多批次），显式指定批次的行不受影响；不传时用全局缺省策略（core.wms 设置 defaultAllocation，缺省 strict），本参数优先。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传则自动生成。',
+      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正数，支持 3 位小数——散装/称重场景，如 0.5 表示半斤）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致），出库行指定批次则只扣该批次（不指定只扣 DEFAULT 批次，其他批次有货不救）。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。出库单可选 allocation 批次分配策略（strict=严格桶不分配 / fifo=先进先出 / fefo=先到期先出）：fifo/fefo 启用后未指定批次的行按策略在行库位内自动拆分为具体批次行（一行可拆多批次），显式指定批次的行不受影响；不传时用全局缺省策略（core.wms 设置 defaultAllocation，缺省 strict），本参数优先。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传则自动生成。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -100,9 +254,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         if (typeof line?.skuCode !== 'string' || !line.skuCode) {
           throw new Error(`TOOL_REJECTED: 第 ${i + 1} 行缺少 skuCode`);
         }
-        if (!Number.isInteger(line.quantity) || line.quantity <= 0) {
-          throw new Error(`TOOL_REJECTED: 第 ${i + 1} 行数量必须是正整数`);
-        }
+        assertPositiveQty(line.quantity, `第 ${i + 1} 行数量`);
         const sku = ws.skus.byCode(line.skuCode);
         if (!sku) {
           throw new SkuNotFoundError(line.skuCode);
@@ -157,7 +309,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
           const batch = resolveBatch(l.batchNo, l.batchExpiryDate);
           return {
             skuId: ws.skus.byCode(l.skuCode)!.id,
-            quantity: l.quantity,
+            quantity: quantizeQty(l.quantity),
             locationId: resolveLocation(ws, l.locationCode).locationId,
             batchNo: batch.batchNo,
             batchExpiryDate: batch.batchExpiryDate,
@@ -170,11 +322,15 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     },
   };
 
-  const orderTransition: ToolDefinition<{ orderNo: string; to: string }> = {
+  const orderTransition: ToolDefinition<{
+    orderNo: string;
+    to: string;
+    lines?: { skuCode: string; locationCode?: string; batchNo?: string; quantity: number }[];
+  }> = {
     id: 'wms.order.transition',
     label: '单据状态转移',
     description:
-      '推进单据状态，并自动联动库存（按行的库位 + 批次维度）：入库单进入 received 时按明细自动增加对应库位/批次库存（行声明了效期则随流水登记）；出库单进入 picking 时按行桶预检余量（不足拒绝），进入 shipped 时按行桶自动扣减库存（余量不足拒绝——注意是行指定的库位和批次的余量，不是 SKU 总量；行未指定批次则只扣 DEFAULT 批次）。合法转移由当前流程配置决定（默认：入库 created → received → done；出库 created → picking → shipped → done；未完成前可 canceled；流程配置可含更多状态）。to 是目标状态。若全局设置开启过期批次出库拦截（core.wms 的 settings.blockExpiredOutbound），出库行批次已过期（效期早于今日；今天到期视为临期可出）会被拒绝。',
+      '推进单据状态，并按该转移的库存效应联动库存（按行的库位 + 批次）。未在转移上声明 effect 时：入库进入 received（可用 settings.inboundIncreaseState 改名）按行增加库存；出库进入 picking（outboundCheckState）只预检余量；出库进入 shipped（outboundDecreaseState）按行扣减。转移上的 effect（increase/decrease/check/none）优先于这三键。module.reversal 启用时，已收货可取消并扣回，已发货可取消并加回；停用后这两条转移不可用。module.partial 启用时，会改库存的转移可以带 lines 声明实收/实发（不大于该行订单数量，0 表示这行没到/没发）；不带 lines 按订单数量整单入账。停用 module.partial 后不能改少。已经入账的行，冲销按已入账数量，不能再改。合法目标由当前流程决定。过期批次拦截只作用于出库履约，不拦截入库冲销。拣货关单不走本工具的短发。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -182,96 +338,96 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         orderNo: { type: 'string', description: '单据号' },
         // 不设 enum：状态词汇由流程配置定义（模块可贡献新状态），合法性由 handler 按配置裁决
         to: { type: 'string', description: '目标状态（合法值由当前流程配置决定）' },
+        lines: {
+          type: 'array',
+          description:
+            '实收/实发（可选，module.partial）。每项 { skuCode, quantity, locationCode?, batchNo? }。缺省行按订单数量。',
+          items: { type: 'object' },
+        },
       },
       required: ['orderNo', 'to'],
+    },
+    handler: (params, ctx) => applyOrderTransition(resolveWorkspace(ctx.workspaceId), ctx, params),
+  };
+
+  const orderQuery: ToolDefinition<{
+    orderNo?: string;
+    direction?: OrderDirection;
+    state?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  }> = {
+    id: 'wms.order.query',
+    label: '查询单据',
+    description:
+      '查询单据清单或单据详情。给 orderNo 返回该单详情（含明细行 lines：SKU 编码/数量/库位/批次，及往来单位），单据不存在会报错。' +
+      '不给 orderNo 返回分页清单：direction（in=入库 / out=出库）、state（状态，如 created/received/completed——状态词汇由流程配置定义）、' +
+      'from/to（创建时间 ISO 闭区间）均可选过滤。最新在前；limit 默认 20（上限 200）、offset 翻页；' +
+      '返回 { total, limit, offset, hasMore, rows }，行含 orderNo / direction / state / partnerCode / lineCount / totalQuantity / createdAt。' +
+      '查「最近的出入库单」「某状态的单据」「某单据的明细」用本工具；纯读操作。',
+    permission: 'read',
+    parameters: {
+      type: 'object',
+      properties: {
+        orderNo: { type: 'string', description: '单据号（给定时返回该单详情含明细行）' },
+        direction: { type: 'string', enum: ['in', 'out'], description: '单据方向过滤（可选）' },
+        state: { type: 'string', description: '状态过滤（可选，如 created / received / completed）' },
+        from: { type: 'string', description: '创建起始时间（ISO，含）' },
+        to: { type: 'string', description: '创建结束时间（ISO，含）' },
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: '每页行数（缺省 20）' },
+        offset: { type: 'integer', minimum: 0, description: '跳过行数（缺省 0，翻页用）' },
+      },
+      required: [],
     },
     handler: (params, ctx) => {
       const ws = resolveWorkspace(ctx.workspaceId);
       ws.sync();
-      const order = ws.orders.byNo(params.orderNo);
-      if (!order) throw new OrderNotFoundError(params.orderNo);
-      // 流程校验（M8 行为闭环）——转移表来自 Profile workflows（配置即权威）：
-      // AI 慢通道改流程、模块 contributes 叠加转移，下一次流转立即生效。
-      // 流程定义缺失 → 明确报错，不静默回退硬编码表（否则「删流程」的配置静默失效）。
-      // when 条件运行时求值（M21）：条件不满足的转移视为不存在（如 module.putaway
-      // 停用时 received→putaway 不可达）——与 evalWhenCondition（core）同一语义。
-      const snapshot = ws.profile.getSnapshot();
-      const workflow = snapshot.workflows[WORKFLOW_BY_DIRECTION[order.direction]];
-      if (!workflow) throw new WorkflowNotFoundError(order.direction);
-      const activeTransitions = workflow.transitions.filter((t) =>
-        evalWhenCondition(t.when, snapshot.modules),
-      );
-      assertTransition(activeTransitions, order.direction, order.state, params.to);
 
-      // 库存联动（M9 起，M11 升级为行库位+批次维度）：出库进入 picking 预检、进入
-      // shipped 硬守卫——逐行按 (SKU, 行库位, 行批次) 验余量（行键唯一，orderCreate
-      // 已挡重复行）；拒绝发生在落账前（命令失败 ≠ 事实，零事件）。入库进入
-      // received 前做批次效期一致性权威校验（建单 fail-fast 之后、别的流水可能
-      // 已登记了不同效期）。
-      const lines = ws.orders.lines(order.id);
-      const effect = stockEffectOf(order.direction, params.to);
-      if (effect?.kind === 'increase') {
-        for (const line of lines) {
-          if (line.batchExpiryDate) {
-            assertExpiryConsistent(
-              ws,
-              line.skuId,
-              ws.skus.byId(line.skuId)?.skuCode ?? line.skuId,
-              line.batchNo,
-              line.batchExpiryDate,
-            );
-          }
-        }
-      }
-      if (effect?.kind === 'decrease' || requiresAvailabilityCheck(order.direction, params.to)) {
-        // 出库硬守卫（M21 提取为 state/outbound-guards.ts，与拣货关单共用）：
-        // 过期拦截（M13）/ 逐桶余量（M11）/ SKU 冻结聚合（M19）。
-        // 只拦单据出库：库存调整/移库不经本守卫（盘点、报废走自己的通道）。
-        assertOutboundBuckets(ws, lines);
+      // 单号模式：单据详情含明细行（单号详情天然有限，不分页）
+      if (params.orderNo) {
+        const order = ws.orders.byNo(params.orderNo);
+        if (!order) throw new OrderNotFoundError(params.orderNo);
+        return withOrderLines(ws, order);
       }
 
-      // 原子落账：状态事实 + 每行流水事实同生共死（savepoint 包裹，杜绝半落账）
-      const adjustedLines: { skuCode: string; locationCode: string; batchNo: string; delta: number }[] = [];
-      ws.runAtomic(() => {
-        ctx.appendEvent(WMS_EVENT_TYPES.orderStateChanged, {
-          orderId: order.id,
-          orderNo: order.orderNo,
-          direction: order.direction,
-          from: order.state,
-          to: params.to,
-        });
-        if (effect) {
-          for (const line of lines) {
-            const skuCode = ws.skus.byId(line.skuId)?.skuCode ?? line.skuId;
-            const locationCode = codeOfLocation(ws, line.locationId);
-            const delta = effect.kind === 'increase' ? line.quantity : -line.quantity;
-            ctx.appendEvent(WMS_EVENT_TYPES.inventoryAdjusted, {
-              skuId: line.skuId,
-              skuCode,
-              delta,
-              reason: `order:${params.to}`,
-              locationId: line.locationId,
-              locationCode,
-              batchNo: line.batchNo,
-              batchExpiryDate: line.batchExpiryDate ?? undefined,
-              orderId: order.id,
-              orderNo: order.orderNo,
-            });
-            adjustedLines.push({ skuCode, locationCode, batchNo: line.batchNo, delta });
-          }
-        }
-      });
-      ws.sync();
-      return {
-        orderNo: order.orderNo,
-        from: order.state,
+      // 列表模式：分页壳 + 行统计（lines 逐单汇总）
+      const limit = params.limit ?? 20;
+      const offset = params.offset ?? 0;
+      const { rows, total } = ws.orders.listPage({
+        direction: params.direction,
+        state: params.state,
+        from: params.from,
         to: params.to,
-        adjustedLines: adjustedLines.length > 0 ? adjustedLines : undefined,
+        limit,
+        offset,
+      });
+      return {
+        total,
+        limit,
+        offset,
+        hasMore: offset + rows.length < total,
+        rows: rows.map((order) => {
+          const lines = ws.orders.lines(order.id);
+          const partner = order.partnerId ? ws.partners.byId(order.partnerId) : undefined;
+          return {
+            orderNo: order.orderNo,
+            direction: order.direction,
+            state: order.state,
+            partnerCode: partner?.partnerCode ?? null,
+            partnerName: partner?.name ?? null,
+            lineCount: lines.length,
+            totalQuantity: lines.reduce((a, l) => a + l.quantity, 0),
+            createdAt: order.createdAt,
+            updatedAt: order.updatedAt,
+          };
+        }),
       };
     },
   };
 
-  return [def(orderCreate), def(orderTransition)];
+  return [def(orderCreate), def(orderTransition), def(orderQuery)];
 }
 
 /** 自动单号：IN-20261030-a1b2c3d4（方向 + 日期 + uuid 片段） */

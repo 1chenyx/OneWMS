@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { OneCore } from '@one/core';
+import { OneCore, type EventEnvelope } from '@one/core';
 import {
   WmsDomain,
   LocationAlreadyExistsError,
@@ -86,6 +86,91 @@ describe('库位主数据', () => {
     await expect(
       ws.tools.invoke('wms.location.create', { locationCode: '' }),
     ).rejects.toThrow(/不能为空/);
+  });
+});
+
+describe('库位更名（wms.location.update）', () => {
+  it('改名成功：投影生效 + 事件落账 + 编码不变', async () => {
+    const created = (await ws.tools.invoke('wms.location.create', {
+      locationCode: 'A-01',
+      name: '一号架',
+    })) as { locationId: string };
+    const before = countEvents();
+
+    const r = (await ws.tools.invoke('wms.location.update', {
+      locationCode: 'A-01',
+      name: 'A 区 01 货架',
+    })) as { locationId: string; locationCode: string; name: string };
+
+    expect(r).toEqual({
+      locationId: created.locationId,
+      locationCode: 'A-01',
+      name: 'A 区 01 货架',
+    });
+    expect(ws.locations.byCode('A-01')?.name).toBe('A 区 01 货架');
+    // id 不变 = 历史单据/流水指向的桶不漂移
+    expect(ws.locations.byCode('A-01')?.id).toBe(created.locationId);
+    expect(countEvents()).toBe(before + 1);
+  });
+
+  it('重放幂等：同一事件应用两次结果不变（更名是 LWW）', async () => {
+    await ws.tools.invoke('wms.location.create', { locationCode: 'A-01', name: '一号架' });
+    await ws.tools.invoke('wms.location.update', { locationCode: 'A-01', name: '二号架' });
+
+    // 取出更名事件，照重放器的路子对投影再应用两次：LWW 写死值，不叠加、不漂移
+    const updated: EventEnvelope[] = [];
+    ws.events.forEach((env) => {
+      if (env.type === 'wms.location.updated') updated.push(env);
+    });
+    expect(updated).toHaveLength(1);
+    ws.locations.applyEvent(updated[0]);
+    ws.locations.applyEvent(updated[0]);
+    expect(ws.locations.byCode('A-01')?.name).toBe('二号架');
+    expect(ws.locations.list()).toHaveLength(1);
+  });
+
+  it('不传 name → 名称保持原样（只传要改的字段）', async () => {
+    await ws.tools.invoke('wms.location.create', { locationCode: 'A-01', name: '一号架' });
+    const r = (await ws.tools.invoke('wms.location.update', { locationCode: 'A-01' })) as {
+      name: string;
+    };
+    expect(r.name).toBe('一号架');
+    expect(ws.locations.byCode('A-01')?.name).toBe('一号架');
+  });
+
+  it('空字符串 name → 拒绝（不改就别传）', async () => {
+    await ws.tools.invoke('wms.location.create', { locationCode: 'A-01', name: '一号架' });
+    const before = countEvents();
+    await expect(
+      ws.tools.invoke('wms.location.update', { locationCode: 'A-01', name: '  ' }),
+    ).rejects.toThrow(/不能为空/);
+    expect(countEvents()).toBe(before);
+  });
+
+  it('不存在的库位 → LocationNotFoundError，零事件', async () => {
+    const before = countEvents();
+    await expect(
+      ws.tools.invoke('wms.location.update', { locationCode: 'NOPE', name: 'x' }),
+    ).rejects.toThrow(LocationNotFoundError);
+    expect(countEvents()).toBe(before);
+  });
+
+  it('虚拟库位 DEFAULT 不可更名（它不落库）', async () => {
+    await expect(
+      ws.tools.invoke('wms.location.update', { locationCode: DEFAULT_LOCATION_ID, name: '默认' }),
+    ).rejects.toThrow(LocationNotFoundError);
+  });
+
+  it('更名不影响已有库存桶（同 id 同桶）', async () => {
+    await ws.tools.invoke('wms.location.create', { locationCode: 'A-01', name: '一号架' });
+    await ws.tools.invoke('wms.inventory.adjust', {
+      skuCode: 'A-1',
+      delta: 7,
+      locationCode: 'A-01',
+    });
+    await ws.tools.invoke('wms.location.update', { locationCode: 'A-01', name: '二号架' });
+    const loc = ws.locations.byCode('A-01')!;
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id, loc.id)).toBe(7);
   });
 });
 

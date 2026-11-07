@@ -10,8 +10,11 @@ import {
 } from '../errors.js';
 import {
   assertExpiryConsistent,
+  assertNonZeroQty,
+  assertPositiveQty,
   bucketLabel,
   codeOfLocation,
+  QTY_EPS,
   resolveBatch,
   resolveLocation,
 } from '../state/inventory-policy.js';
@@ -30,13 +33,13 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
     id: 'wms.inventory.adjust',
     label: '库存调整',
     description:
-      '对某 SKU 做库存增减：delta 为正数是入库、负数是出库。可选 locationCode 指定库位（缺省为默认库位 DEFAULT）；可选 batchNo 指定批次（缺省为虚拟批次 DEFAULT）——正数入库声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致），负数出库只扣指定批次（不指定只扣 DEFAULT 批次，其他批次有货不救）。出库超出该库位该批次当前余量会被拒绝（库存不可为负）。可选关联单据号。',
+      '对某 SKU 做库存增减：delta 为正数是入库、负数是出库（支持 3 位小数，如 -0.5 表示出半斤）。可选 locationCode 指定库位（缺省为默认库位 DEFAULT）；可选 batchNo 指定批次（缺省为虚拟批次 DEFAULT）——正数入库声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致），负数出库只扣指定批次（不指定只扣 DEFAULT 批次，其他批次有货不救）。出库超出该库位该批次当前余量会被拒绝（库存不可为负）。可选关联单据号。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
         skuCode: { type: 'string', description: 'SKU 编码' },
-        delta: { type: 'integer', minimum: -1000000000, maximum: 1000000000, description: '数量变化：正数入库，负数出库' },
+        delta: { type: 'number', minimum: -1000000000, maximum: 1000000000, description: '数量变化：正数入库，负数出库（支持 3 位小数）' },
         reason: { type: 'string', description: '调整原因（可选，如 入库上架 / 盘点 / 报损）' },
         orderNo: { type: 'string', description: '关联单据号（可选）' },
         locationCode: { type: 'string', description: '库位编码（可选，缺省为默认库位 DEFAULT）' },
@@ -51,21 +54,19 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
       const sku = ws.skus.byCode(params.skuCode);
       if (!sku) throw new SkuNotFoundError(params.skuCode);
       const loc = resolveLocation(ws, params.locationCode);
-      if (params.delta === 0) {
-        throw new Error('TOOL_REJECTED: delta 不能为 0');
-      }
-      if (params.delta < 0 && params.batchExpiryDate) {
+      const delta = assertNonZeroQty(params.delta, 'delta');
+      if (delta < 0 && params.batchExpiryDate) {
         throw new Error('TOOL_REJECTED: 出库（负 delta）不支持批次效期——效期随入库声明');
       }
       const batch = resolveBatch(params.batchNo, params.batchExpiryDate);
       // 批次效期一致性（M11）：新批次登记 / 老批次比对（建批 fail-fast）
       assertExpiryConsistent(ws, sku.id, sku.skuCode, batch.batchNo, batch.batchExpiryDate);
-      if (params.delta < 0) {
+      if (delta < 0) {
         const available = ws.inventory.quantityOf(sku.id, loc.locationId, batch.batchNo);
-        if (available + params.delta < 0) {
+        if (available + delta < -QTY_EPS) {
           throw new InsufficientStockError(
             bucketLabel(sku.skuCode, loc.locationCode, batch.batchNo),
-            params.delta,
+            delta,
             available,
           );
         }
@@ -79,8 +80,8 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
       ctx.appendEvent(WMS_EVENT_TYPES.inventoryAdjusted, {
         skuId: sku.id,
         skuCode: sku.skuCode,
-        delta: params.delta,
-        reason: params.reason ?? (params.delta > 0 ? 'inbound' : 'outbound'),
+        delta,
+        reason: params.reason ?? (delta > 0 ? 'inbound' : 'outbound'),
         locationId: loc.locationId,
         locationCode: loc.locationCode,
         batchNo: batch.batchNo,
@@ -109,7 +110,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
     id: 'wms.inventory.move',
     label: '移库',
     description:
-      '把某 SKU 的库存从一个库位移到另一个库位（同批次数量转移，总量不变）。fromLocationCode / toLocationCode 缺省均为默认库位 DEFAULT；可选 batchNo 指定批次（缺省为虚拟批次 DEFAULT）——移的是该批次的货，源与目标不能相同；源库位该批次余量不足会拒绝。移库产生一对 transfer 流水（-源 / +目标），可审计。',
+      '把某 SKU 的库存从一个库位移到另一个库位（同批次数量转移，总量不变，数量支持 3 位小数）。fromLocationCode / toLocationCode 缺省均为默认库位 DEFAULT；可选 batchNo 指定批次（缺省为虚拟批次 DEFAULT）——移的是该批次的货，源与目标不能相同；源库位该批次余量不足会拒绝。移库产生一对 transfer 流水（-源 / +目标），可审计。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -117,7 +118,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         skuCode: { type: 'string', description: 'SKU 编码' },
         fromLocationCode: { type: 'string', description: '源库位编码（可选，缺省 DEFAULT）' },
         toLocationCode: { type: 'string', description: '目标库位编码（可选，缺省 DEFAULT）' },
-        quantity: { type: 'integer', minimum: 1, maximum: 1000000000, description: '移库数量（正整数）' },
+        quantity: { type: 'number', minimum: 0.001, maximum: 1000000000, description: '移库数量（正数，支持 3 位小数）' },
         batchNo: { type: 'string', description: '批次号（可选，缺省为虚拟批次 DEFAULT）' },
       },
       required: ['skuCode', 'quantity'],
@@ -127,9 +128,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
       ws.sync();
       const sku = ws.skus.byCode(params.skuCode);
       if (!sku) throw new SkuNotFoundError(params.skuCode);
-      if (!Number.isInteger(params.quantity) || params.quantity <= 0) {
-        throw new Error('TOOL_REJECTED: quantity 必须是正整数');
-      }
+      const quantity = assertPositiveQty(params.quantity, 'quantity');
       const from = resolveLocation(ws, params.fromLocationCode);
       const to = resolveLocation(ws, params.toLocationCode);
       const batch = resolveBatch(params.batchNo, undefined); // 移库不带效期（批次属性已在入库登记）
@@ -137,10 +136,10 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         throw new Error('TOOL_REJECTED: 源库位与目标库位相同');
       }
       const available = ws.inventory.quantityOf(sku.id, from.locationId, batch.batchNo);
-      if (available < params.quantity) {
+      if (available + QTY_EPS < quantity) {
         throw new InsufficientStockError(
           bucketLabel(sku.skuCode, from.locationCode, batch.batchNo),
-          params.quantity,
+          -quantity,
           available,
         );
       }
@@ -150,7 +149,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         ctx.appendEvent(WMS_EVENT_TYPES.inventoryAdjusted, {
           skuId: sku.id,
           skuCode: sku.skuCode,
-          delta: -params.quantity,
+          delta: -quantity,
           reason: 'transfer',
           locationId: from.locationId,
           locationCode: from.locationCode,
@@ -159,7 +158,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         ctx.appendEvent(WMS_EVENT_TYPES.inventoryAdjusted, {
           skuId: sku.id,
           skuCode: sku.skuCode,
-          delta: params.quantity,
+          delta: quantity,
           reason: 'transfer',
           locationId: to.locationId,
           locationCode: to.locationCode,
@@ -172,7 +171,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         from: from.locationCode,
         to: to.locationCode,
         batchNo: batch.batchNo,
-        quantity: params.quantity,
+        quantity,
         fromBalance: ws.inventory.quantityOf(sku.id, from.locationId, batch.batchNo),
         toBalance: ws.inventory.quantityOf(sku.id, to.locationId, batch.batchNo),
       };
@@ -183,13 +182,13 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
     id: 'wms.inventory.hold',
     label: '冻结库存',
     description:
-      '冻结某 SKU 的一部分数量（如 质检隔离 / 客订预留 / 促销占位）。冻结不改物理库存、不产生流水——只是把数量标记为不可出库：单据出库（拣货/发货）会校验可用量 = 全库位合计余量 − 冻结合计，不足即拒。同 SKU 可多笔冻结；已冻结合计 + 本次不能超过账面余量。释放用 wms.inventory.release（按 holdId）。',
+      '冻结某 SKU 的一部分数量（如 质检隔离 / 客订预留 / 促销占位，数量支持 3 位小数）。冻结不改物理库存、不产生流水——只是把数量标记为不可出库：单据出库（拣货/发货）会校验可用量 = 全库位合计余量 − 冻结合计，不足即拒。同 SKU 可多笔冻结；已冻结合计 + 本次不能超过账面余量。释放用 wms.inventory.release（按 holdId）。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
         skuCode: { type: 'string', description: 'SKU 编码' },
-        quantity: { type: 'integer', minimum: 1, maximum: 1000000000, description: '冻结数量（正整数）' },
+        quantity: { type: 'number', minimum: 0.001, maximum: 1000000000, description: '冻结数量（正数，支持 3 位小数）' },
         reason: { type: 'string', description: '冻结原因（如 质检隔离 / 客订预留）' },
       },
       required: ['skuCode', 'quantity'],
@@ -199,30 +198,28 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
       ws.sync();
       const sku = ws.skus.byCode(params.skuCode);
       if (!sku) throw new SkuNotFoundError(params.skuCode);
-      if (!Number.isInteger(params.quantity) || params.quantity <= 0) {
-        throw new Error('TOOL_REJECTED: quantity 必须是正整数');
-      }
+      const quantity = assertPositiveQty(params.quantity, 'quantity');
       const total = ws.inventory.totalOf(sku.id);
       const held = ws.inventory.heldOf(sku.id);
-      if (held + params.quantity > total) {
-        throw new HoldExceedsStockError(sku.skuCode, params.quantity, total, held);
+      if (held + quantity > total + QTY_EPS) {
+        throw new HoldExceedsStockError(sku.skuCode, quantity, total, held);
       }
       const holdId = randomUUID();
       ctx.appendEvent(WMS_EVENT_TYPES.inventoryHeld, {
         holdId,
         skuId: sku.id,
         skuCode: sku.skuCode,
-        quantity: params.quantity,
+        quantity,
         reason: params.reason ?? 'hold',
       });
       ws.sync();
       return {
         holdId,
         skuCode: sku.skuCode,
-        quantity: params.quantity,
+        quantity,
         total,
-        held: held + params.quantity,
-        available: total - held - params.quantity,
+        held: held + quantity,
+        available: total - held - quantity,
       };
     },
   };
@@ -424,6 +421,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
       }
       return skus
         .filter((s) => s.reorderPoint > 0)
+        .filter((s) => (s.status ?? 'active') === 'active') // A2：停用档退出预警（存量照常可扣）
         .map((s) => {
           const total = ws.inventory.totalOf(s.id);
           const held = ws.inventory.heldOf(s.id);
@@ -467,20 +465,118 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         locationId === DEFAULT_LOCATION_ID
           ? '默认库位'
           : (ws.locations.byId(locationId)?.name ?? '(未知库位)');
-      return ws.inventory.listExpiring(days, today).map((r) => {
-        const sku = ws.skus.byId(r.skuId);
-        return {
-          skuId: r.skuId,
-          skuCode: sku?.skuCode ?? '(已删除)',
-          name: sku?.name ?? '',
-          locationCode: codeOfLocation(ws, r.locationId),
-          locationName: nameOf(r.locationId),
-          batchNo: r.batchNo,
-          batchExpiryDate: r.batchExpiryDate,
-          daysLeft: Math.round((Date.parse(r.batchExpiryDate!) - Date.parse(today)) / 86400000),
-          quantity: r.quantity,
-        };
+      return ws.inventory
+        .listExpiring(days, today)
+        .filter((r) => (ws.skus.byId(r.skuId)?.status ?? 'active') !== 'archived') // A2：停用档退出效期预警
+        .map((r) => {
+          const sku = ws.skus.byId(r.skuId);
+          return {
+            skuId: r.skuId,
+            skuCode: sku?.skuCode ?? '(已删除)',
+            name: sku?.name ?? '',
+            locationCode: codeOfLocation(ws, r.locationId),
+            locationName: nameOf(r.locationId),
+            batchNo: r.batchNo,
+            batchExpiryDate: r.batchExpiryDate,
+            daysLeft: Math.round((Date.parse(r.batchExpiryDate!) - Date.parse(today)) / 86400000),
+            quantity: r.quantity,
+          };
+        });
+    },
+  };
+
+  const ledgerQuery: ToolDefinition<{
+    skuCode?: string;
+    locationCode?: string;
+    orderNo?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  }> = {
+    id: 'wms.ledger.query',
+    label: '查询库存流水',
+    description:
+      '查询库存变动流水（审计账本：每笔 ±变动一事件一行，append-only 不可篡改）。' +
+      '支持按 skuCode（SKU 编码）、locationCode（库位编码）、orderNo（关联单据号）过滤，' +
+      'from/to 是 ISO 时间闭区间（YYYY-MM-DD 或完整时间戳）。' +
+      '最新在前；limit 默认 20（上限 200）、offset 翻页；返回 { total, limit, offset, hasMore, rows }。' +
+      '每行含 createdAt / skuCode / locationCode / batchNo / delta（正入负出）/ reason / orderNo。' +
+      '查「最近的库存变动」「某 SKU 的出入库历史」「某单据动了哪些库存」用本工具；纯读操作。',
+    permission: 'read',
+    parameters: {
+      type: 'object',
+      properties: {
+        skuCode: { type: 'string', description: 'SKU 编码（可选过滤）' },
+        locationCode: { type: 'string', description: '库位编码（可选过滤）' },
+        orderNo: { type: 'string', description: '关联单据号（可选过滤）' },
+        from: { type: 'string', description: '起始时间（ISO，含）' },
+        to: { type: 'string', description: '结束时间（ISO，含）' },
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: '每页行数（缺省 20）' },
+        offset: { type: 'integer', minimum: 0, description: '跳过行数（缺省 0，翻页用）' },
+      },
+      required: [],
+    },
+    handler: (params, ctx) => {
+      const ws = resolveWorkspace(ctx.workspaceId);
+      ws.sync();
+      const limit = params.limit ?? 20;
+      const offset = params.offset ?? 0;
+
+      let skuId: string | undefined;
+      if (params.skuCode) {
+        const sku = ws.skus.byCode(params.skuCode);
+        if (!sku) throw new SkuNotFoundError(params.skuCode);
+        skuId = sku.id;
+      }
+      const loc = params.locationCode ? resolveLocation(ws, params.locationCode) : undefined;
+      let orderId: string | undefined;
+      if (params.orderNo) {
+        const order = ws.orders.byNo(params.orderNo);
+        if (!order) throw new OrderNotFoundError(params.orderNo);
+        orderId = order.id;
+      }
+
+      const { rows, total } = ws.inventory.listLedgerPage({
+        skuId,
+        locationId: loc?.locationId,
+        orderId,
+        from: params.from,
+        to: params.to,
+        limit,
+        offset,
       });
+
+      // orderId → orderNo 换算缓存：页内同一单据只查一次投影
+      const orderNoOf = new Map<string, string>();
+      const resolveOrderNo = (id: string | null): string | null => {
+        if (!id) return null;
+        let no = orderNoOf.get(id);
+        if (no === undefined) {
+          no = ws.orders.byId(id)?.orderNo ?? '(未知单据)';
+          orderNoOf.set(id, no);
+        }
+        return no;
+      };
+
+      return {
+        total,
+        limit,
+        offset,
+        hasMore: offset + rows.length < total,
+        rows: rows.map((r) => {
+          const sku = ws.skus.byId(r.skuId);
+          return {
+            createdAt: r.createdAt,
+            skuCode: sku?.skuCode ?? '(已删除)',
+            locationCode: codeOfLocation(ws, r.locationId),
+            batchNo: r.batchNo,
+            delta: r.delta,
+            reason: r.reason,
+            orderNo: resolveOrderNo(r.orderId),
+          };
+        }),
+      };
     },
   };
 
@@ -493,5 +589,6 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
     def(inventoryHolds),
     def(inventoryLowstock),
     def(inventoryExpiring),
+    def(ledgerQuery),
   ];
 }

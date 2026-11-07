@@ -33,6 +33,7 @@ import type { Stocktake, StocktakeLine } from '../api/client';
 import ScanInput from '../components/ScanInput';
 import PageHeader from '../components/PageHeader';
 import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { fmtQty } from '../lib/format';
 
 /**
  * 盘点页（M17）：清单（状态 + 范围 + 进度）→ 新建（范围勾选）→ 明细
@@ -336,7 +337,14 @@ function StocktakeDetailModal({ no, onClose }: { no: string | null; onClose: () 
     { title: '名称', dataIndex: 'name', key: 'name' },
     { title: '库位', dataIndex: 'locationCode', key: 'locationCode', onCell: monoCell },
     { title: '批次', dataIndex: 'batchNo', key: 'batchNo', onCell: monoCell },
-    { title: '账面快照', dataIndex: 'expectedQty', key: 'expectedQty', align: 'right', onCell: numCell },
+    {
+      title: '账面快照',
+      dataIndex: 'expectedQty',
+      key: 'expectedQty',
+      align: 'right',
+      onCell: numCell,
+      render: (v: number, l) => fmtQty(v, l.unit),
+    },
     {
       title: '实盘数',
       key: 'countedQty',
@@ -347,7 +355,7 @@ function StocktakeDetailModal({ no, onClose }: { no: string | null; onClose: () 
           <InputNumber
             size="small"
             min={0}
-            precision={0}
+            precision={3}
             placeholder="待盘"
             value={drafts[lineKey(l)] ?? l.countedQty ?? undefined}
             onChange={(v) => {
@@ -357,10 +365,17 @@ function StocktakeDetailModal({ no, onClose }: { no: string | null; onClose: () 
             onPressEnter={() => commit(l)}
           />
         ) : (
-          (l.countedQty ?? '未盘')
+          (l.countedQty !== null ? fmtQty(l.countedQty, l.unit) : '未盘')
         ),
     },
-    { title: '当前账面', dataIndex: 'bookQty', key: 'bookQty', align: 'right', onCell: numCell },
+    {
+      title: '当前账面',
+      dataIndex: 'bookQty',
+      key: 'bookQty',
+      align: 'right',
+      onCell: numCell,
+      render: (v: number, l) => fmtQty(v, l.unit),
+    },
     {
       title: '差异',
       key: 'delta',

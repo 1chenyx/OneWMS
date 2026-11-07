@@ -85,12 +85,15 @@ function countEvents(): number {
 }
 
 describe('设置种子与兜底（M13）', () => {
-  it('新库种子：settings 四键 = manifest default（strict / false / 7 / 30）', () => {
+  it('新库种子：settings = manifest default（含效应状态名 received / shipped / picking）', () => {
     expect(ws.profile.getSnapshot().modules['core.wms']?.settings).toEqual({
       defaultAllocation: 'strict',
       blockExpiredOutbound: false,
       expiryCriticalDays: 7,
       expiryWarningDays: 30,
+      inboundIncreaseState: 'received',
+      outboundDecreaseState: 'shipped',
+      outboundCheckState: 'picking',
     });
   });
 

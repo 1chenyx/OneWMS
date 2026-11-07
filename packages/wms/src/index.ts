@@ -12,7 +12,12 @@ export { WmsDomain, WmsWorkspace } from './wms.js';
 
 export { SkuView, type SkuRecord } from './views/sku-view.js';
 export { LocationView, type LocationRecord } from './views/location-view.js';
-export { OrderView, type OrderRecord, type OrderLineRecord } from './views/order-view.js';
+export {
+  OrderView,
+  type OrderRecord,
+  type OrderLineRecord,
+  type OrderConflictRecord,
+} from './views/order-view.js';
 export {
   InventoryView,
   type InventoryRecord,
@@ -57,6 +62,7 @@ export type {
   LocationCreatedPayload,
   OrderCreatedPayload,
   OrderStateChangedPayload,
+  OrderConflictResolvedPayload,
   OrderLinePayload,
   InventoryAdjustedPayload,
   InventoryHeldPayload,
@@ -100,6 +106,7 @@ export {
   getExpiryBoard,
   listHoldRows,
   listInventorySummary,
+  listLedger,
 } from './queries/inventory-queries.js';
 export type {
   ExpiryBatchRow,
@@ -107,6 +114,7 @@ export type {
   ExpiryLevel,
   HoldListRow,
   InventorySummaryRow,
+  LedgerRow,
 } from './queries/inventory-queries.js';
 export {
   getStocktakeDetail,
@@ -138,6 +146,8 @@ export {
   HoldExceedsStockError,
   HoldNotFoundError,
   OrderStateConflictError,
+  OrderConflictNotFoundError,
+  OrderConflictClosedError,
   StocktakeNotFoundError,
   StocktakeExistsError,
   StocktakeNotOpenError,
@@ -148,6 +158,11 @@ export {
   PartnerKindMismatchError,
   PutawayLineNotFoundError,
   PutawaySourceShortError,
+  PartialDisabledError,
+  PartialLineNotFoundError,
+  PartialQtyExceededError,
+  PartialUnwindError,
+  PartialNotOnPostError,
   PickingNotFoundError,
   PickingExistsError,
   PickingNotOpenError,

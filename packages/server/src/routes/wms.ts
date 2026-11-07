@@ -9,6 +9,7 @@ import {
   getStocktakeDetail,
   listHoldRows,
   listInventorySummary,
+  listLedger,
   listOrdersWithLines,
   listPickingsWithLines,
   listStocktakes,
@@ -38,39 +39,58 @@ export function wmsRoutes(ctx: AppContext): Hono {
   return new Hono()
     // ── SKU ─────────────────────────────────────────────
     // barcode = 精确匹配（扫码枪入口）；q = 三字段模糊（编码/名称/条码）。
+    // A2 软停用：默认只回启用档（选择器/下拉零改动自动排除停用）；includeArchived=1 回全量；
+    // barcode 精确查询不过滤——扫码定位语义（停用 SKU 的存量库存照常可扫）。
     .get('/skus', (c) => {
       const barcode = c.req.query('barcode');
       const q = c.req.query('q');
-      let rows = ctx.ws.skus.list();
-      if (barcode) rows = rows.filter((s) => s.barcode === barcode);
-      if (q) {
-        const kw = q.toLowerCase();
-        rows = rows.filter(
-          (s) =>
-            s.skuCode.toLowerCase().includes(kw) ||
-            s.name.toLowerCase().includes(kw) ||
-            (s.barcode ?? '').toLowerCase().includes(kw),
-        );
-      }
-      return c.json(rows);
+      const includeArchived = c.req.query('includeArchived') === '1';
+      return c.json(
+        ctx.ws.skus.listMatching({
+          barcode: barcode || undefined,
+          q: q || undefined,
+          includeArchived: includeArchived || Boolean(barcode),
+        }),
+      );
     })
     .post('/skus', async (c) => {
       const body = await c.req.json();
       return c.json(await ctx.ws.tools.invoke('wms.sku.create', body, actorOf(ctx)), 201);
     })
+    .put('/skus/:skuCode', async (c) => {
+      const body = await c.req.json();
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.sku.update',
+          { ...body, skuCode: c.req.param('skuCode') },
+          actorOf(ctx),
+        ),
+      );
+    })
+    .post('/skus/:skuCode/archive', async (c) => {
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.sku.archive',
+          { skuCode: c.req.param('skuCode') },
+          actorOf(ctx),
+        ),
+      );
+    })
+    .post('/skus/:skuCode/unarchive', async (c) => {
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.sku.unarchive',
+          { skuCode: c.req.param('skuCode') },
+          actorOf(ctx),
+        ),
+      );
+    })
     // ── 往来单位（M21：供应商/客户统一档案；q = 编码/名称模糊）──
     .get('/partners', (c) => {
       const kind = c.req.query('kind');
       const q = c.req.query('q');
-      let rows =
-        kind === 'supplier' || kind === 'customer' ? ctx.ws.partners.list(kind) : ctx.ws.partners.list();
-      if (q) {
-        const kw = q.toLowerCase();
-        rows = rows.filter(
-          (p) => p.partnerCode.toLowerCase().includes(kw) || p.name.toLowerCase().includes(kw),
-        );
-      }
-      return c.json(rows);
+      const kindFilter = kind === 'supplier' || kind === 'customer' ? kind : undefined;
+      return c.json(ctx.ws.partners.listMatching({ kind: kindFilter, q: q || undefined }));
     })
     .post('/partners', async (c) => {
       const body = await c.req.json();
@@ -147,11 +167,34 @@ export function wmsRoutes(ctx: AppContext): Hono {
       const body = await c.req.json();
       return c.json(await ctx.ws.tools.invoke('wms.order.create', body, actorOf(ctx)), 201);
     })
+    .get('/order-conflicts', (c) => c.json(ctx.ws.orders.listConflicts('open')))
+    .post('/order-conflicts/:eventId/accept', async (c) => {
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.order.conflict.accept',
+          { eventId: c.req.param('eventId') },
+          actorOf(ctx),
+        ),
+      );
+    })
+    .post('/order-conflicts/:eventId/dismiss', async (c) => {
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.order.conflict.dismiss',
+          { eventId: c.req.param('eventId') },
+          actorOf(ctx),
+        ),
+      );
+    })
     .post('/orders/:orderNo/transition', async (c) => {
       const body = await c.req.json();
       const result = await ctx.ws.tools.invoke(
         'wms.order.transition',
-        { orderNo: c.req.param('orderNo'), to: body.to },
+        {
+          orderNo: c.req.param('orderNo'),
+          to: body.to,
+          lines: Array.isArray(body.lines) && body.lines.length > 0 ? body.lines : undefined,
+        },
         actorOf(ctx),
       );
       return c.json(result);
@@ -172,6 +215,40 @@ export function wmsRoutes(ctx: AppContext): Hono {
     })
     // ── 库存 ────────────────────────────────────────────
     .get('/inventory', (c) => c.json(listInventorySummary(ctx.ws)))
+    /**
+     * 库存分桶明细（SKU×库位×批次）——CSV 导出用：汇总行看不出东西放在哪、
+     * 哪一批快过期，导账必须到桶粒度。零余量的桶滤掉（已清空的桶没有导出价值）。
+     */
+    .get('/inventory/buckets', (c) => {
+      const rows = ctx.ws.inventory
+        .list()
+        .filter((r) => r.quantity !== 0)
+        .map((r) => {
+          const sku = ctx.ws.skus.byId(r.skuId);
+          const loc = ctx.ws.locations.byId(r.locationId);
+          return {
+            skuCode: sku?.skuCode ?? '(未知)',
+            name: sku?.name ?? '',
+            unit: sku?.unit ?? null, // A3：CSV 导出带单位
+            locationCode: loc?.locationCode ?? r.locationId,
+            batchNo: r.batchNo,
+            batchExpiryDate: r.batchExpiryDate,
+            quantity: r.quantity,
+          };
+        });
+      return c.json(rows);
+    })
+    /** 库存流水（导出 / 对账）——append-only 真相层，倒序，limit ≤ 5000 */
+    .get('/inventory/ledger', (c) => {
+      const limitRaw = c.req.query('limit');
+      const skuCode = c.req.query('skuCode');
+      return c.json(
+        listLedger(ctx.ws, {
+          limit: limitRaw ? Number(limitRaw) : undefined,
+          skuCode: skuCode || undefined,
+        }),
+      );
+    })
     .post('/inventory/adjust', async (c) => {
       const body = await c.req.json();
       return c.json(await ctx.ws.tools.invoke('wms.inventory.adjust', body, actorOf(ctx)));
@@ -194,7 +271,31 @@ export function wmsRoutes(ctx: AppContext): Hono {
     // ── 效期看板（M14；M15 阈值 settings 化 + 库位明细）──
     .get('/inventory/expiry', (c) => c.json(getExpiryBoard(ctx.ws)))
     // ── 库位（M10 实体；GET 是 M17 盘点范围勾选的数据源）──
-    .get('/locations', (c) => c.json(ctx.ws.locations.list()))
+    .get('/locations', (c) => {
+      const q = c.req.query('q');
+      let rows = ctx.ws.locations.list();
+      if (q) {
+        const kw = q.toLowerCase();
+        rows = rows.filter(
+          (l) => l.locationCode.toLowerCase().includes(kw) || l.name.toLowerCase().includes(kw),
+        );
+      }
+      return c.json(rows);
+    })
+    .post('/locations', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.location.create', body, actorOf(ctx)), 201);
+    })
+    .put('/locations/:locationCode', async (c) => {
+      const body = await c.req.json();
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.location.update',
+          { ...body, locationCode: c.req.param('locationCode') },
+          actorOf(ctx),
+        ),
+      );
+    })
     // ── 盘点（M17：清单+进度 / 创建 / 明细 / 录实盘 / 关单 / 取消）──
     .get('/stocktakes', (c) => c.json(listStocktakes(ctx.ws)))
     .post('/stocktakes', async (c) => {

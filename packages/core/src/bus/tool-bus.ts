@@ -1,5 +1,6 @@
 import { ToolNotFoundError, ToolValidationError } from '../errors.js';
 import { validateParameters, type ParameterSchema } from './schema-validator.js';
+import { AI_RESULT_MAX_BYTES, fitResultForAi } from './ai-result-guard.js';
 
 /**
  * 工具总线（ToolBus，DESIGN.md §4 宪法 / §9）。
@@ -61,8 +62,12 @@ export class ToolBus {
   }
 
   /**
-   * 调用工具：存在性 → 参数校验 → handler。
+   * 调用工具：存在性 → 参数校验 → handler → AI 守门。
    * 注意：总线本身不做业务校验——那是 handler（工具）内部的事（§7 规则即护栏）。
+   *
+   * AI 守门（宪法级护栏）：actor 为 'ai:*' 时，结果超上下文预算（32KB）自动截断
+   * ——LLM 上下文是有限资源，全量查询结果（流水/oplog 等增长表）不得原样注入。
+   * REST 路由与内部调用的 actor 非 ai 前缀，结果原样返回（面向 HTTP，不受影响）。
    */
   async invoke(toolId: string, params: unknown, ctx: ToolContext): Promise<unknown> {
     const tool = this.#tools.get(toolId);
@@ -70,6 +75,10 @@ export class ToolBus {
       throw new ToolNotFoundError(`工具未注册: ${toolId}`);
     }
     validateParameters(tool.parameters, params ?? {});
-    return tool.handler(params, ctx);
+    const result = await tool.handler(params, ctx);
+    if (typeof ctx.actor === 'string' && ctx.actor.startsWith('ai:')) {
+      return fitResultForAi(result, AI_RESULT_MAX_BYTES);
+    }
+    return result;
   }
 }

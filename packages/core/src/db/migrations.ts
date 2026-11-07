@@ -9,7 +9,7 @@ import type { Database as SqliteDatabase } from 'better-sqlite3';
  *  - profile_state —— §8.2 config.change 事件的投影（慢通道，里程碑 4）；
  *  - meta —— 节点身份等运行时元数据。
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export function migrate(db: SqliteDatabase): void {
   const current = db.pragma('user_version', { simple: true }) as number;
@@ -33,6 +33,8 @@ export function migrate(db: SqliteDatabase): void {
         ON oplog (workspace_id, lamport, actor);
       CREATE INDEX IF NOT EXISTS idx_oplog_type
         ON oplog (workspace_id, type);
+      CREATE INDEX IF NOT EXISTS idx_oplog_time
+        ON oplog (workspace_id, created_at);
     `);
 
     // ── 双时钟水位（事务内 UPSERT 递增，见 OplogStore）──

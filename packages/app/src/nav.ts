@@ -9,6 +9,7 @@ import {
   ControlOutlined,
   DashboardOutlined,
   DatabaseOutlined,
+  EnvironmentOutlined,
   FieldTimeOutlined,
   MessageOutlined,
   PieChartOutlined,
@@ -16,6 +17,8 @@ import {
   ReconciliationOutlined,
   RobotOutlined,
   SettingOutlined,
+  SwapOutlined,
+  TagsOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
 import type { Page } from './app-nav';
@@ -82,7 +85,10 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
     icon: BookOutlined,
     items: [
       { page: 'skus', label: 'SKU 管理', icon: AppstoreOutlined },
+      { page: 'locations', label: '库位管理', icon: EnvironmentOutlined },
       { page: 'partners', label: '往来单位', icon: TeamOutlined },
+      { page: 'dataPort', label: '导入导出', icon: SwapOutlined },
+      { page: 'labels', label: '条码标签', icon: TagsOutlined },
     ],
   },
   {

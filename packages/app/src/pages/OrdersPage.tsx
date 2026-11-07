@@ -1,15 +1,17 @@
 import { useState } from 'react';
-import { DownOutlined, PlusOutlined, VerticalAlignTopOutlined } from '@ant-design/icons';
-import { App as AntApp, Button, Card, Dropdown, Input, Segmented, Table, Tag, Tooltip, Typography } from 'antd';
+import { DownOutlined, PlusOutlined, PrinterOutlined, VerticalAlignTopOutlined } from '@ant-design/icons';
+import { Alert, App as AntApp, Button, Card, Dropdown, Input, InputNumber, Segmented, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ProfileSnapshot } from '@one/core';
-import { useOrders, useProfileSnapshot, useTransitionOrder } from '../api/hooks';
+import { evalWhenCondition } from '@one/core/when';
+import { useAcceptConflict, useDismissConflict, useOrderConflicts, useOrders, useProfileSnapshot, useTransitionOrder } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { Order, OrderLine } from '../api/client';
 import OrderFormModal from '../components/OrderFormModal';
 import PutawayModal from '../components/PutawayModal';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { TABLE_PAGINATION, monoCell, numCell, printTd, printTh } from '../components/table-style';
+import { fmtQty } from '../lib/format';
 import { useAppNav } from '../app-nav';
 
 /**
@@ -31,8 +33,13 @@ export default function OrdersPage() {
   const { data: orders, isLoading } = useOrders(direction === 'all' ? undefined : direction);
   const snapshot = useProfileSnapshot();
   const transition = useTransitionOrder();
+  const conflicts = useOrderConflicts();
+  const acceptConflict = useAcceptConflict();
+  const dismissConflict = useDismissConflict();
   const [formOpen, setFormOpen] = useState(false);
   const [putawayOrder, setPutawayOrder] = useState<Order | null>(null);
+  /** A1 打印：正在打印的单据（非空 = 打印区已挂载，可拉起系统打印） */
+  const [printOrder, setPrintOrder] = useState<Order | null>(null);
   const [orderNoFilter, setOrderNoFilter] = useState(() => takeInitialFilter()?.orderNo ?? '');
 
   const noKw = orderNoFilter.trim().toLowerCase();
@@ -40,13 +47,74 @@ export default function OrdersPage() {
     ? (orders ?? []).filter((o) => o.orderNo.toLowerCase().includes(noKw))
     : (orders ?? []);
 
-  const doTransition = async (orderNo: string, to: string) => {
+  const doTransition = async (
+    orderNo: string,
+    to: string,
+    lines?: { skuCode: string; quantity: number; locationCode?: string; batchNo?: string }[],
+  ) => {
     try {
-      await transition.mutateAsync({ orderNo, to });
+      await transition.mutateAsync(lines ? { orderNo, to, lines } : { orderNo, to });
       message.success(`${orderNo} → ${stateLabel(snapshot.data, to)}`);
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : `操作失败：${String(e)}`);
     }
+  };
+
+  const askTransition = (order: Order, to: string) => {
+    const partial = allowsPartialQty(snapshot.data, order.direction, order.state, to);
+    const draft = order.lines.map((l) => l.quantity);
+    const qtyWord = order.direction === 'in' ? '实收' : '实发';
+    modal.confirm({
+      title: `确认流转到「${stateLabel(snapshot.data, to, order.direction)}」？`,
+      width: partial ? 520 : undefined,
+      content: partial ? (
+        <div>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            {qtyWord}可以少于订单数量，库存按这个数入账。不改则按订单数量整单入账。
+          </Typography.Paragraph>
+          {order.lines.map((l, i) => (
+            <div key={`${l.skuCode}#${i}`} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+              <Typography.Text code>{l.skuCode}</Typography.Text>
+              <span>订单 {fmtQty(l.quantity, l.unit)}</span>
+              <InputNumber
+                aria-label={`${l.skuCode} ${qtyWord}数量`}
+                min={0}
+                max={l.quantity}
+                precision={3}
+                defaultValue={l.quantity}
+                onChange={(v) => {
+                  draft[i] = typeof v === 'number' ? v : l.quantity;
+                }}
+                style={{ width: 120 }}
+              />
+            </div>
+          ))}
+        </div>
+      ) : undefined,
+      onOk: () => {
+        if (!partial) return doTransition(order.orderNo, to);
+        const lines = order.lines.map((l, i) => ({
+          skuCode: l.skuCode,
+          locationCode: l.locationCode,
+          batchNo: l.batchNo,
+          quantity: draft[i] ?? l.quantity,
+        }));
+        const changed = lines.some((l, i) => l.quantity !== order.lines[i]!.quantity);
+        return doTransition(order.orderNo, to, changed ? lines : undefined);
+      },
+    });
+  };
+
+  /** 打印出入库单（A1）：先挂打印区（纸质单据含效期/批次/库位与签收栏），
+   *  绘完最后一帧再拉起系统打印对话框；打完（afterprint）卸掉打印区。 */
+  const doPrint = (r: Order) => {
+    setPrintOrder(r);
+    const cleanup = () => {
+      setPrintOrder(null);
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.setTimeout(() => window.print(), 60);
   };
 
   const columns: ColumnsType<Order> = [
@@ -98,6 +166,21 @@ export default function OrdersPage() {
       sorter: (a, b) => a.createdAt.localeCompare(b.createdAt),
     },
     {
+      title: '打印',
+      key: 'print',
+      width: 64,
+      render: (_, r) => (
+        <Tooltip title="打印单据（A1）">
+          <Button
+            size="small"
+            icon={<PrinterOutlined />}
+            aria-label="打印单据"
+            onClick={() => doPrint(r)}
+          />
+        </Tooltip>
+      ),
+    },
+    {
       title: '流转',
       key: 'actions',
       width: 150,
@@ -129,11 +212,7 @@ export default function OrdersPage() {
                   key: to,
                   label: stateLabel(snapshot.data, to, r.direction),
                 })),
-                onClick: ({ key }) =>
-                  modal.confirm({
-                    title: `确认流转到「${stateLabel(snapshot.data, key, r.direction)}」？`,
-                    onOk: () => doTransition(r.orderNo, key),
-                  }),
+                onClick: ({ key }) => askTransition(r, key),
               }}
             >
               <Button
@@ -178,6 +257,47 @@ export default function OrdersPage() {
           </>
         }
       />
+      {(conflicts.data ?? []).length > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="有单据状态冲突待裁决"
+          description={
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {(conflicts.data ?? []).map((c) => (
+                <div key={c.eventId}>
+                  <Typography.Text code>{c.orderNo}</Typography.Text>
+                  {` 停在 ${c.actualState}，另一条事件要改成 ${c.toState}。接受会按当前流程再走一次转移（可能动库存）；驳回则保持现状。`}
+                  <Button
+                    size="small"
+                    type="link"
+                    onClick={() =>
+                      acceptConflict.mutate(c.eventId, {
+                        onSuccess: () => message.success(`${c.orderNo} 已按冲突目标转移`),
+                        onError: (e) => message.error(e instanceof ApiError ? e.message : String(e)),
+                      })
+                    }
+                  >
+                    接受
+                  </Button>
+                  <Button
+                    size="small"
+                    type="link"
+                    onClick={() =>
+                      dismissConflict.mutate(c.eventId, {
+                        onSuccess: () => message.success(`${c.orderNo} 的冲突已驳回`),
+                        onError: (e) => message.error(e instanceof ApiError ? e.message : String(e)),
+                      })
+                    }
+                  >
+                    驳回
+                  </Button>
+                </div>
+              ))}
+            </div>
+          }
+        />
+      ) : null}
       <Card>
         <Table<Order>
           rowKey="id"
@@ -202,6 +322,21 @@ export default function OrdersPage() {
                     align: 'right',
                     width: 120,
                     onCell: numCell,
+                    render: (v: number, l) => fmtQty(v, l.unit),
+                  },
+                  {
+                    title: '已入账',
+                    dataIndex: 'fulfilledQty',
+                    key: 'fulfilledQty',
+                    align: 'right',
+                    width: 120,
+                    onCell: numCell,
+                    render: (v: number | null | undefined, l) =>
+                      v == null ? (
+                        <Typography.Text type="secondary">—</Typography.Text>
+                      ) : (
+                        fmtQty(Math.abs(v), l.unit)
+                      ),
                   },
                   { title: '批次', dataIndex: 'batchNo', key: 'batchNo', width: 110, onCell: monoCell },
                   {
@@ -222,6 +357,59 @@ export default function OrdersPage() {
         <OrderFormModal open={formOpen} onClose={() => setFormOpen(false)} />
         <PutawayModal open={putawayOrder !== null} order={putawayOrder} onClose={() => setPutawayOrder(null)} />
       </Card>
+
+      {printOrder ? (
+        <Card title={`打印预览：${printOrder.direction === 'in' ? '入库单' : '出库单'} ${printOrder.orderNo}`}>
+          <div id="order-print-area" style={{ maxWidth: 720 }}>
+            <Typography.Title level={4} style={{ marginTop: 0 }}>
+              {printOrder.direction === 'in' ? '入库单' : '出库单'} {printOrder.orderNo}
+            </Typography.Title>
+            <div style={{ fontSize: 12, color: '#444', marginBottom: 8 }}>
+              创建时间：{printOrder.createdAt.slice(0, 19).replace('T', ' ')}
+              {printOrder.partnerName ? `　往来单位：${printOrder.partnerName}` : ''}
+              {printOrder.note ? `　备注：${printOrder.note}` : ''}
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th style={printTh}>SKU</th>
+                  <th style={printTh}>名称</th>
+                  <th style={printTh}>数量</th>
+                  <th style={printTh}>批次</th>
+                  {printOrder.direction === 'in' ? <th style={printTh}>效期</th> : null}
+                  <th style={printTh}>{printOrder.direction === 'in' ? '目标库位' : '库位'}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {printOrder.lines.map((l, i) => (
+                  <tr key={`${l.skuCode}#${i}`}>
+                    <td style={printTd}>{l.skuCode}</td>
+                    <td style={printTd}>{l.name}</td>
+                    <td style={{ ...printTd, textAlign: 'right' }}>{fmtQty(l.quantity, l.unit)}</td>
+                    <td style={printTd}>{l.batchNo ?? '-'}</td>
+                    {printOrder.direction === 'in' ? (
+                      <td style={printTd}>{l.batchExpiryDate ?? '-'}</td>
+                    ) : null}
+                    <td style={printTd}>{l.locationCode ?? '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 32, fontSize: 12 }}>签收人签字：______________　　日期：______________</div>
+          </div>
+        </Card>
+      ) : null}
+
+      {/* 打印样式：只让单据可见，其余（侧边栏/工具条/卡片边框）全部隐藏 */}
+      <style>{`
+        @media print {
+          @page { margin: 12mm; }
+          body * { visibility: hidden !important; }
+          #order-print-area, #order-print-area * { visibility: visible !important; }
+          #order-print-area { position: absolute !important; left: 0; top: 0; width: 100%; }
+          #order-print-area tr { page-break-inside: avoid; break-inside: avoid; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -244,27 +432,41 @@ function stateLabel(snapshot: ProfileSnapshot | undefined, state: string, direct
   return state;
 }
 
-/** when 条件求值（与 @one/core evalWhenCondition 同语义；app 不允许 runtime
- *  import @one/core，故本地等价实现）：module.{id}.enabled / !module.{id}.enabled */
-function evalWhen(
-  when: string | undefined,
-  modules: ProfileSnapshot['modules'] | undefined,
+/** 这次转移可以改实收/实发：模块开着，且这条边是入库加账或出库减账，不是冲销 */
+function allowsPartialQty(
+  snapshot: ProfileSnapshot | undefined,
+  direction: Order['direction'],
+  from: string,
+  to: string,
 ): boolean {
-  if (!when) return true;
-  const m = /^(!?)(module\.[A-Za-z0-9][A-Za-z0-9._-]*)\.enabled$/.exec(when);
-  if (!m) return false; // 无法识别 → 保守不展示（服务端仍是行为权威）
-  const enabled = modules?.[m[2]]?.enabled ?? false;
-  return m[1] === '!' ? !enabled : enabled;
+  if (snapshot?.modules['module.partial']?.enabled !== true) return false;
+  const wf = snapshot.workflows[WORKFLOW_BY_DIRECTION[direction]];
+  const edge = wf?.transitions.find((t) => t.from === from && t.to === to);
+  if (edge?.effect === 'check' || edge?.effect === 'none') return false;
+  if (direction === 'in') {
+    if (edge?.effect === 'decrease') return false;
+    if (edge?.effect === 'increase') return true;
+    return to === settingState(snapshot, 'inboundIncreaseState', 'received');
+  }
+  if (edge?.effect === 'increase') return false;
+  if (edge?.effect === 'decrease') return true;
+  return to === settingState(snapshot, 'outboundDecreaseState', 'shipped');
 }
 
-/** 候选目标状态（去重）：workflows 的 transitions 里 from === 当前态且 when
- *  条件满足的 to（M21：模块停用 → 其贡献的转移被掐掉，UI 与服务端口径一致） */
+function settingState(snapshot: ProfileSnapshot, key: string, fallback: string): string {
+  const raw = snapshot.modules['core.wms']?.settings?.[key];
+  return typeof raw === 'string' && raw.trim() ? raw : fallback;
+}
+
+/** 候选目标状态（去重）：when 与 @one/core/when 同一实现，停用模块即不展示其转移 */
 function nextStates(snapshot: ProfileSnapshot | undefined, direction: Order['direction'], state: string): string[] {
   const wf = snapshot?.workflows[WORKFLOW_BY_DIRECTION[direction]];
   if (!wf) return [];
   return [
     ...new Set(
-      wf.transitions.filter((t) => t.from === state && evalWhen(t.when, snapshot?.modules)).map((t) => t.to),
+      wf.transitions
+        .filter((t) => t.from === state && evalWhenCondition(t.when, snapshot?.modules ?? {}))
+        .map((t) => t.to),
     ),
   ];
 }

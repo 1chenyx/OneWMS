@@ -1,6 +1,6 @@
 import type { WmsWorkspace } from '../wms.js';
 import { readWmsSettings } from '../config/wms-settings.js';
-import { bucketLabel, codeOfLocation, isExpired } from './inventory-policy.js';
+import { bucketLabel, codeOfLocation, isExpired, QTY_EPS } from './inventory-policy.js';
 import { ExpiredBatchError, InsufficientStockError, StockHeldError } from '../errors.js';
 
 /**
@@ -21,11 +21,19 @@ export interface OutboundBucketLine {
   readonly quantity: number;
 }
 
-export function assertOutboundBuckets(ws: WmsWorkspace, lines: readonly OutboundBucketLine[]): void {
+/**
+ * 按行验桶余量，可选过期拦截与 SKU 冻结。
+ * 出库履约开 expiry+hold；入库冲销只开 hold（过期拦截是履约策略，不挡回冲）。
+ */
+export function assertOnHand(
+  ws: WmsWorkspace,
+  lines: readonly OutboundBucketLine[],
+  opts: { readonly expiry: boolean; readonly hold: boolean },
+): void {
   const settings = readWmsSettings(ws);
   const today = new Date().toISOString().slice(0, 10);
   for (const line of lines) {
-    if (settings.blockExpiredOutbound) {
+    if (opts.expiry && settings.blockExpiredOutbound) {
       const expiry = ws.inventory.expiryOfBatch(line.skuId, line.batchNo);
       if (isExpired(expiry, today)) {
         throw new ExpiredBatchError(
@@ -36,7 +44,7 @@ export function assertOutboundBuckets(ws: WmsWorkspace, lines: readonly Outbound
       }
     }
     const available = ws.inventory.quantityOf(line.skuId, line.locationId, line.batchNo);
-    if (available < line.quantity) {
+    if (available + QTY_EPS < line.quantity) {
       throw new InsufficientStockError(
         bucketLabel(
           ws.skus.byId(line.skuId)?.skuCode ?? line.skuId,
@@ -48,6 +56,7 @@ export function assertOutboundBuckets(ws: WmsWorkspace, lines: readonly Outbound
       );
     }
   }
+  if (!opts.hold) return;
   const needBySku = new Map<string, number>();
   for (const line of lines) {
     needBySku.set(line.skuId, (needBySku.get(line.skuId) ?? 0) + line.quantity);
@@ -55,8 +64,13 @@ export function assertOutboundBuckets(ws: WmsWorkspace, lines: readonly Outbound
   for (const [skuId, need] of needBySku) {
     const total = ws.inventory.totalOf(skuId);
     const held = ws.inventory.heldOf(skuId);
-    if (total - held < need) {
+    if (total - held + QTY_EPS < need) {
       throw new StockHeldError(ws.skus.byId(skuId)?.skuCode ?? skuId, need, total, held);
     }
   }
+}
+
+/** 出库履约守卫：过期拦截 + 逐桶余量 + SKU 冻结。行为与提取前一致 */
+export function assertOutboundBuckets(ws: WmsWorkspace, lines: readonly OutboundBucketLine[]): void {
+  assertOnHand(ws, lines, { expiry: true, hold: true });
 }

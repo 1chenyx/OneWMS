@@ -142,7 +142,7 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
                     rules={[{ required: true, message: '数量' }]}
                     style={{ marginBottom: 8 }}
                   >
-                    <InputNumber min={1} precision={0} placeholder="数量" />
+                    <InputNumber min={0.001} precision={3} placeholder="数量" />
                   </Form.Item>
                   {fields.length > 1 ? (
                     <MinusCircleOutlined onClick={() => remove(field.name)} />

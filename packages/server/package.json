@@ -10,6 +10,7 @@
     "start": "node --env-file-if-exists=../../.env dist/main.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "predev": "npm run build -w @one/core -w @one/wms -w @one/memory -w @one/ai",
     "pretest": "npm run build -w @one/core -w @one/wms -w @one/memory -w @one/ai",
     "pretypecheck": "npm run build -w @one/core -w @one/wms -w @one/memory -w @one/ai"
   },

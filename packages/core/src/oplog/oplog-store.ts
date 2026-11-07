@@ -158,6 +158,64 @@ export class OplogStore {
     return rows.map(rowToEnvelope);
   }
 
+  /**
+   * 分页查询事件（审计只读——AI 工具 core.oplog.query 的数据源）。
+   *  - type 精确匹配；typePrefix 前缀匹配（如 'wms.inventory.' 命中该域全部事件），二选一；
+   *  - actor 精确匹配（'ai:general' = AI 助手的操作，'node-xxx' = 本地节点操作）；
+   *  - from / to 为 ISO 时间字符串闭区间（created_at 字典序比较成立）；
+   *  - 最新在前（created_at DESC, lamport DESC）；total 供分页壳计算 hasMore。
+   * 只读不动账本：append-only 承诺不受影响。
+   */
+  listEventsPage(
+    workspaceId: string,
+    opts: {
+      type?: string;
+      typePrefix?: string;
+      actor?: string;
+      from?: string;
+      to?: string;
+      limit: number;
+      offset: number;
+    },
+  ): { rows: EventEnvelope[]; total: number } {
+    const where: string[] = ['workspace_id = ?'];
+    const args: unknown[] = [workspaceId];
+    if (opts.type) {
+      where.push('type = ?');
+      args.push(opts.type);
+    }
+    if (opts.typePrefix) {
+      where.push('type LIKE ?');
+      args.push(`${opts.typePrefix}%`);
+    }
+    if (opts.actor) {
+      where.push('actor = ?');
+      args.push(opts.actor);
+    }
+    if (opts.from) {
+      where.push('created_at >= ?');
+      args.push(opts.from);
+    }
+    if (opts.to) {
+      where.push('created_at <= ?');
+      args.push(opts.to);
+    }
+    const whereSql = where.join(' AND ');
+    const total = (
+      this.db.prepare(`SELECT COUNT(*) AS total FROM oplog WHERE ${whereSql}`).get(...args) as {
+        total: number;
+      }
+    ).total;
+    const rows = this.db
+      .prepare<unknown[], EventRow>(
+        `SELECT * FROM oplog WHERE ${whereSql}
+         ORDER BY created_at DESC, lamport DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(...args, opts.limit, opts.offset) as unknown as EventRow[];
+    return { rows: rows.map(rowToEnvelope), total };
+  }
+
   /** 各 actor 的水位（握手交换用，§8.8 hello 消息的数据源） */
   watermarks(workspaceId: string): Record<string, { seq: number; lamport: number }> {
     const rows = this.db

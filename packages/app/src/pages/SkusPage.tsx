@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { PlusOutlined } from '@ant-design/icons';
-import { Button, Card, Input, Table, Typography } from 'antd';
+import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { App, Button, Card, Checkbox, Input, Popconfirm, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { FieldExtension } from '@one/core';
-import { useProfileSnapshot, useSkus } from '../api/hooks';
+import { useArchiveSku, useProfileSnapshot, useSkus, useUnarchiveSku } from '../api/hooks';
 import type { Sku } from '../api/client';
 import SkuFormModal from '../components/SkuFormModal';
 import PageHeader from '../components/PageHeader';
@@ -11,28 +11,73 @@ import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
 
 /**
  * SKU 管理页——动态列是 Profile 配置的第一个真实消费闭环：
- * 列 = 固定列（编码/名称/条码/安全库存/更新时间）+ schema.entities.sku.extensions
+ * 列 = 固定列（编码/名称/条码/单位/安全库存/状态/更新时间）+ schema.entities.sku.extensions
  * 中 visible !== false 的扩展列（dataIndex 指向 extData[key]）。
  * 在 AI 对话页确认「隐藏字段」提议后切回本页，列即消失（数据保留）。
  * 搜索框（M18）：编码/名称/条码 三字段模糊（服务端 q 参数），回车/点按钮触发。
  * 安全库存列（M20）：低库存预警阈值，0 显 -（不预警）。
+ * 单位列（A3）：kg / 箱 / 件…，空显 -。
+ * 软停用（A2）：默认只列启用档；勾「显示已停用」拉全量；停用档灰 Tag + 恢复按钮——
+ * 建错的档案从此有归宿（隐藏 + 退出预警），数据一条不删、可随时恢复。
  */
 export default function SkusPage() {
   const [query, setQuery] = useState('');
-  const { data: skus, isLoading } = useSkus(query || undefined);
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: skus, isLoading } = useSkus(query || undefined, showArchived);
   const snapshot = useProfileSnapshot();
   const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<Sku | null>(null);
+  const { message } = App.useApp();
+  const archive = useArchiveSku();
+  const unarchive = useUnarchiveSku();
+
+  const openCreate = () => {
+    setEditing(null);
+    setFormOpen(true);
+  };
+
+  const openEdit = (sku: Sku) => {
+    setEditing(sku);
+    setFormOpen(true);
+  };
+
+  const toggleArchive = (sku: Sku) => {
+    const archived = (sku.status ?? 'active') === 'archived';
+    const run = archived ? unarchive.mutateAsync(sku.skuCode) : archive.mutateAsync(sku.skuCode);
+    run
+      .then(() => message.success(archived ? `已恢复 ${sku.skuCode}` : `已停用 ${sku.skuCode}`))
+      .catch((e: Error) => message.error(e.message));
+  };
 
   const extensions = (snapshot.data?.schema.entities['sku']?.extensions ?? []).filter((e) => e.visible);
 
   const columns: ColumnsType<Sku> = [
-    { title: '编码', dataIndex: 'skuCode', key: 'skuCode', onCell: monoCell },
+    {
+      title: '编码',
+      dataIndex: 'skuCode',
+      key: 'skuCode',
+      onCell: monoCell,
+      render: (v: string, r) => (
+        <>
+          {v}
+          {(r.status ?? 'active') === 'archived' ? (
+            <Tag style={{ marginLeft: 8 }}>已停用</Tag>
+          ) : null}
+        </>
+      ),
+    },
     { title: '名称', dataIndex: 'name', key: 'name' },
     {
       title: '条码',
       dataIndex: 'barcode',
       key: 'barcode',
       onCell: monoCell,
+      render: (v: string | null) => v ?? <Typography.Text type="secondary">-</Typography.Text>,
+    },
+    {
+      title: '单位',
+      dataIndex: 'unit',
+      key: 'unit',
       render: (v: string | null) => v ?? <Typography.Text type="secondary">-</Typography.Text>,
     },
     {
@@ -56,6 +101,40 @@ export default function SkusPage() {
       render: (v: string) => v.slice(0, 19).replace('T', ' '),
       sorter: (a, b) => a.updatedAt.localeCompare(b.updatedAt),
     },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 170,
+      render: (_, r) => {
+        const archived = (r.status ?? 'active') === 'archived';
+        return (
+          <>
+            <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>
+              编辑
+            </Button>{' '}
+            {archived ? (
+              <Popconfirm
+                title="恢复这个 SKU？"
+                description="恢复后重新出现在列表、选择器与预警里"
+                onConfirm={() => toggleArchive(r)}
+              >
+                <Button size="small">恢复</Button>
+              </Popconfirm>
+            ) : (
+              <Popconfirm
+                title="停用这个 SKU？"
+                description="列表与选择器隐藏、退出预警；剩余库存不受影响，可随时恢复"
+                onConfirm={() => toggleArchive(r)}
+              >
+                <Button size="small" danger>
+                  停用
+                </Button>
+              </Popconfirm>
+            )}
+          </>
+        );
+      },
+    },
   ];
 
   return (
@@ -71,7 +150,13 @@ export default function SkusPage() {
               onSearch={(v) => setQuery(v.trim())}
               style={{ width: 220 }}
             />
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setFormOpen(true)}>
+            <Checkbox
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+            >
+              显示已停用
+            </Checkbox>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新建 SKU
             </Button>
           </>
@@ -91,7 +176,7 @@ export default function SkusPage() {
             扩展字段全部隐藏中。想让 AI 增加/恢复字段，去「AI 对话」页提需求。
           </Typography.Text>
         ) : null}
-        <SkuFormModal open={formOpen} onClose={() => setFormOpen(false)} />
+        <SkuFormModal open={formOpen} onClose={() => setFormOpen(false)} sku={editing} />
       </Card>
     </div>
   );

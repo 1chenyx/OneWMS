@@ -1,6 +1,10 @@
 import type Database from 'better-sqlite3';
 import type { EventEnvelope } from '@one/core';
-import { WMS_EVENT_TYPES, type LocationCreatedPayload } from '../events/catalog.js';
+import {
+  WMS_EVENT_TYPES,
+  type LocationCreatedPayload,
+  type LocationUpdatedPayload,
+} from '../events/catalog.js';
 
 /**
  * 库位投影（LocationView，M10）——wms_location 表的事件投影 + 查询。
@@ -44,17 +48,31 @@ export class LocationView {
     private readonly workspaceId: string,
   ) {}
 
-  /** 幂等应用一条 wms.location.created 事件（重放器/追账器调用，事务内） */
+  /** 幂等应用一条 wms.location.* 事件（重放器/追账器调用，事务内） */
   applyEvent(env: EventEnvelope): void {
-    if (env.type !== WMS_EVENT_TYPES.locationCreated) return;
-    const p = env.payload as LocationCreatedPayload;
-    if (this.#byIdRaw(p.locationId)) return; // 已应用过（幂等）
-    this.db
-      .prepare(
-        `INSERT INTO wms_location (id, workspace_id, location_code, name, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(p.locationId, this.workspaceId, p.locationCode, p.name, env.createdAt, env.createdAt);
+    switch (env.type) {
+      case WMS_EVENT_TYPES.locationCreated: {
+        const p = env.payload as LocationCreatedPayload;
+        if (this.#byIdRaw(p.locationId)) return; // 已应用过（幂等）
+        this.db
+          .prepare(
+            `INSERT INTO wms_location (id, workspace_id, location_code, name, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(p.locationId, this.workspaceId, p.locationCode, p.name, env.createdAt, env.createdAt);
+        break;
+      }
+      case WMS_EVENT_TYPES.locationUpdated: {
+        const p = env.payload as LocationUpdatedPayload;
+        this.db
+          .prepare(
+            `UPDATE wms_location SET name = COALESCE(?, name), updated_at = ?
+             WHERE workspace_id = ? AND id = ?`,
+          )
+          .run(p.name ?? null, env.createdAt, this.workspaceId, p.locationId);
+        break;
+      }
+    }
   }
 
   /** 按编码查（业务键；DEFAULT 虚拟桶不在本表，永远 miss） */

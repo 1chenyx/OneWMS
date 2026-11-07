@@ -10,6 +10,8 @@ export interface InventorySummaryRow {
   held: number;
   available: number;
   reorderPoint: number;
+  /** 数量单位（A3）：null = 不显示 */
+  unit: string | null;
 }
 
 /** 按 SKU 汇总库存：跨库位求和，活动冻结合计，available = 余量 − 冻结。 */
@@ -24,6 +26,7 @@ export function listInventorySummary(ws: WmsWorkspace): InventorySummaryRow[] {
       quantity: 0,
       held: 0,
       reorderPoint: sku?.reorderPoint ?? 0,
+      unit: sku?.unit ?? null,
     };
     current.quantity += row.quantity;
     bySku.set(row.skuId, current);
@@ -35,6 +38,56 @@ export function listInventorySummary(ws: WmsWorkspace): InventorySummaryRow[] {
   return [...bySku.values()]
     .map((row) => ({ ...row, available: row.quantity - row.held }))
     .sort((a, b) => a.skuCode.localeCompare(b.skuCode));
+}
+
+export interface LedgerRow {
+  eventId: string;
+  skuCode: string;
+  name: string;
+  locationCode: string;
+  batchNo: string;
+  batchExpiryDate: string | null;
+  delta: number;
+  reason: string;
+  orderNo: string | null;
+  createdAt: string;
+}
+
+/**
+ * 库存流水清单（导出 / 对账用）——按时间倒序，limit 默认 500、上限 5000。
+ * 流水是 append-only 的真相层，这里只做联查（SKU 编码/名称、库位编码、单据号），
+ * 不聚合不修正：负库存等异常态照原样导出，让人能核账。
+ * 数据源是投影的 listLedgerPage（与 AI 工具 wms.ledger.query 同一条查询），
+ * 本函数只补人类可读的联查字段。
+ */
+export function listLedger(
+  ws: WmsWorkspace,
+  opts: { limit?: number; skuCode?: string } = {},
+): LedgerRow[] {
+  const filterSku = opts.skuCode !== undefined ? ws.skus.byCode(opts.skuCode) : undefined;
+  if (opts.skuCode !== undefined && !filterSku) return []; // 未知编码 = 无流水
+  const limit = Math.min(Math.max(Math.floor(opts.limit ?? 500), 1), 5000);
+  const { rows } = ws.inventory.listLedgerPage({
+    ...(filterSku ? { skuId: filterSku.id } : {}),
+    limit,
+    offset: 0,
+  });
+  return rows.map((r) => {
+    const sku = ws.skus.byId(r.skuId);
+    return {
+      eventId: r.eventId,
+      skuCode: sku?.skuCode ?? '(未知)',
+      name: sku?.name ?? '',
+      // location_id 可能是虚拟桶 DEFAULT（不落库位表），codeOfLocation 原样回显
+      locationCode: codeOfLocation(ws, r.locationId),
+      batchNo: r.batchNo,
+      batchExpiryDate: r.batchExpiryDate,
+      delta: r.delta,
+      reason: r.reason,
+      orderNo: r.orderId ? (ws.orders.byId(r.orderId)?.orderNo ?? null) : null,
+      createdAt: r.createdAt,
+    };
+  });
 }
 
 export interface HoldListRow {
@@ -81,6 +134,8 @@ export interface ExpiryBatchRow {
   daysLeft: number | null;
   level: ExpiryLevel;
   quantity: number;
+  /** 数量单位（A3）：null = 不显示 */
+  unit: string | null;
   buckets: { locationCode: string; quantity: number }[];
 }
 
@@ -129,6 +184,7 @@ export function getExpiryBoard(
       daysLeft,
       level: levelOf(row.batchExpiryDate, daysLeft, expiryCriticalDays, expiryWarningDays),
       quantity: 0,
+      unit: sku?.unit ?? null,
       buckets: [],
     };
     current.quantity += row.quantity;

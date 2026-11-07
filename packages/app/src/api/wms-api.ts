@@ -8,6 +8,10 @@ export interface Sku {
   barcode: string | null;
   /** 安全库存（M20）：低库存预警阈值；0 = 不预警 */
   reorderPoint: number;
+  /** 数量单位（A3）：null = 不显示 */
+  unit: string | null;
+  /** 档案状态（A2 软停用）：'archived' = 已停用（默认隐藏）；缺省 = 启用 */
+  status?: string;
   name: string;
   extData: Record<string, unknown>;
   createdAt: string;
@@ -18,10 +22,16 @@ export interface OrderLine {
   skuCode: string;
   name: string;
   quantity: number;
+  /** 数量单位（A3）：null = 不显示 */
+  unit?: string | null;
   /** 行目标库位编码（M21：上架归位的源桶） */
   locationCode?: string;
   /** 行批次（DEFAULT = 虚拟批次） */
   batchNo?: string;
+  /** 行批次效期（A1 打印凭据）：null = 未声明 */
+  batchExpiryDate?: string | null;
+  /** 已入账净量。null = 没记过短收短发（按订单数量） */
+  fulfilledQty?: number | null;
 }
 
 export interface Order {
@@ -72,6 +82,8 @@ export interface PickingLine {
   skuId: string;
   skuCode: string;
   skuName: string;
+  /** 数量单位（A3）：null = 不显示 */
+  unit?: string | null;
   qtyToPick: number;
   suggestedLocationCode: string;
   suggestedBatchNo: string;
@@ -131,6 +143,34 @@ export interface InventoryRow {
   available: number;
   /** 安全库存（M20）：>0 且 available < 它 → 低库存预警（前端标红/过滤） */
   reorderPoint: number;
+  /** 数量单位（A3）：null = 不显示 */
+  unit: string | null;
+}
+
+/** 库存分桶明细行（GET /api/inventory/buckets；CSV 导出到桶粒度用） */
+export interface InventoryBucketRow {
+  skuCode: string;
+  name: string;
+  /** 数量单位（A3）：null = 不显示 */
+  unit: string | null;
+  locationCode: string;
+  batchNo: string;
+  batchExpiryDate: string | null;
+  quantity: number;
+}
+
+/** 库存流水行（GET /api/inventory/ledger；append-only 真相层，倒序） */
+export interface LedgerRow {
+  eventId: string;
+  skuCode: string;
+  name: string;
+  locationCode: string;
+  batchNo: string;
+  batchExpiryDate: string | null;
+  delta: number;
+  reason: string;
+  orderNo: string | null;
+  createdAt: string;
 }
 
 /** 活动冻结行（M19，GET /api/holds；已释放的不在列——历史在事件账本） */
@@ -173,6 +213,8 @@ export interface StocktakeLine {
   name: string;
   locationCode: string;
   batchNo: string;
+  /** 数量单位（A3）：null = 不显示 */
+  unit: string | null;
   expectedQty: number;
   countedQty: number | null;
   bookQty: number;
@@ -212,6 +254,8 @@ export interface ExpiryBatchRow {
   daysLeft: number | null;
   level: ExpiryLevel;
   quantity: number;
+  /** 数量单位（A3）：null = 不显示 */
+  unit: string | null;
   /** 库位 × 余量明细（后端按余量降序）——行展开直出 */
   buckets: { locationCode: string; quantity: number }[];
 }
@@ -223,11 +267,15 @@ export interface ExpiryBoard {
 }
 
 export const wmsApi = {
-  /** SKU 清单：q = 编码/名称/条码 模糊搜索（M18）；barcode = 条码精确匹配 */
-  skus: (query?: { q?: string; barcode?: string }) => {
+  /**
+   * SKU 清单：q = 编码/名称/条码 模糊搜索（M18）；barcode = 条码精确匹配（不过滤停用）。
+   * A2 软停用：默认只回启用档；includeArchived = 回全量（SKU 管理页勾选「显示已停用」时用）。
+   */
+  skus: (query?: { q?: string; barcode?: string; includeArchived?: boolean }) => {
     const params = new URLSearchParams();
     if (query?.q) params.set('q', query.q);
     if (query?.barcode) params.set('barcode', query.barcode);
+    if (query?.includeArchived) params.set('includeArchived', '1');
     const qs = params.toString();
     return request<Sku[]>(qs ? `/api/skus?${qs}` : '/api/skus');
   },
@@ -236,17 +284,76 @@ export const wmsApi = {
     name: string;
     barcode?: string;
     reorderPoint?: number;
+    unit?: string;
     extData?: Record<string, unknown>;
   }) =>
-    request<{ skuId: string; skuCode: string; name: string; barcode?: string; reorderPoint?: number }>(
-      '/api/skus',
-      {
-        method: 'POST',
-        body: JSON.stringify(body),
-      },
+    request<{
+      skuId: string;
+      skuCode: string;
+      name: string;
+      barcode?: string;
+      reorderPoint?: number;
+      unit?: string | null;
+    }>('/api/skus', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  /** 编辑 SKU 档案：只传要改的字段（skuCode 是业务键不可改）；unit 传空串 = 清空 */
+  updateSku: (
+    skuCode: string,
+    body: {
+      name?: string;
+      barcode?: string;
+      reorderPoint?: number;
+      unit?: string;
+      extData?: Record<string, unknown>;
+    },
+  ) =>
+    request<{
+      skuId: string;
+      skuCode: string;
+      barcode?: string | null;
+      reorderPoint?: number;
+      unit?: string | null;
+    }>(`/api/skus/${encodeURIComponent(skuCode)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  /** 停用 SKU（A2 软停用）：隐藏 + 退出预警；剩余库存照常可扣，unarchive 可恢复 */
+  archiveSku: (skuCode: string) =>
+    request<{ skuId: string; skuCode: string; status: string }>(
+      `/api/skus/${encodeURIComponent(skuCode)}/archive`,
+      { method: 'POST' },
+    ),
+  /** 恢复已停用的 SKU */
+  unarchiveSku: (skuCode: string) =>
+    request<{ skuId: string; skuCode: string; status: string }>(
+      `/api/skus/${encodeURIComponent(skuCode)}/unarchive`,
+      { method: 'POST' },
     ),
   orders: (direction?: 'in' | 'out') =>
     request<Order[]>(direction ? `/api/orders?direction=${direction}` : '/api/orders'),
+  orderConflicts: () =>
+    request<
+      {
+        eventId: string;
+        orderNo: string;
+        fromState: string;
+        toState: string;
+        actualState: string;
+        status: string;
+      }[]
+    >('/api/order-conflicts'),
+  acceptConflict: (eventId: string) =>
+    request<{ eventId: string; orderNo: string; status: string }>(
+      `/api/order-conflicts/${encodeURIComponent(eventId)}/accept`,
+      { method: 'POST' },
+    ),
+  dismissConflict: (eventId: string) =>
+    request<{ eventId: string; orderNo: string; status: string }>(
+      `/api/order-conflicts/${encodeURIComponent(eventId)}/dismiss`,
+      { method: 'POST' },
+    ),
   /** 往来单位清单（M21）：kind = supplier/customer 过滤；q = 编码/名称模糊 */
   partners: (query?: { kind?: 'supplier' | 'customer'; q?: string }) => {
     const params = new URLSearchParams();
@@ -331,10 +438,14 @@ export const wmsApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  transitionOrder: (orderNo: string, to: string) =>
+  transitionOrder: (
+    orderNo: string,
+    to: string,
+    lines?: { skuCode: string; quantity: number; locationCode?: string; batchNo?: string }[],
+  ) =>
     request<{ orderNo: string; from: string; to: string }>(`/api/orders/${orderNo}/transition`, {
       method: 'POST',
-      body: JSON.stringify({ to }),
+      body: JSON.stringify(lines ? { to, lines } : { to }),
     }),
   /** 上架确认与归位（M21）：targets 缺省 = 纯确认不动库存 */
   putawayOrder: (
@@ -357,6 +468,16 @@ export const wmsApi = {
       body: JSON.stringify({ targets }),
     }),
   inventory: () => request<InventoryRow[]>('/api/inventory'),
+  /** 库存分桶明细（SKU×库位×批次）——CSV 导出用 */
+  inventoryBuckets: () => request<InventoryBucketRow[]>('/api/inventory/buckets'),
+  /** 库存流水（导出/对账）——limit 上限 5000，skuCode 可选过滤 */
+  ledger: (query?: { limit?: number; skuCode?: string }) => {
+    const p = new URLSearchParams();
+    if (query?.limit) p.set('limit', String(query.limit));
+    if (query?.skuCode) p.set('skuCode', query.skuCode);
+    const qs = p.toString();
+    return request<LedgerRow[]>(`/api/inventory/ledger${qs ? `?${qs}` : ''}`);
+  },
   /** 效期看板（M14）：全仓批次分层清单（读直查投影，切页挂载即刷新） */
   expiryBoard: () => request<ExpiryBoard>('/api/inventory/expiry'),
   adjustInventory: (body: { skuCode: string; delta: number; reason?: string }) =>
@@ -377,7 +498,19 @@ export const wmsApi = {
       `/api/holds/${encodeURIComponent(holdId)}/release`,
       { method: 'POST' },
     ),
-  locations: () => request<Location[]>('/api/locations'),
+  locations: (query?: { q?: string }) =>
+    request<Location[]>(query?.q ? `/api/locations?q=${encodeURIComponent(query.q)}` : '/api/locations'),
+  createLocation: (body: { locationCode: string; name?: string }) =>
+    request<{ locationId: string; locationCode: string; name: string }>('/api/locations', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  /** 编辑库位：只能改名（locationCode 是业务键不可改——历史单据引用它） */
+  updateLocation: (locationCode: string, body: { name?: string }) =>
+    request<{ locationId: string; locationCode: string; name: string }>(
+      `/api/locations/${encodeURIComponent(locationCode)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
   stocktakes: () => request<Stocktake[]>('/api/stocktakes'),
   stocktakeDetail: (no: string) =>
     request<StocktakeDetail>(`/api/stocktakes/${encodeURIComponent(no)}`),

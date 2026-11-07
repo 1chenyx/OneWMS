@@ -224,7 +224,7 @@ function validateWorkflowDef(
     errors.push(err('MANIFEST_WORKFLOW', `流程定义须含 states/transitions 数组`, at));
     return;
   }
-  const d = def as { states: { id?: unknown; label?: unknown }[]; transitions: { from?: unknown; to?: unknown }[] };
+  const d = def as { states: { id?: unknown; label?: unknown }[]; transitions: { from?: unknown; to?: unknown; effect?: unknown }[] };
   if (d.states.length === 0) {
     errors.push(err('MANIFEST_WORKFLOW', `流程至少需要一个状态（states[0] 为初始态约定）`, at));
     return;
@@ -247,6 +247,7 @@ function validateWorkflowDef(
     if (!isNonEmptyString(t?.from) || !isNonEmptyString(t?.to)) {
       errors.push(err('MANIFEST_WORKFLOW', `转移缺少 from/to`, `${at}/transitions`));
     }
+    assertEffect(t, errors, `${at}/transitions`);
   }
 }
 
@@ -273,6 +274,19 @@ function validateContribution(c: ManifestContribution, errors: ValidationIssue[]
     if (!isNonEmptyString(t?.from) || !isNonEmptyString(t?.to)) {
       errors.push(err('MANIFEST_CONTRIBUTES', `贡献转移缺少 from/to`, `${at}/transitions`));
     }
+    assertEffect(t, errors, `${at}/transitions`);
+  }
+}
+
+const EFFECT_VALUES = new Set(['increase', 'decrease', 'check', 'none']);
+
+function assertEffect(
+  t: { effect?: unknown },
+  errors: ValidationIssue[],
+  at: string,
+): void {
+  if (t?.effect !== undefined && (typeof t.effect !== 'string' || !EFFECT_VALUES.has(t.effect))) {
+    errors.push(err('MANIFEST_EFFECT', `转移 effect 非法: "${String(t?.effect)}"`, at));
   }
 }
 

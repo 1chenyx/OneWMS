@@ -5,6 +5,7 @@ import { useExpiryBoard } from '../api/hooks';
 import { useAppNav } from '../app-nav';
 import PageHeader from '../components/PageHeader';
 import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { fmtQty } from '../lib/format';
 import type { ExpiryBatchRow, ExpiryLevel } from '../api/client';
 
 /**
@@ -96,7 +97,7 @@ export default function ExpiryPage() {
       key: 'quantity',
       align: 'right',
       onCell: numCell,
-      render: (v: number) => <Typography.Text strong>{v}</Typography.Text>,
+      render: (v: number, r) => <Typography.Text strong>{fmtQty(v, r.unit)}</Typography.Text>,
     },
     {
       title: '库位',
@@ -169,7 +170,7 @@ export default function ExpiryPage() {
                     key: 'quantity',
                     align: 'right',
                     onCell: numCell,
-                    render: (v: number) => <Typography.Text strong>{v}</Typography.Text>,
+                    render: (v: number) => <Typography.Text strong>{fmtQty(v, r.unit)}</Typography.Text>,
                   },
                 ]}
                 dataSource={r.buckets}

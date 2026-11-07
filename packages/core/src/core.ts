@@ -5,6 +5,7 @@ import { OplogStore } from './oplog/oplog-store.js';
 import { FieldRegistry } from './registry/field-registry.js';
 import { ProfileService } from './profile/profile-service.js';
 import { createProfileProposeTool } from './profile/propose-tool.js';
+import { createOplogQueryTool } from './oplog/oplog-query-tool.js';
 import { ToolBus } from './bus/tool-bus.js';
 import { SyncService } from './sync/sync-service.js';
 import { ModuleRegistry } from './modules/module-registry.js';
@@ -46,6 +47,8 @@ export class OneCore {
     // 慢通道工具（M4）：AI 提议配置变更的唯一入口；confirm/reject 不注册——
     // 人工确认权不可委托给 AI（§4.1）
     this.#bus.register(createProfileProposeTool(this.#profile));
+    // 审计账本只读查询（core.oplog.query）：事件真相面向 AI 的分页出口
+    this.#bus.register(createOplogQueryTool(this.#oplog));
   }
 
   /** 打开（或创建）一个内核实例。path 可为文件路径或 ':memory:'。 */

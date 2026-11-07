@@ -61,8 +61,8 @@ describe('上架：模块安装与流程贡献', () => {
     expect(inbound.states.find((s) => s.id === 'putaway')?.providedBy).toBe('module.putaway');
     expect(inbound.transitions).toEqual(
       expect.arrayContaining([
-        { from: 'received', to: 'putaway', when: 'module.putaway.enabled' },
-        { from: 'putaway', to: 'done' },
+        { from: 'received', to: 'putaway', when: 'module.putaway.enabled', providedBy: 'module.putaway' },
+        { from: 'putaway', to: 'done', providedBy: 'module.putaway' },
       ]),
     );
   });

@@ -1,6 +1,7 @@
 import type { ToolDefinition } from '@one/core';
 import { createInventoryTools } from './inventory-tools.js';
 import { createLocationTools } from './location-tools.js';
+import { createOrderConflictTools } from './order-conflict-tools.js';
 import { createOrderTools } from './order-tools.js';
 import { createPartnerTools } from './partner-tools.js';
 import { createPickingTools } from './picking-tools.js';
@@ -25,6 +26,7 @@ export function createWmsTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     ...createLocationTools(resolveWorkspace),
     ...createPartnerTools(resolveWorkspace),
     ...createOrderTools(resolveWorkspace),
+    ...createOrderConflictTools(resolveWorkspace),
     ...createPickingTools(resolveWorkspace),
     ...createInventoryTools(resolveWorkspace),
     ...createStocktakeTools(resolveWorkspace),

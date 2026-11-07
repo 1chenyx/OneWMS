@@ -29,3 +29,14 @@ export const monoCell = () => ({ style: MONO_STYLE });
 
 /** onCell 快捷引用（数字列） */
 export const numCell = () => ({ style: NUM_STYLE });
+
+/** 打印区表头单元格（A1 单据打印）：屏幕预览与纸张同一套细边框 */
+export const printTh: CSSProperties = {
+  border: '1px solid #333',
+  padding: '4px 6px',
+  textAlign: 'left',
+  background: '#f5f5f5',
+};
+
+/** 打印区数据单元格（A1 单据打印） */
+export const printTd: CSSProperties = { border: '1px solid #333', padding: '4px 6px' };

@@ -11,9 +11,16 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: {
-      '@one/core': fileURLToPath(new URL('../core/src/index.ts', import.meta.url)),
-    },
+    alias: [
+      {
+        find: '@one/core/when',
+        replacement: fileURLToPath(new URL('../core/src/profile/when.ts', import.meta.url)),
+      },
+      {
+        find: '@one/core',
+        replacement: fileURLToPath(new URL('../core/src/index.ts', import.meta.url)),
+      },
+    ],
   },
   server: {
     proxy: {
@@ -23,8 +30,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./test/setup.ts'],
-    // jsdom + AntD 交互测试在本机较慢（多步 userEvent 单测可达 8s+，
+    // jsdom + AntD 交互测试在本机较慢（冻结弹窗等多步 userEvent 单测约 40s，
     // 全仓并行跑时更甚）——统一放宽超时，避免环境慢误报为失败
-    testTimeout: 30000,
+    testTimeout: 90000,
   },
 });

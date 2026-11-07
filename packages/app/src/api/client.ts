@@ -20,7 +20,20 @@ export { ApiError } from './request';
 export { answerChatAsk, streamChatMessage } from './chat-api';
 export type { ChatInvocation, ChatStreamEvent } from './chat-api';
 export type { ConfirmResponse } from './profile-api';
-export type { MigrationImportResult, NodeHello, SyncRoundResult } from './settings-api';
+export type {
+  AddSyncPeerResult,
+  BackupCreateResult,
+  BackupEntry,
+  BackupListResult,
+  LanAddressResult,
+  MigrationImportResult,
+  NodeHello,
+  RemoveSyncPeerResult,
+  RestoreBackupResult,
+  SyncPeerRecord,
+  SyncPeersResult,
+  SyncRoundResult,
+} from './settings-api';
 export type {
   AgentCatalog,
   AgentDef,
@@ -37,7 +50,9 @@ export type {
   ExpiryLevel,
   FlowTrendPoint,
   Hold,
+  InventoryBucketRow,
   InventoryRow,
+  LedgerRow,
   Location,
   LocationDistribution,
   Order,

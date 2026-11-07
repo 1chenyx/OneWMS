@@ -1,0 +1,46 @@
+# OneWMS 持续集成：每次 push / PR 跑类型检查与全量单测。
+#
+# 作用：把「本地跑一遍 npm run typecheck && npm run test」这件事自动化——
+# 0 基础用户从 Release 装到的产物，至少保证是从绿的代码打出来的。
+#
+# 跑在 windows-latest：与开发机同平台（better-sqlite3 原生模块、PowerShell 构建脚本、
+# 路径大小写/分隔符行为都一致），本地绿了 CI 就该绿。
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+defaults:
+  run:
+    shell: pwsh
+
+# 同一分支推了新 commit 就取消上一次还在跑的（省 Actions 额度）
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        # 各包的 pretypecheck 会先构建它依赖的工作区包（core → wms/memory/ai → server）
+        run: npm run typecheck
+
+      - name: 单元测试
+        run: npm run test

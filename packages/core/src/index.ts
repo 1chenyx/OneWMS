@@ -21,6 +21,8 @@ export { ModulesView } from './workspace/modules-view.js';
 export type { ToolContext, ToolDefinition, ToolInvocation } from './bus/tool-bus.js';
 export { validateParameters } from './bus/schema-validator.js';
 export type { ParameterSchema, ParameterProperty } from './bus/schema-validator.js';
+// AI 结果守门（宪法级护栏）：导出供测试与领域复用同一预算口径
+export { AI_RESULT_MAX_BYTES, fitResultForAi } from './bus/ai-result-guard.js';
 
 export type {
   FieldDataType,
@@ -44,6 +46,7 @@ export type {
   ProfileSchema,
   ProfileSnapshot,
   WorkflowDef,
+  WorkflowEffect,
   WorkflowState,
   WorkflowTransition,
 } from './profile/profile-types.js';
@@ -71,6 +74,7 @@ export type {
   InstalledModule,
   ManifestContribution,
   ManifestFieldProvide,
+  ManifestWorkflowTransition,
   ManifestFieldRequire,
   ManifestTool,
   ModuleCapability,

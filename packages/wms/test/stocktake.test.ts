@@ -226,14 +226,18 @@ describe('录实盘（counted）', () => {
     });
   });
 
-  it('countedQty 非法值拒绝（schema 层，零事件）；SKU 不存在拒绝', async () => {
+  it('countedQty 非法值拒绝（schema 层，零事件）；小数实盘放行；SKU 不存在拒绝', async () => {
     await ws.tools.invoke('wms.stocktake.create', { stocktakeNo: 'ST-1' });
     await expect(
       ws.tools.invoke('wms.stocktake.count', { stocktakeNo: 'ST-1', skuCode: 'A-1', countedQty: -1 }),
     ).rejects.toThrow('countedQty');
-    await expect(
-      ws.tools.invoke('wms.stocktake.count', { stocktakeNo: 'ST-1', skuCode: 'A-1', countedQty: 1.5 }),
-    ).rejects.toThrow('countedQty');
+    // 小数实盘（散装/称重）合法：录入后差异按 3 位小数量化
+    const r = (await ws.tools.invoke('wms.stocktake.count', {
+      stocktakeNo: 'ST-1',
+      skuCode: 'A-1',
+      countedQty: 1.5,
+    })) as { countedQty: number };
+    expect(r.countedQty).toBe(1.5);
     await expect(
       ws.tools.invoke('wms.stocktake.count', { stocktakeNo: 'ST-1', skuCode: 'X-9', countedQty: 1 }),
     ).rejects.toThrow(SkuNotFoundError);

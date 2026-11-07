@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { CheckSquareOutlined, CloseOutlined, PlusOutlined } from '@ant-design/icons';
+import { CheckSquareOutlined, CloseOutlined, PlusOutlined, PrinterOutlined } from '@ant-design/icons';
 import {
   App as AntApp,
   Button,
@@ -24,7 +24,8 @@ import {
 import { ApiError } from '../api/client';
 import type { Picking, PickingLine } from '../api/client';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { TABLE_PAGINATION, monoCell, numCell, printTd, printTh } from '../components/table-style';
+import { fmtQty } from '../lib/format';
 
 /**
  * 拣货单管理页（M21）——聚合「拣货中」出库单的作业单。
@@ -46,6 +47,8 @@ export default function PickingsPage() {
   const cancel = useCancelPicking();
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
+  /** A1 打印：正在打印的拣货单（非空 = 打印区已挂载，可拉起系统打印） */
+  const [printPicking, setPrintPicking] = useState<Picking | null>(null);
 
   // 可聚合的出库单：拣货中状态（服务端还会再校验一层）
   const pickingStateOrders = useMemo(
@@ -89,6 +92,18 @@ export default function PickingsPage() {
         }
       },
     });
+
+  /** 打印拣货单（A1）：先挂打印区（按建议库位排序的纸质作业表），绘完最后一帧
+   *  再拉起系统打印对话框；打完（afterprint）卸掉打印区回到纯页面。 */
+  const doPrint = (r: Picking) => {
+    setPrintPicking(r);
+    const cleanup = () => {
+      setPrintPicking(null);
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.setTimeout(() => window.print(), 60);
+  };
 
   const submitCreate = async () => {
     if (selectedOrders.length === 0) {
@@ -152,26 +167,35 @@ export default function PickingsPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 170,
-      render: (_, r) =>
-        r.state === 'created' ? (
-          <>
-            <Button
-              size="small"
-              type="primary"
-              icon={<CheckSquareOutlined />}
-              style={{ marginRight: 8 }}
-              onClick={() => doClose(r.pickingNo)}
-            >
-              关单扣减
-            </Button>
-            <Button size="small" danger icon={<CloseOutlined />} onClick={() => doCancel(r.pickingNo)}>
-              取消
-            </Button>
-          </>
-        ) : (
-          <Typography.Text type="secondary">—</Typography.Text>
-        ),
+      width: 240,
+      render: (_, r) => (
+        <>
+          <Button
+            size="small"
+            icon={<PrinterOutlined />}
+            style={{ marginRight: 8 }}
+            onClick={() => doPrint(r)}
+          >
+            打印
+          </Button>
+          {r.state === 'created' ? (
+            <>
+              <Button
+                size="small"
+                type="primary"
+                icon={<CheckSquareOutlined />}
+                style={{ marginRight: 8 }}
+                onClick={() => doClose(r.pickingNo)}
+              >
+                关单扣减
+              </Button>
+              <Button size="small" danger icon={<CloseOutlined />} onClick={() => doCancel(r.pickingNo)}>
+                取消
+              </Button>
+            </>
+          ) : null}
+        </>
+      ),
     },
   ];
 
@@ -252,6 +276,64 @@ export default function PickingsPage() {
           />
         </Modal>
       </Card>
+
+      {printPicking ? (
+        <Card title={`打印预览：拣货单 ${printPicking.pickingNo}`}>
+          <div id="picking-print-area" style={{ maxWidth: 720 }}>
+            <Typography.Title level={4} style={{ marginTop: 0 }}>
+              拣货单 {printPicking.pickingNo}
+            </Typography.Title>
+            <div style={{ fontSize: 12, color: '#444', marginBottom: 8 }}>
+              关联出库单：{[...new Set(printPicking.lines.map((l) => l.orderNo))].join('、') || '-'}
+              　创建时间：{printPicking.createdAt.slice(0, 19).replace('T', ' ')}
+              　状态：
+              {printPicking.state === 'created' ? '拣货中' : printPicking.state === 'closed' ? '已关单' : '已取消'}
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th style={printTh}>拣</th>
+                  <th style={printTh}>SKU</th>
+                  <th style={printTh}>名称</th>
+                  <th style={printTh}>建议库位</th>
+                  <th style={printTh}>建议批次</th>
+                  <th style={printTh}>应拣</th>
+                  <th style={printTh}>已拣</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...printPicking.lines]
+                  .sort((a, b) =>
+                    (a.suggestedLocationCode ?? '').localeCompare(b.suggestedLocationCode ?? ''),
+                  )
+                  .map((l) => (
+                    <tr key={l.id}>
+                      <td style={printTd}>□</td>
+                      <td style={printTd}>{l.skuCode}</td>
+                      <td style={printTd}>{l.skuName}</td>
+                      <td style={printTd}>{l.suggestedLocationCode ?? '-'}</td>
+                      <td style={printTd}>{l.suggestedBatchNo ?? '-'}</td>
+                      <td style={{ ...printTd, textAlign: 'right' }}>{fmtQty(l.qtyToPick, l.unit)}</td>
+                      <td style={{ ...printTd, textAlign: 'right' }}>{fmtQty(l.pickedQty, l.unit)}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 32, fontSize: 12 }}>拣货人签字：______________　　日期：______________</div>
+          </div>
+        </Card>
+      ) : null}
+
+      {/* 打印样式：只让拣货单可见，其余（侧边栏/工具条/卡片边框）全部隐藏 */}
+      <style>{`
+        @media print {
+          @page { margin: 12mm; }
+          body * { visibility: hidden !important; }
+          #picking-print-area, #picking-print-area * { visibility: visible !important; }
+          #picking-print-area { position: absolute !important; left: 0; top: 0; width: 100%; }
+          #picking-print-area tr { page-break-inside: avoid; break-inside: avoid; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -304,17 +386,30 @@ function PickLinesTable({
         { title: '出库单', dataIndex: 'orderNo', onCell: monoCell, width: 150 },
         { title: 'SKU', dataIndex: 'skuCode', onCell: monoCell, width: 120 },
         { title: '名称', dataIndex: 'skuName' },
-        { title: '应拣', dataIndex: 'qtyToPick', align: 'right', width: 70, onCell: numCell },
+        {
+          title: '应拣',
+          dataIndex: 'qtyToPick',
+          align: 'right',
+          width: 90,
+          onCell: numCell,
+          render: (v: number, r) => fmtQty(v, r.unit),
+        },
         { title: '建议库位', dataIndex: 'suggestedLocationCode', width: 100, onCell: monoCell },
         { title: '建议批次', dataIndex: 'suggestedBatchNo', width: 110, onCell: monoCell },
         {
           title: '已拣',
           dataIndex: 'pickedQty',
-          width: 70,
+          width: 90,
           align: 'right',
           onCell: numCell,
           render: (v: number, r) =>
-            v >= r.qtyToPick ? <Tag color="green">{v}</Tag> : v > 0 ? v : <Typography.Text type="secondary">0</Typography.Text>,
+            v >= r.qtyToPick ? (
+              <Tag color="green">{fmtQty(v, r.unit)}</Tag>
+            ) : v > 0 ? (
+              fmtQty(v, r.unit)
+            ) : (
+              <Typography.Text type="secondary">0</Typography.Text>
+            ),
         },
         {
           title: '实拣库位',
@@ -366,6 +461,7 @@ function PickLinesTable({
                     <InputNumber
                       size="small"
                       min={0}
+                      precision={3}
                       max={r.qtyToPick}
                       value={qty[r.id] ?? r.pickedQty}
                       onChange={(v) => setQty((p) => ({ ...p, [r.id]: v ?? 0 }))}

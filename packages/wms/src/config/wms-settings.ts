@@ -1,19 +1,26 @@
 import type { WmsWorkspace } from '../wms.js';
 
-/** core.wms 模块设置读取结果：快照 Record<string, unknown> 窄化后的四键 */
+/** core.wms 模块设置读取结果：快照 Record<string, unknown> 窄化后的键 */
 export interface WmsSettings {
   defaultAllocation: 'strict' | 'fifo' | 'fefo';
   blockExpiredOutbound: boolean;
   /** 效期看板分层阈值（天）：M15 起从 settings 读（缺省 7 / 30） */
   expiryCriticalDays: number;
   expiryWarningDays: number;
+  /**
+   * 未在转移上声明 effect 时，进入这些状态才联动库存。
+   * 缺省 received / shipped / picking = 旧行为。改名后的自定义流程用这三键对准。
+   */
+  inboundIncreaseState: string;
+  outboundDecreaseState: string;
+  outboundCheckState: string;
 }
 
 /**
  * 读 core.wms 模块设置（M13；M15 起包级导出——server 效期看板端点同源消费）。
  * 快照是脏面：老库无种子（0.1.0 已装，install 幂等短路不补）、慢通道可写
- * 任意值——此处窄化 + 兜底，非法/缺失回落代码缺省（strict / false / 7 / 30），
- * 保证「未配置 = 旧行为」。改值走 profile 慢通道（propose → confirm），
+ * 任意值——此处窄化 + 兜底，非法/缺失回落代码缺省（strict / false / 7 / 30 /
+ * received / shipped / picking），保证「未配置 = 旧行为」。改值走 profile 慢通道（propose → confirm），
  * 确认后下一次建单/流转即生效。
  *
  * 阈值两键联动兜底（M15）：critical 必须 ≥1 且严格小于 warning，任一键脏值
@@ -37,5 +44,12 @@ export function readWmsSettings(ws: WmsWorkspace): WmsSettings {
     blockExpiredOutbound: raw.blockExpiredOutbound === true,
     expiryCriticalDays: thresholdsOk ? cd : 7,
     expiryWarningDays: thresholdsOk ? wd : 30,
+    inboundIncreaseState: stateName(raw.inboundIncreaseState, 'received'),
+    outboundDecreaseState: stateName(raw.outboundDecreaseState, 'shipped'),
+    outboundCheckState: stateName(raw.outboundCheckState, 'picking'),
   };
+}
+
+function stateName(raw: unknown, fallback: string): string {
+  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : fallback;
 }

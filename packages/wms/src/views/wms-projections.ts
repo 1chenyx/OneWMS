@@ -56,5 +56,6 @@ export class WmsProjections {
     this.db.prepare(`DELETE FROM wms_stocktake_line WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_picking WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_picking_line WHERE workspace_id = ?`).run(this.workspaceId);
+    this.db.prepare(`DELETE FROM wms_order_conflict WHERE workspace_id = ?`).run(this.workspaceId);
   }
 }

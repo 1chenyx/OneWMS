@@ -5,6 +5,7 @@ dist/
 
 # 环境与本地数据
 .env
+data/
 *.db
 *.db-journal
 *.db-wal

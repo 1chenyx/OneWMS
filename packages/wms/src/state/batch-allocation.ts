@@ -1,6 +1,6 @@
 import type { WmsWorkspace } from '../wms.js';
 import { AllocationInsufficientError, SkuNotFoundError } from '../errors.js';
-import { resolveLocation } from './inventory-policy.js';
+import { assertPositiveQty, QTY_EPS, resolveLocation } from './inventory-policy.js';
 import { allocateFromBuckets } from './allocation.js';
 
 /**
@@ -40,9 +40,7 @@ export function expandAllocatedLines(
     if (typeof l?.skuCode !== 'string' || !l.skuCode) {
       throw new Error(`TOOL_REJECTED: 第 ${i + 1} 行缺少 skuCode`);
     }
-    if (!Number.isInteger(l.quantity) || l.quantity <= 0) {
-      throw new Error(`TOOL_REJECTED: 第 ${i + 1} 行数量必须是正整数`);
-    }
+    assertPositiveQty(l.quantity, `第 ${i + 1} 行数量`);
     const sku = ws.skus.byCode(l.skuCode);
     if (!sku) throw new SkuNotFoundError(l.skuCode);
     const loc = resolveLocation(ws, l.locationCode);
@@ -54,7 +52,7 @@ export function expandAllocatedLines(
       blockExpired,
       today,
     );
-    if (remaining > 0) {
+    if (remaining > QTY_EPS) {
       throw new AllocationInsufficientError(
         l.skuCode,
         loc.locationCode,

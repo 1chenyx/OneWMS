@@ -408,3 +408,182 @@ describe('安全库存与低库存预警（M20）', () => {
     }
   });
 });
+
+describe('SKU 单位（A3）', () => {
+  it('create 带 unit（含 trim）；缺省 null；update 显式传才改、空串清空', async () => {
+    const r = (await ws.tools.invoke('wms.sku.create', {
+      skuCode: 'A-1',
+      name: '散装螺丝',
+      unit: ' kg ',
+    })) as { unit: string | null };
+    expect(r.unit).toBe('kg');
+    expect(ws.skus.byCode('A-1')!.unit).toBe('kg');
+
+    // 缺省 null
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'B-2', name: 'x' });
+    expect(ws.skus.byCode('B-2')!.unit).toBeNull();
+
+    // update 未传保持 / 传值改 / 空串清空
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'A-1', name: '改名' });
+    expect(ws.skus.byCode('A-1')!.unit).toBe('kg');
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'A-1', unit: 'g' });
+    expect(ws.skus.byCode('A-1')!.unit).toBe('g');
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'A-1', unit: '   ' });
+    expect(ws.skus.byCode('A-1')!.unit).toBeNull();
+  });
+
+  it('replay() 重建后 unit 保留（事件是唯一真相）', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: 'x', unit: '箱' });
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'A-1', unit: '包' });
+    ws.replay();
+    expect(ws.skus.byCode('A-1')!.unit).toBe('包');
+  });
+
+  it('老库收敛：A2 前结构（无 status/unit 列）文件库重开 → 投影重建，status 收敛 active、unit 为 NULL', async () => {
+    const file = join(tmpdir(), `onewms-a23-conv-${randomUUID()}.db`);
+    try {
+      {
+        const core1 = OneCore.open(file);
+        const d1 = WmsDomain.attach(core1);
+        const w1 = d1.workspace('ws-a23-conv');
+        await w1.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: '螺丝' });
+        await w1.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 3 });
+        core1.close();
+      }
+      // 裸 SQL 模拟 A2 前表结构：有 reorder_point 无 status/unit
+      {
+        const db = new Database(file);
+        try {
+          db.exec(`
+            ALTER TABLE wms_sku RENAME TO wms_sku_legacy;
+            CREATE TABLE wms_sku (
+              id            TEXT NOT NULL PRIMARY KEY,
+              workspace_id  TEXT NOT NULL,
+              sku_code      TEXT NOT NULL,
+              barcode       TEXT,
+              name          TEXT NOT NULL,
+              reorder_point INTEGER NOT NULL DEFAULT 0,
+              ext_data      TEXT NOT NULL DEFAULT '{}',
+              created_at    TEXT NOT NULL,
+              updated_at    TEXT NOT NULL,
+              UNIQUE (workspace_id, sku_code),
+              UNIQUE (workspace_id, barcode)
+            );
+            INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, reorder_point, ext_data, created_at, updated_at)
+            SELECT id, workspace_id, sku_code, barcode, name, reorder_point, ext_data, created_at, updated_at FROM wms_sku_legacy;
+            DROP TABLE wms_sku_legacy;
+          `);
+        } finally {
+          db.close();
+        }
+      }
+      {
+        const core2 = OneCore.open(file);
+        const d2 = WmsDomain.attach(core2);
+        const w2 = d2.workspace('ws-a23-conv');
+        const sku = w2.skus.byCode('A-1')!;
+        expect(sku.status ?? 'active').toBe('active');
+        expect(sku.unit).toBeNull();
+        expect(w2.inventory.quantityOf(sku.id, DEFAULT_LOCATION_ID, DEFAULT_BATCH_NO)).toBe(3);
+        core2.close();
+      }
+    } finally {
+      rmSync(file, { force: true });
+    }
+  });
+});
+
+describe('SKU 软停用（A2）', () => {
+  function countWmsEvents(): number {
+    let n = 0;
+    ws.events.forEach((e) => {
+      if (e.type.startsWith('wms.')) n++;
+    });
+    return n;
+  }
+
+  it('archive → status=archived + 事件落账；unarchive 恢复；重放收敛', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: '建错的档' });
+    const before = countWmsEvents();
+
+    const r = (await ws.tools.invoke('wms.sku.archive', { skuCode: 'A-1' })) as {
+      status: string;
+    };
+    expect(r.status).toBe('archived');
+    expect(ws.skus.byCode('A-1')!.status).toBe('archived');
+    expect(countWmsEvents()).toBe(before + 1);
+
+    await ws.tools.invoke('wms.sku.unarchive', { skuCode: 'A-1' });
+    expect(ws.skus.byCode('A-1')!.status).toBe('active');
+
+    ws.replay();
+    expect(ws.skus.byCode('A-1')!.status).toBe('active'); // 重放收敛到最新状态
+  });
+
+  it('重复停用/重复启用 → 幂等零事件', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: 'x' });
+    await ws.tools.invoke('wms.sku.archive', { skuCode: 'A-1' });
+    const before = countWmsEvents();
+    await ws.tools.invoke('wms.sku.archive', { skuCode: 'A-1' }); // 已停用
+    expect(countWmsEvents()).toBe(before);
+
+    await ws.tools.invoke('wms.sku.unarchive', { skuCode: 'A-1' });
+    const afterUnarchive = countWmsEvents();
+    await ws.tools.invoke('wms.sku.unarchive', { skuCode: 'A-1' }); // 已启用
+    expect(countWmsEvents()).toBe(afterUnarchive);
+  });
+
+  it('不存在的 SKU → SkuNotFoundError', async () => {
+    await expect(ws.tools.invoke('wms.sku.archive', { skuCode: 'ghost' })).rejects.toThrow(
+      SkuNotFoundError,
+    );
+    await expect(ws.tools.invoke('wms.sku.unarchive', { skuCode: 'ghost' })).rejects.toThrow(
+      SkuNotFoundError,
+    );
+  });
+
+  it('软停用语义：停用档退出低库存预警，但存量照常可扣、可扫（无操作拦截）', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: 'x', reorderPoint: 10 });
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 3 }); // 可用 3 < 10 → 预警
+    expect(await ws.tools.invoke('wms.inventory.lowstock', {})).toHaveLength(1);
+
+    await ws.tools.invoke('wms.sku.archive', { skuCode: 'A-1' });
+    expect(await ws.tools.invoke('wms.inventory.lowstock', {})).toHaveLength(0); // 退出预警
+
+    // 存量照常可扣（软停用不拦操作）
+    const r = (await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: -3 })) as {
+      quantity: number;
+    };
+    expect(r.quantity).toBe(0);
+
+    // 条码照常可解析（扫码定位语义）
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'A-1', barcode: '6901' });
+    const resolved = await ws.tools.invoke('wms.sku.resolve', { barcode: '6901' });
+    expect(resolved).toMatchObject({ skuCode: 'A-1' });
+  });
+
+  it('停用档退出效期预警（expiring 不列 archived）', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: 'x' });
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'B-2', name: 'y' });
+    const soon = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+    await ws.tools.invoke('wms.inventory.adjust', {
+      skuCode: 'A-1',
+      delta: 5,
+      batchNo: 'B1',
+      batchExpiryDate: soon,
+    });
+    await ws.tools.invoke('wms.inventory.adjust', {
+      skuCode: 'B-2',
+      delta: 5,
+      batchNo: 'B1',
+      batchExpiryDate: soon,
+    });
+    expect(await ws.tools.invoke('wms.inventory.expiring', { days: 30 })).toHaveLength(2);
+
+    await ws.tools.invoke('wms.sku.archive', { skuCode: 'A-1' });
+    const rows = (await ws.tools.invoke('wms.inventory.expiring', { days: 30 })) as Array<{
+      skuCode: string;
+    }>;
+    expect(rows.map((r) => r.skuCode)).toEqual(['B-2']);
+  });
+});

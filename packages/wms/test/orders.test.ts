@@ -4,7 +4,6 @@ import {
   WmsDomain,
   InvalidTransitionError,
   OrderNotFoundError,
-  OrderStateConflictError,
   SkuNotFoundError,
 } from '../src/index.js';
 
@@ -40,8 +39,8 @@ describe('单据：创建', () => {
     expect(order.direction).toBe('in');
     expect(order.note).toBe('首单');
     expect(ws.orders.lines(order.id)).toEqual([
-      { skuId: ws.skus.byCode('A-1')!.id, locationId: 'DEFAULT', batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 100 },
-      { skuId: ws.skus.byCode('B-2')!.id, locationId: 'DEFAULT', batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 50 },
+      { skuId: ws.skus.byCode('A-1')!.id, locationId: 'DEFAULT', batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 100, fulfilledQty: null },
+      { skuId: ws.skus.byCode('B-2')!.id, locationId: 'DEFAULT', batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 50, fulfilledQty: null },
     ]);
   });
 
@@ -65,7 +64,7 @@ describe('单据：创建', () => {
     expect(ws.orders.list()).toHaveLength(0);
   });
 
-  it('明细行校验：空数组 / 非正整数数量 → 拒绝', async () => {
+  it('明细行校验：空数组 / 非正数量 → 拒绝；小数数量 → 放行', async () => {
     await expect(
       ws.tools.invoke('wms.order.create', { direction: 'in', lines: [] }),
     ).rejects.toThrow(/lines 不能为空/);
@@ -74,7 +73,20 @@ describe('单据：创建', () => {
         direction: 'in',
         lines: [{ skuCode: 'A-1', quantity: 0 }],
       }),
-    ).rejects.toThrow(/正整数/);
+    ).rejects.toThrow(/正数/);
+    await expect(
+      ws.tools.invoke('wms.order.create', {
+        direction: 'in',
+        lines: [{ skuCode: 'A-1', quantity: -0.5 }],
+      }),
+    ).rejects.toThrow(/正数/);
+    // 小数数量（散装/称重）：建单 → 收货 → 库存 0.5
+    const r = await ws.tools.invoke('wms.order.create', {
+      direction: 'in',
+      lines: [{ skuCode: 'A-1', quantity: 0.5 }],
+    });
+    await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'received' });
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id, 'DEFAULT', 'DEFAULT')).toBe(0.5);
   });
 
   it('同单同 SKU 重复行 → 拒绝且不落事件（M9：行唯一约束的命令侧守卫）', async () => {
@@ -143,7 +155,13 @@ describe('单据：状态机', () => {
     expect(ws.events.count()).toBe(baseline + 1); // 1 单据创建（2 SKU 在 beforeEach 已计入 baseline），无状态事件
   });
 
-  it('入库单 received 后不可取消；出库单 picking 可取消', async () => {
+  it('停用冲销模块后，入库单 received 不可取消；出库单 picking 仍可取消', async () => {
+    const { proposalId } = ws.profile.propose(
+      'user:test',
+      [{ op: 'replace', path: '/modules/module.reversal/enabled', value: false }],
+      '关闭冲销',
+    );
+    ws.profile.confirm(proposalId, 'user:test');
     const inNo = await createIn('in');
     await ws.tools.invoke('wms.order.transition', { orderNo: inNo, to: 'received' });
     await expect(
@@ -163,7 +181,7 @@ describe('单据：状态机', () => {
     ).rejects.toThrow(OrderNotFoundError);
   });
 
-  it('并发状态转移：第二条事件的 from 与当前态不符 → OrderStateConflictError（v1 停下等人）', async () => {
+  it('并发状态转移：后到事件进冲突队列，单据停在先到状态，追账不中断', async () => {
     const no = await createIn();
     const orderId = ws.orders.byNo(no)!.id;
     const mk = (eventId: string, actor: string, to: string) => ({
@@ -182,7 +200,11 @@ describe('单据：状态机', () => {
       mk('33333333-3333-4333-8333-333333333331', 'node-peer-a', 'received'),
       mk('33333333-3333-4333-8333-333333333332', 'node-peer-b', 'canceled'),
     ]);
-    // 全序应用：第一条 created→received 成功；第二条 from=created 但实际已 received → 冲突
-    expect(() => ws.sync()).toThrow(OrderStateConflictError);
+    // 全序应用：第一条 created→received 成功；第二条 from=created 但实际已 received → 入队
+    expect(() => ws.sync()).not.toThrow();
+    expect(ws.orders.byNo(no)!.state).toBe('received');
+    const open = ws.orders.listConflicts('open');
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ orderNo: no, fromState: 'created', toState: 'canceled', actualState: 'received' });
   });
 });

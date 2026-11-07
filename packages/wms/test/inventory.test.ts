@@ -87,7 +87,7 @@ describe('库存：流水与余量', () => {
     ).rejects.toThrow(SkuNotFoundError);
     await expect(
       ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 0 }),
-    ).rejects.toThrow(/delta 不能为 0/);
+    ).rejects.toThrow(/delta必须是非 0 数/);
   });
 
   it('query 工具：单个查询与全量清单（read 权限，不落事件）', async () => {

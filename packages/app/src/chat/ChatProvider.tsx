@@ -23,6 +23,8 @@ export interface ChatTurn {
   invocations: ChatInvocation[];
   assistantText: string;
   failed?: string;
+  /** 失败的机器码（如 AI_NOT_CONFIGURED）——UI 按 code 提供跳转动作，不匹配文案 */
+  failedCode?: string;
   done: boolean;
 }
 
@@ -123,7 +125,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             : e instanceof ApiError && e.code === 'AGENT_NOT_FOUND'
               ? '该助手不存在，可能定义已被修改——请重新选择助手。'
               : `请求失败：${e instanceof Error ? e.message : String(e)}`;
-        setTurns((prev) => patchLast(prev, (t) => ({ ...t, failed: errMsg, done: true })));
+        const apiCode = e instanceof ApiError ? e.code : undefined;
+        setTurns((prev) =>
+          patchLast(prev, (t) => ({ ...t, failed: errMsg, failedCode: apiCode, done: true })),
+        );
       } finally {
         streamingRef.current = false;
         setIsStreaming(false);

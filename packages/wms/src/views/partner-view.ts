@@ -141,19 +141,29 @@ export class PartnerView {
     return row ? rowToRecord(row) : undefined;
   }
 
-  /** 全部往来单位（v1 无分页），可按 kind 过滤 */
+  /** 全部往来单位，可按 kind 过滤 */
   list(kind?: PartnerKind): PartnerRecord[] {
-    const rows = kind
-      ? (this.db
-          .prepare<unknown[], PartnerRow>(
-            `SELECT * FROM wms_partner WHERE workspace_id = ? AND kind = ? ORDER BY partner_code`,
-          )
-          .all(this.workspaceId, kind) as unknown as PartnerRow[])
-      : (this.db
-          .prepare<unknown[], PartnerRow>(
-            `SELECT * FROM wms_partner WHERE workspace_id = ? ORDER BY partner_code`,
-          )
-          .all(this.workspaceId) as unknown as PartnerRow[]);
+    return this.listMatching({ kind });
+  }
+
+  /** kind 精确，q 对编码和名称做包含匹配 */
+  listMatching(opts: { kind?: PartnerKind; q?: string }): PartnerRecord[] {
+    const where = ['workspace_id = ?'];
+    const args: unknown[] = [this.workspaceId];
+    if (opts.kind) {
+      where.push('kind = ?');
+      args.push(opts.kind);
+    }
+    if (opts.q) {
+      where.push(`(partner_code LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\')`);
+      const pat = `%${opts.q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+      args.push(pat, pat);
+    }
+    const rows = this.db
+      .prepare<unknown[], PartnerRow>(
+        `SELECT * FROM wms_partner WHERE ${where.join(' AND ')} ORDER BY partner_code`,
+      )
+      .all(...args) as unknown as PartnerRow[];
     return rows.map(rowToRecord);
   }
 

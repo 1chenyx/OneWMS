@@ -25,6 +25,7 @@ export function migrateWms(db: SqliteDatabase): void {
     //  2. wms_sku 缺 barcode 列 = M17 及以前结构（M18 条码管理）；
     //  3. wms_sku 缺 reorder_point 列 = M19 及以前结构（M20 安全库存）；
     //  4. wms_order 缺 partner_id 列 = M20 及以前结构（M21 往来单位）。
+    //  5. wms_order_line.quantity 声明为 INTEGER = 小数数量改造前结构（REAL 化）。
     // M19 冻结表 / M21 partner / picking 表是纯新增（无既有表列变更），但 partner_id
     // 检测触发的整组 DROP 会连带把它们一并重建（IF NOT EXISTS 对新库无感）。
     const dropAll = () => {
@@ -41,6 +42,7 @@ export function migrateWms(db: SqliteDatabase): void {
         DROP TABLE IF EXISTS wms_stocktake_line;
         DROP TABLE IF EXISTS wms_picking;
         DROP TABLE IF EXISTS wms_picking_line;
+        DROP TABLE IF EXISTS wms_order_conflict;
       `);
     };
     const ledgerCols = db.pragma('table_info(wms_inventory_ledger)') as { name: string }[];
@@ -54,14 +56,30 @@ export function migrateWms(db: SqliteDatabase): void {
     if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'reorder_point')) {
       dropAll();
     }
+    // A2 软停用 status 列 / A3 单位 unit 列——老库缺列即整组重建（事件重放收敛）
+    if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'status')) {
+      dropAll();
+    }
+    if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'unit')) {
+      dropAll();
+    }
     const orderCols = db.pragma('table_info(wms_order)') as { name: string }[];
     if (orderCols.length > 0 && !orderCols.some((c) => c.name === 'partner_id')) {
       dropAll();
     }
+    // 数量列 REAL 化（小数数量）：老库 quantity 声明为 INTEGER → 整组重建
+    const orderLineCols = db.pragma('table_info(wms_order_line)') as { name: string; type: string }[];
+    if (orderLineCols.length > 0) {
+      const qtyCol = orderLineCols.find((c) => c.name === 'quantity');
+      if (qtyCol && qtyCol.type.toUpperCase() !== 'REAL') {
+        dropAll();
+      }
+    }
 
     // ── SKU 主数据（业务键：workspace + sku_code；M18 加 barcode 条码列——
     //    同库唯一：扫码枪识读的物理标识不允许二义；SQLite 中多行 NULL 不冲突，
-    //    无条码的 SKU 互不影响；M20 加 reorder_point 安全库存列——0 = 不预警）──
+    //    无条码的 SKU 互不影响；M20 加 reorder_point 安全库存列——0 = 不预警；
+    //    A2 加 status 软停用列、A3 加 unit 单位列）──
     db.exec(`
       CREATE TABLE IF NOT EXISTS wms_sku (
         id             TEXT NOT NULL PRIMARY KEY,
@@ -70,6 +88,8 @@ export function migrateWms(db: SqliteDatabase): void {
         barcode        TEXT,
         name           TEXT NOT NULL,
         reorder_point  INTEGER NOT NULL DEFAULT 0,
+        status         TEXT NOT NULL DEFAULT 'active',
+        unit           TEXT,
         ext_data       TEXT NOT NULL DEFAULT '{}',
         created_at     TEXT NOT NULL,
         updated_at     TEXT NOT NULL,
@@ -131,6 +151,25 @@ export function migrateWms(db: SqliteDatabase): void {
         UNIQUE (workspace_id, order_no)
       );
       CREATE INDEX IF NOT EXISTS idx_wms_order_ws ON wms_order (workspace_id, direction);
+      CREATE INDEX IF NOT EXISTS idx_wms_order_time ON wms_order (workspace_id, created_at);
+    `);
+
+    // 状态冲突队列（投影，可丢）：from 对不上的 state_changed 落在这里，不改单据状态。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_order_conflict (
+        event_id     TEXT NOT NULL PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        order_id     TEXT NOT NULL,
+        order_no     TEXT NOT NULL,
+        direction    TEXT NOT NULL,
+        from_state   TEXT NOT NULL,
+        to_state     TEXT NOT NULL,
+        actual_state TEXT NOT NULL,
+        status       TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_order_conflict_ws
+        ON wms_order_conflict (workspace_id, status);
     `);
 
     // ── 单据行（M11：一行 = 单据 + SKU + 库位 + 批次；行 id 四段派生，重放幂等键）──
@@ -143,11 +182,17 @@ export function migrateWms(db: SqliteDatabase): void {
         location_id  TEXT NOT NULL DEFAULT '${DEFAULT_LOCATION_ID}',
         batch_no     TEXT NOT NULL DEFAULT '${DEFAULT_BATCH_NO}',
         batch_expiry_date TEXT,
-        quantity     INTEGER NOT NULL,
+        quantity     REAL NOT NULL,
+        fulfilled_qty REAL,
         UNIQUE (workspace_id, order_id, sku_id, location_id, batch_no)
       );
       CREATE INDEX IF NOT EXISTS idx_wms_order_line_order ON wms_order_line (workspace_id, order_id);
     `);
+    // 短收短发：已入账净量。老库加列，不整组重建（事件重放能补上新事件；旧事件保持 NULL = 按订单数量）
+    const lineColsNow = db.pragma('table_info(wms_order_line)') as { name: string }[];
+    if (lineColsNow.length > 0 && !lineColsNow.some((c) => c.name === 'fulfilled_qty')) {
+      db.exec(`ALTER TABLE wms_order_line ADD COLUMN fulfilled_qty REAL`);
+    }
 
     // ── 库存流水（append-only；一事件一行，event_id 即幂等键；M11 加批次维度）──
     db.exec(`
@@ -158,13 +203,17 @@ export function migrateWms(db: SqliteDatabase): void {
         location_id  TEXT NOT NULL DEFAULT '${DEFAULT_LOCATION_ID}',
         batch_no     TEXT NOT NULL DEFAULT '${DEFAULT_BATCH_NO}',
         batch_expiry_date TEXT,
-        delta        INTEGER NOT NULL,
+        delta        REAL NOT NULL,
         reason       TEXT NOT NULL,
         order_id     TEXT,
         created_at   TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_wms_ledger_sku
         ON wms_inventory_ledger (workspace_id, sku_id);
+      CREATE INDEX IF NOT EXISTS idx_wms_ledger_order
+        ON wms_inventory_ledger (workspace_id, order_id);
+      CREATE INDEX IF NOT EXISTS idx_wms_ledger_time
+        ON wms_inventory_ledger (workspace_id, created_at);
     `);
 
     // ── 库存汇总（期初 + Σ流水的缓存投影；唯一写路径在 InventoryView；
@@ -177,7 +226,7 @@ export function migrateWms(db: SqliteDatabase): void {
         location_id  TEXT NOT NULL DEFAULT '${DEFAULT_LOCATION_ID}',
         batch_no     TEXT NOT NULL DEFAULT '${DEFAULT_BATCH_NO}',
         batch_expiry_date TEXT,
-        quantity     INTEGER NOT NULL DEFAULT 0,
+        quantity     REAL NOT NULL DEFAULT 0,
         PRIMARY KEY (workspace_id, sku_id, location_id, batch_no)
       );
     `);
@@ -191,7 +240,7 @@ export function migrateWms(db: SqliteDatabase): void {
         id           TEXT NOT NULL PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         sku_id       TEXT NOT NULL,
-        quantity     INTEGER NOT NULL,
+        quantity     REAL NOT NULL,
         reason       TEXT NOT NULL,
         created_at   TEXT NOT NULL
       );
@@ -228,8 +277,8 @@ export function migrateWms(db: SqliteDatabase): void {
         sku_id        TEXT NOT NULL,
         location_id   TEXT NOT NULL,
         batch_no      TEXT NOT NULL,
-        expected_qty  INTEGER NOT NULL,
-        counted_qty   INTEGER,
+        expected_qty  REAL NOT NULL,
+        counted_qty   REAL,
         UNIQUE (workspace_id, stocktake_id, sku_id, location_id, batch_no)
       );
       CREATE INDEX IF NOT EXISTS idx_wms_stocktake_line_st
@@ -265,10 +314,10 @@ export function migrateWms(db: SqliteDatabase): void {
         order_no              TEXT NOT NULL,
         order_line_id         TEXT NOT NULL,
         sku_id                TEXT NOT NULL,
-        qty_to_pick           INTEGER NOT NULL,
+        qty_to_pick           REAL NOT NULL,
         suggested_location_id TEXT NOT NULL,
         suggested_batch_no    TEXT NOT NULL,
-        picked_qty            INTEGER NOT NULL DEFAULT 0,
+        picked_qty            REAL NOT NULL DEFAULT 0,
         picked_location_id    TEXT,
         picked_batch_no       TEXT,
         created_at            TEXT NOT NULL,

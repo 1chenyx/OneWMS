@@ -7,6 +7,13 @@ import { createAppContext, type AppContext } from './context.js';
 import { apiErrorHandler } from './errors.js';
 import { readAiConfig } from './ai-config.js';
 import { readAiConfigFile, resolveAiConfigPath } from './ai-config-store.js';
+import {
+  lastBackupAtFromDir,
+  performBackup,
+  resolveBackupDir,
+  resolveBackupIntervalMs,
+  resolveBackupKeep,
+} from './backup/backup-service.js';
 import { mountStatic } from './static.js';
 import { profileRoutes } from './routes/profile.js';
 import { proposalRoutes } from './routes/proposals.js';
@@ -15,9 +22,11 @@ import { agentRoutes } from './routes/agents.js';
 import { aiConfigRoutes } from './routes/ai-config.js';
 import { memoryRoutes } from './routes/memory.js';
 import { wmsRoutes } from './routes/wms.js';
-import { syncRoutes } from './routes/sync.js';
+import { lanIPv4, syncRoutes } from './routes/sync.js';
 import { migrationRoutes } from './routes/migration.js';
+import { backupRoutes, backupSnapshot } from './routes/backups.js';
 import { runSyncRound } from './sync/sync-client.js';
+import { envPeers, mergePeerUrls, resolvePeersPath } from './sync/peer-store.js';
 
 export { createAppContext } from './context.js';
 export type { AppContext } from './context.js';
@@ -40,6 +49,7 @@ export function createApp(ctx: AppContext): Hono {
   app.route('/api/memory', memoryRoutes(ctx));
   app.route('/api/sync', syncRoutes(ctx));
   app.route('/api/migration', migrationRoutes(ctx));
+  app.route('/api/backups', backupRoutes(ctx));
   app.route('/api', wmsRoutes(ctx));
   mountStatic(app);
   return app;
@@ -68,30 +78,43 @@ export function start(): void {
     aiConfigPath,
     aiConfigSource: fileAi ? 'file' : envAi ? 'env' : 'none',
     aiConfigEnv: envAi,
+    backupDir: resolveBackupDir(dbPath),
+    backupIntervalMs: resolveBackupIntervalMs(),
+    backupKeep: resolveBackupKeep(),
+    peersPath: resolvePeersPath(dbPath),
   });
   const app = createApp(ctx);
 
   const server = serve({ fetch: app.fetch, port }, (info) => {
+    ctx.listeningPort = info.port; // 记端口：/api/sync/lan-address 要拼出「对端能访问的我」
     console.log(
       `[one-server] http://localhost:${info.port}  workspace=${workspaceId}  db=${dbPath}  ai=${ai ? ai.model : 'off'}${fileAi ? '（页面配置）' : ''}`,
     );
+    console.log(
+      ctx.backupDir === null
+        ? '[one-server] 自动备份：关闭（当前宿主无可写数据目录）'
+        : `[one-server] 自动备份：${ctx.backupDir}  间隔=${ctx.backupIntervalMs === 0 ? '仅手动' : `${Math.round(ctx.backupIntervalMs / 3_600_000)} 小时`}  保留=${ctx.backupKeep} 份`,
+    );
+    const ip = lanIPv4();
+    console.log(
+      ip === null
+        ? '[one-server] 局域网地址：未发现（另一台设备无法连过来同步）'
+        : `[one-server] 局域网地址：http://${ip}:${info.port}  ← 另一台设备「添加节点」填这个（也可在设置页扫二维码）`,
+    );
   });
 
-  // 定时同步轮询（M5）：ONE_SYNC_PEERS 非空时启动，默认 30s 一轮
-  const syncPeers = (process.env.ONE_SYNC_PEERS ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const syncTimer =
-    syncPeers.length > 0
-      ? setInterval(
-          () => void syncAllPeers(ctx, syncPeers),
-          Number(process.env.ONE_SYNC_INTERVAL_MS ?? 30_000),
-        )
-      : undefined;
+  const stopBackupTimer = startBackupTimer(ctx);
+
+  // 定时同步轮询（M5 + 扫码组网）：常驻，每 tick 动态合并「已配对清单 ∪ env」。
+  // 无条件启动是关键——否则运行中从页面添加的第一个节点永远不会被轮询到。
+  const syncTimer = setInterval(
+    () => void syncAllPeers(ctx),
+    Number(process.env.ONE_SYNC_INTERVAL_MS ?? 30_000),
+  );
 
   const shutdown = () => {
-    if (syncTimer) clearInterval(syncTimer);
+    clearInterval(syncTimer);
+    stopBackupTimer?.();
     server.close();
     ctx.close();
     process.exit(0);
@@ -100,8 +123,15 @@ export function start(): void {
   process.on('SIGTERM', shutdown);
 }
 
-/** 定时轮询：逐 peer 拉取回合，单败只记日志（下一轮自然重试） */
-async function syncAllPeers(ctx: AppContext, peers: string[]): Promise<void> {
+/**
+ * 定时轮询：每 tick 现算 peer 集合（页面加的节点下一轮就参与，无需重启），
+ * 逐 peer 拉取回合，单败只记日志（下一轮自然重试）；空集合直接跳过。
+ */
+async function syncAllPeers(ctx: AppContext): Promise<void> {
+  const peers = mergePeerUrls(
+    ctx.peers.list().map((p) => p.url),
+    envPeers(),
+  );
   for (const peer of peers) {
     try {
       const r = await runSyncRound({
@@ -117,5 +147,46 @@ async function syncAllPeers(ctx: AppContext, peers: string[]): Promise<void> {
     } catch (err) {
       console.error(`[one-server] 同步失败 peer=${peer}: ${err instanceof Error ? err.message : err}`);
     }
+  }
+}
+
+/**
+ * 自动备份定时器（滚动保留）。
+ *
+ * 首轮延迟按「上次备份时刻 + 间隔」算，而不是无脑等一个完整间隔：
+ *  - 目录里已有备份且未到期 → 只等剩下的时间（一天内反复重启不反复备份）；
+ *  - 已过期（桌面版隔了一夜才开机）→ 立即补一份；
+ *  - 全新库（目录里没备份）→ 等一个完整间隔（此刻也没什么可丢的）。
+ * 单轮失败只记日志、下一轮自然重试——备份不该把服务带崩。
+ */
+function startBackupTimer(ctx: AppContext): (() => void) | undefined {
+  if (ctx.backupDir === null || ctx.backupIntervalMs <= 0) return undefined;
+  const interval = ctx.backupIntervalMs;
+  const last = lastBackupAtFromDir(ctx.backupDir);
+  const delay = last === 0 ? interval : Math.max(0, last + interval - Date.now());
+  let repeat: ReturnType<typeof setInterval> | undefined;
+  const first = setTimeout(() => {
+    runBackupOnce(ctx);
+    repeat = setInterval(() => runBackupOnce(ctx), interval);
+  }, delay);
+  return () => {
+    clearTimeout(first);
+    if (repeat) clearInterval(repeat);
+  };
+}
+
+function runBackupOnce(ctx: AppContext): void {
+  if (ctx.backupDir === null) return;
+  try {
+    const { name, removed } = performBackup({
+      dir: ctx.backupDir,
+      keep: ctx.backupKeep,
+      ...backupSnapshot(ctx),
+    });
+    console.log(
+      `[one-server] 自动备份完成 ${name}${removed.length > 0 ? `（滚动删除 ${removed.length} 份，保留最新 ${ctx.backupKeep} 份）` : ''}`,
+    );
+  } catch (err) {
+    console.error(`[one-server] 自动备份失败：${err instanceof Error ? err.message : err}`);
   }
 }

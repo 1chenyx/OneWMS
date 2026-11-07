@@ -19,6 +19,13 @@ export interface SkuRecord {
   readonly name: string;
   /** 安全库存（M20）：低库存预警阈值；0 = 不预警。预警按可用量（余量−冻结）判定 */
   readonly reorderPoint: number;
+  /**
+   * 档案状态（A2 软停用）：'active' = 启用（缺省）；'archived' = 已停用。
+   * 声明为可选——老事件重放/测试 fixture 字面量不破，消费端统一 `?? 'active'` 容忍。
+   */
+  readonly status?: string;
+  /** 单位（A3）：数量单位（kg / 箱 / 件…）；null = 不显示 */
+  readonly unit: string | null;
   readonly extData: Record<string, unknown>;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -30,6 +37,8 @@ interface SkuRow {
   barcode: string | null;
   name: string;
   reorder_point: number;
+  status: string;
+  unit: string | null;
   ext_data: string;
   created_at: string;
   updated_at: string;
@@ -42,6 +51,8 @@ function rowToRecord(row: SkuRow): SkuRecord {
     barcode: row.barcode,
     name: row.name,
     reorderPoint: row.reorder_point,
+    status: row.status,
+    unit: row.unit || null,
     extData: JSON.parse(row.ext_data) as Record<string, unknown>,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -63,8 +74,8 @@ export class SkuView {
         // sku_code / barcode 唯一冲突不走 OR IGNORE 静默——那是业务冲突，必须显式炸出来
         this.db
           .prepare(
-            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, reorder_point, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, reorder_point, status, unit, ext_data, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             p.skuId,
@@ -73,6 +84,8 @@ export class SkuView {
             p.barcode ?? null,
             p.name,
             p.reorderPoint ?? 0,
+            'active',
+            p.unit ?? null,
             JSON.stringify(p.extData ?? {}),
             env.createdAt,
             env.createdAt,
@@ -87,6 +100,8 @@ export class SkuView {
                name = COALESCE(?, name),
                barcode = COALESCE(?, barcode),
                reorder_point = COALESCE(?, reorder_point),
+               unit = COALESCE(?, unit),
+               status = COALESCE(?, status),
                ext_data = COALESCE(?, ext_data),
                updated_at = ?
              WHERE workspace_id = ? AND id = ?`,
@@ -95,6 +110,8 @@ export class SkuView {
             p.name ?? null,
             p.barcode ?? null,
             p.reorderPoint ?? null,
+            p.unit ?? null,
+            p.status ?? null,
             p.extData === undefined ? null : JSON.stringify(p.extData),
             env.createdAt,
             this.workspaceId,
@@ -131,11 +148,37 @@ export class SkuView {
     return row ? rowToRecord(row) : undefined;
   }
 
-  /** 全部 SKU（v1 无分页；数据量守门是未来投影优化的事） */
+  /** 全部 SKU，含已停用。界面清单用 listMatching 排除停用档 */
   list(): SkuRecord[] {
+    return this.listMatching({ includeArchived: true });
+  }
+
+  /**
+   * barcode 精确，q 对编码/名称/条码做包含匹配。
+   * includeArchived 缺省 false：不带条码时排除已停用。扫码（带 barcode）由调用方传 true。
+   */
+  listMatching(opts: { barcode?: string; q?: string; includeArchived?: boolean }): SkuRecord[] {
+    const where = ['workspace_id = ?'];
+    const args: unknown[] = [this.workspaceId];
+    if (opts.barcode) {
+      where.push('barcode = ?');
+      args.push(opts.barcode);
+    }
+    if (!opts.includeArchived && !opts.barcode) {
+      where.push(`(status = 'active' OR status IS NULL)`);
+    }
+    if (opts.q) {
+      where.push(
+        `(sku_code LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\' OR IFNULL(barcode, '') LIKE ? ESCAPE '\\')`,
+      );
+      const pat = likeContains(opts.q);
+      args.push(pat, pat, pat);
+    }
     const rows = this.db
-      .prepare<unknown[], SkuRow>(`SELECT * FROM wms_sku WHERE workspace_id = ? ORDER BY sku_code`)
-      .all(this.workspaceId) as unknown as SkuRow[];
+      .prepare<unknown[], SkuRow>(
+        `SELECT * FROM wms_sku WHERE ${where.join(' AND ')} ORDER BY sku_code`,
+      )
+      .all(...args) as unknown as SkuRow[];
     return rows.map(rowToRecord);
   }
 
@@ -144,4 +187,8 @@ export class SkuView {
       .prepare<unknown[], SkuRow>(`SELECT * FROM wms_sku WHERE workspace_id = ? AND id = ?`)
       .get(this.workspaceId, id) as SkuRow | undefined;
   }
+}
+
+function likeContains(q: string): string {
+  return `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 }

@@ -318,11 +318,17 @@ describe('移库', () => {
     ).rejects.toThrow(/相同/);
   });
 
-  it('移库数量非正整数 → 拒绝（schema 层 minimum: 1 先于 handler 守卫）', async () => {
+  it('移库数量非正数 → 拒绝（schema 层 minimum 先于 handler 守卫）；小数移库 → 放行', async () => {
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 50 });
     await expect(
       ws.tools.invoke('wms.inventory.move', { skuCode: 'A-1', toLocationCode: 'A-01', quantity: 0 }),
-    ).rejects.toThrow(/不能小于 1/);
+    ).rejects.toThrow(/不能小于/);
+    await ws.tools.invoke('wms.inventory.move', {
+      skuCode: 'A-1',
+      toLocationCode: 'A-01',
+      quantity: 0.5,
+    });
+    expect(qty('A-1', 'A-01')).toBe(0.5);
   });
 });
 

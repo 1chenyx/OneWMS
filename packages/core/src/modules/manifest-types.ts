@@ -5,7 +5,7 @@
  * entity / workflowId / 事件名对内核是不透明键（领域隔离铁律）。
  */
 import type { FieldSharing } from '../registry/key-naming.js';
-import type { ProfileFieldType } from '../profile/profile-types.js';
+import type { ProfileFieldType, WorkflowEffect } from '../profile/profile-types.js';
 import type { ParameterSchema } from '../bus/schema-validator.js';
 
 /** 内核版本（与 packages/core/package.json 的 version 保持同步——手写纪律，minCoreVersion 的比较基准） */
@@ -53,10 +53,18 @@ export interface ManifestTool {
   permission: 'read' | 'write';
 }
 
+/** 模块声明的一条转移。effect 可选；安装时内核盖上 providedBy */
+export interface ManifestWorkflowTransition {
+  from: string;
+  to: string;
+  when?: string;
+  effect?: WorkflowEffect;
+}
+
 /** manifest 流程分区：贡献（§6.3 模块永不替换流程，只做贡献；同 id 状态冲突安装时拒绝） */
 export interface ManifestContribution {
   states: { id: string; label: string }[];
-  transitions: { from: string; to: string; when?: string }[];
+  transitions: ManifestWorkflowTransition[];
 }
 
 /**
@@ -102,7 +110,7 @@ export interface ModuleManifest {
 
   workflows?: {
     /** 基础流程种子（本实现新增）：逐流程守卫——目标流程不存在才装 */
-    base?: Record<string, { states: { id: string; label: string }[]; transitions: { from: string; to: string; when?: string }[] }>;
+    base?: Record<string, { states: { id: string; label: string }[]; transitions: ManifestWorkflowTransition[] }>;
     /** 贡献：向既有流程叠加状态与转移（目标流程必须已存在） */
     contributes?: Record<string, ManifestContribution>;
   };

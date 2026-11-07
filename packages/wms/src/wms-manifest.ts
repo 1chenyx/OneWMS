@@ -97,6 +97,24 @@ export function wmsManifest(toolDefs: ToolDefinition[]): ModuleManifest {
               '效期看板预警层阈值（天）：剩余天数 ≤ 此值且 > 紧急阈值的批次标 warning。必须大于 expiryCriticalDays，否则两键一起回落缺省（7/30）。仅影响看板分层展示',
             default: 30,
           },
+          inboundIncreaseState: {
+            type: 'string',
+            description:
+              '入库单进入该状态时按行增加库存。缺省 received。转移上若写了 effect，以转移为准，本键不生效。改成空串会回落 received',
+            default: 'received',
+          },
+          outboundDecreaseState: {
+            type: 'string',
+            description:
+              '出库单进入该状态时按行扣减库存。缺省 shipped。转移上的 effect 优先。改成空串会回落 shipped',
+            default: 'shipped',
+          },
+          outboundCheckState: {
+            type: 'string',
+            description:
+              '出库单进入该状态时只预检余量、不过账。缺省 picking。转移上的 effect 优先。改成空串会回落 picking',
+            default: 'picking',
+          },
         },
       },
     },

@@ -67,6 +67,53 @@ export function isExpired(batchExpiryDate: string | null, today: string): batchE
   return batchExpiryDate !== null && batchExpiryDate < today;
 }
 
+// ── 小数数量（散装/称重场景）：全链路统一 3 位小数精度 ──────────────
+// 数量不再要求整数（个人仓库常卖 0.5 斤瓜子、1.75 米电线），但必须收敛到
+// 固定精度，否则浮点求和漂移会让余量守卫出现假性不足/假性富余。
+// 铁律：入库（写路径）一律 quantize 后落事件；守卫比较一律带 QTY_EPS。
+
+/** 数量精度：3 位小数（0.001） */
+export const QTY_PRECISION = 3;
+/** 守卫比较容差：浮点求和漂移吸收（远小于最小步长 0.001） */
+export const QTY_EPS = 1e-9;
+
+/** 量化到 3 位小数（入参与返回都是安全有限数的前提下调用） */
+export function quantizeQty(x: number): number {
+  return Math.round(x * 10 ** QTY_PRECISION) / 10 ** QTY_PRECISION;
+}
+
+/** 校验并量化正数量（> 0，≤ 3 位小数）：不合法抛 TOOL_REJECTED。label 如「第 1 行数量」。 */
+export function assertPositiveQty(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`TOOL_REJECTED: ${label}必须是正数（最多 ${QTY_PRECISION} 位小数，实际 ${String(value)}）`);
+  }
+  const q = quantizeQty(value);
+  if (q <= 0) {
+    throw new Error(`TOOL_REJECTED: ${label}精度超出 ${QTY_PRECISION} 位小数，量化后为 0`);
+  }
+  return q;
+}
+
+/** 校验并量化非负数量（≥ 0，≤ 3 位小数）：盘点实盘数等允许为零的场景。 */
+export function assertNonNegativeQty(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new Error(`TOOL_REJECTED: ${label}必须是不小于 0 的数（最多 ${QTY_PRECISION} 位小数，实际 ${String(value)}）`);
+  }
+  return quantizeQty(value);
+}
+
+/** 校验并量化非零数量（调整 delta）：正入负出，0 与量化后为 0 都拒。 */
+export function assertNonZeroQty(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) {
+    throw new Error(`TOOL_REJECTED: ${label}必须是非 0 数（正数入库，负数出库）`);
+  }
+  const q = quantizeQty(value);
+  if (q === 0) {
+    throw new Error(`TOOL_REJECTED: ${label}精度超出 ${QTY_PRECISION} 位小数，量化后为 0`);
+  }
+  return q;
+}
+
 /** 余量守卫错误消息的桶标识：DEFAULT 批次不加批次后缀（与 M10 消息逐字节兼容） */
 export function bucketLabel(skuCode: string, locationCode: string, batchNo: string): string {
   return batchNo === DEFAULT_BATCH_NO

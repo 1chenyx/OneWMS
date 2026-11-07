@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ToolDefinition } from '@one/core';
 import { DEFAULT_LOCATION_ID, WMS_EVENT_TYPES } from '../events/catalog.js';
-import { LocationAlreadyExistsError } from '../errors.js';
+import { LocationAlreadyExistsError, LocationNotFoundError } from '../errors.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
 export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
@@ -43,6 +43,41 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
     },
   };
 
+  const locationUpdate: ToolDefinition<{ locationCode: string; name?: string }> = {
+    id: 'wms.location.update',
+    label: '更新库位',
+    description:
+      '更新库位的显示名称。只传需要修改的字段，未传字段保持不变。locationCode 是业务键不可改（历史单据/流水按它引用）——要换编码请新建库位再移库。虚拟库位 DEFAULT 不可更新（它不落库）。',
+    permission: 'write',
+    parameters: {
+      type: 'object',
+      properties: {
+        locationCode: { type: 'string', description: '要更新的库位编码' },
+        name: { type: 'string', description: '新的库位显示名称（可选）' },
+      },
+      required: ['locationCode'],
+    },
+    handler: (params, ctx) => {
+      const ws = resolveWorkspace(ctx.workspaceId);
+      ws.sync();
+      const location = ws.locations.byCode(params.locationCode);
+      if (!location) throw new LocationNotFoundError(params.locationCode);
+      const name = params.name === undefined ? undefined : String(params.name).trim();
+      if (name === '') throw new Error('TOOL_REJECTED: name 不能为空字符串（不改就别传）');
+      ctx.appendEvent(WMS_EVENT_TYPES.locationUpdated, {
+        locationId: location.id,
+        locationCode: location.locationCode,
+        name,
+      });
+      ws.sync();
+      return {
+        locationId: location.id,
+        locationCode: location.locationCode,
+        name: name ?? location.name,
+      };
+    },
+  };
+
   const locationList: ToolDefinition<Record<string, never>> = {
     id: 'wms.location.list',
     label: '库位清单',
@@ -63,5 +98,5 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
     },
   };
 
-  return [def(locationCreate), def(locationList)];
+  return [def(locationCreate), def(locationUpdate), def(locationList)];
 }

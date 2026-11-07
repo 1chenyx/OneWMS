@@ -1,4 +1,4 @@
-import { isExpired } from './inventory-policy.js';
+import { isExpired, QTY_EPS } from './inventory-policy.js';
 
 /**
  * 批次分配核心（M21 自 batch-allocation.ts 提取）：按策略排序候选桶并依序
@@ -47,7 +47,7 @@ export function allocateFromBuckets(
   let remaining = quantity;
   const parts: { batchNo: string; quantity: number }[] = [];
   for (const b of usable) {
-    if (remaining <= 0) break;
+    if (remaining <= QTY_EPS) break; // 小数求和漂移吸收：余量≈0 即视为装满
     const take = Math.min(remaining, b.quantity);
     parts.push({ batchNo: b.batchNo, quantity: take });
     remaining -= take;

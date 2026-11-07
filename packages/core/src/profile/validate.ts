@@ -39,6 +39,7 @@ export interface ValidationResult {
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'date', 'json'] as const;
 const WHEN_RE = /^!?(module\.[A-Za-z0-9][A-Za-z0-9._-]*)\.enabled$/;
+const EFFECT_VALUES = new Set(['increase', 'decrease', 'check', 'none']);
 
 /**
  * 校验一个 patch：语法 → 应用 → 语义。任何一步的 error 都会收集（不短路的完整清单，
@@ -260,6 +261,9 @@ function validateWorkflow(wfId: string, wf: WorkflowDef, errors: ValidationIssue
     }
     if (tr.when !== undefined && !WHEN_RE.test(tr.when)) {
       errors.push(issue('WF_WHEN', `流程 ${wfId} 的转移 ${tr.from}→${tr.to} 的 when 条件非法: "${tr.when}"（只允许 module.{id}.enabled 或其否定）`));
+    }
+    if (tr.effect !== undefined && !EFFECT_VALUES.has(tr.effect)) {
+      errors.push(issue('WF_EFFECT', `流程 ${wfId} 的转移 ${tr.from}→${tr.to} 的 effect 非法: "${String(tr.effect)}"（只允许 increase / decrease / check / none）`));
     }
     const list = outEdges.get(tr.from) ?? [];
     list.push({ to: tr.to, when: tr.when });

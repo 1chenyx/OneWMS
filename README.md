@@ -19,7 +19,7 @@ AI 永远拿不到 SQL 权限，它的所有操作分两条通道：
 每个节点都是完整系统，离线即普通软件。多节点通过事件账本（oplog）同步，局域网/VPN 组网内自动保持一致，无中心服务器依赖。
 
 ### 🖥️ 一套前端，多种形态
-Tauri 桌面应用（约 15MB，无需安装环境）、浏览器访问本地服务，数据落在本地 SQLite。
+Tauri 桌面应用（约 46MB，内嵌 Node.js 运行时，无需安装环境）、浏览器访问本地服务，数据落在本地 SQLite。
 
 ## 功能一览
 
@@ -42,6 +42,17 @@ TypeScript 单语言全栈 + Tauri（Rust 壳）：
 - **前端 `@one/app`**：React + JSON Schema 动态表单
 - **桌面 `packages/desktop`**：Tauri 打包
 
+## 只想用，不想装开发环境？
+
+到 [Releases](../../releases) 页下载 Windows 版，二选一：
+
+- `OneWMS-<版本>-setup-win-x64.exe`：双击安装（推荐）
+- `OneWMS-<版本>-portable-win-x64.zip`：解压后双击 `OneWMS.exe` 即用，不改注册表
+
+数据落在 `data/`（SQLite + JSON），自动备份在 `data/backups/`——默认每天一份、保留最近 7 份，含 AI 配置；设置页可随时手动备份/恢复。AI 需要在应用里「设置 → AI」填一次模型信息，不填也能正常用仓库功能（AI 入口关闭）。
+
+多台设备共用一个仓库：在「设置 → 节点」页把自己的局域网地址给另一台设备（可直接扫二维码或抄地址），对方在「设置 → 局域网同步」里「添加节点」即可，配对关系保存在服务端，重启不丢。
+
 ## 快速开始
 
 要求 Node.js >= 22。
@@ -49,6 +60,9 @@ TypeScript 单语言全栈 + Tauri（Rust 壳）：
 ```powershell
 # 安装依赖
 npm install
+
+# 构建工作区包（dev 运行依赖 dist/ 产物；dev:server 的 predev 钩子也会自动执行）
+npm run build
 
 # 启动后端服务
 npm run dev:server
@@ -59,11 +73,13 @@ npm run dev:app
 
 配置 AI：复制 `.env.example` 为 `.env`，填入模型信息（支持智谱等 OpenAI 兼容云 API，或本地 Ollama）。不配置 AI 时系统照常运行，仅 AI 入口关闭。
 
-打包桌面应用：
+打包桌面应用（本机）：
 
 ```powershell
 npm run package:desktop
 ```
+
+发布新版：把根 `package.json` 与 `packages/desktop/src-tauri/tauri.conf.json` 的 `version` 改成同一个新版本，提交后 `git tag v0.2.0` 并 `git push --tags`，GitHub Actions（`.github/workflows/release.yml`）会自动构建安装包 + 便携版并发布到 Release 页。push / PR 另有 `.github/workflows/ci.yml` 跑类型检查与全量单测。
 
 ## 更多文档
 

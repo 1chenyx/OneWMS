@@ -16,7 +16,7 @@ import {
 import { readWmsSettings } from '../config/wms-settings.js';
 import { allocateFromBuckets } from '../state/allocation.js';
 import { assertOutboundBuckets } from '../state/outbound-guards.js';
-import { codeOfLocation, resolveLocation } from '../state/inventory-policy.js';
+import { assertNonNegativeQty, codeOfLocation, QTY_EPS, resolveLocation } from '../state/inventory-policy.js';
 import {
   assertTransition,
   WORKFLOW_BY_DIRECTION,
@@ -145,7 +145,7 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
     id: 'wms.picking.pick',
     label: '录入实拣',
     description:
-      '为拣货单一行录入实拣（不落库存流水，扣减发生在关单）。参数：pickingNo、orderNo、skuCode、suggestedBatchNo（定位行，缺省 DEFAULT）、pickedQty（本行累计实拣量，后到者胜）、locationCode/pickedBatchNo（实拣桶，缺省用建议桶）。picker 可改拣其他库位/批次的货——记录事实，关单按实拣桶校验与扣减。',
+      '为拣货单一行录入实拣（不落库存流水，扣减发生在关单）。参数：pickingNo、orderNo、skuCode、suggestedBatchNo（定位行，缺省 DEFAULT）、pickedQty（本行累计实拣量，后到者胜，支持 3 位小数；必须 ≤ 应拣量）、locationCode/pickedBatchNo（实拣桶，缺省用建议桶）。picker 可改拣其他库位/批次的货——记录事实，关单按实拣桶校验与扣减。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -174,7 +174,8 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
         .find((l) => l.orderNo === params.orderNo && l.skuId === sku?.id && l.suggestedBatchNo === suggested);
       const lineKey = `${params.orderNo}/${params.skuCode}@${suggested}`;
       if (!sku || !line) throw new PickingLineNotFoundError(params.pickingNo, lineKey);
-      if (!Number.isInteger(params.pickedQty) || params.pickedQty < 0 || params.pickedQty > line.qtyToPick) {
+      const pickedQty = assertNonNegativeQty(params.pickedQty, 'pickedQty');
+      if (pickedQty > line.qtyToPick + QTY_EPS) {
         throw new PickingOverPickError(params.pickingNo, lineKey, line.qtyToPick, line.pickedQty, params.pickedQty);
       }
 
@@ -189,7 +190,7 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
         pickingId: picking.id,
         pickingNo: picking.pickingNo,
         lineId: line.id,
-        pickedQty: params.pickedQty,
+        pickedQty,
         pickedLocationId: pickedLocation.locationId,
         pickedLocationCode: pickedLocation.locationCode,
         pickedBatchNo,
@@ -198,8 +199,8 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
       return {
         pickingNo: picking.pickingNo,
         lineId: line.id,
-        pickedQty: params.pickedQty,
-        remainingToPick: Math.max(0, line.qtyToPick - params.pickedQty),
+        pickedQty,
+        remainingToPick: Math.max(0, line.qtyToPick - pickedQty),
       };
     },
   };

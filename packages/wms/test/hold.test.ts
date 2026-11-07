@@ -89,13 +89,13 @@ describe('冻结：hold/release 基础链路（M19）', () => {
     ).rejects.toThrow(HoldExceedsStockError);
 
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 5 });
-    // 非正数量在工具总线 schema 层即拒（minimum: 1，先于 handler）
+    // 非正数量在工具总线 schema 层即拒（minimum: 0.001，先于 handler）
     await expect(
       ws.tools.invoke('wms.inventory.hold', { skuCode: 'A-1', quantity: 0 }),
-    ).rejects.toThrow('参数 quantity 不能小于 1');
+    ).rejects.toThrow('参数 quantity 不能小于 0.001');
     await expect(
       ws.tools.invoke('wms.inventory.hold', { skuCode: 'A-1', quantity: -2 }),
-    ).rejects.toThrow('参数 quantity 不能小于 1');
+    ).rejects.toThrow('参数 quantity 不能小于 0.001');
   });
 
   it('SKU 不存在拒', async () => {

@@ -75,7 +75,7 @@ describe('GET /api/health 与 /api/profile/snapshot', () => {
       schema: { entities: Record<string, { extensions: Array<{ key: string }> }> };
       workflows: Record<string, unknown>;
     };
-    expect(snap.version).toBe(4); // 种子 config.change（core.wms 流程）+ core.ai（M16）+ core.memory + module.putaway（M21）模块登记
+    expect(snap.version).toBe(6); // core.wms + core.ai + core.memory + putaway + reversal + partial
     const keys = snap.schema.entities.sku!.extensions.map((f) => f.key).sort();
     expect(keys).toEqual(['category', 'spec', 'unit']);
     expect(Object.keys(snap.workflows).sort()).toEqual(['inbound', 'outbound']);
