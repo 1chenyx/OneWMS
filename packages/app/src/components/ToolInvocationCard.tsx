@@ -143,7 +143,7 @@ function str(v: unknown): string | undefined {
  *  - 库存调整/移库/单 SKU 查询 → 库存页（带 SKU 过滤）；
  *  - 临期查询（M15）→ 效期看板：结果全部同一 SKU 时带过滤，多 SKU 不带；
  *  - inventory.query 平铺/全量清单形态不出（结果已在卡内成表，无单一落点）；
- *  - profile.propose 不出（确认在 ChatPage 待确认面板，不跳页）。
+ *  - profile.propose 不出（确认在对话页弹窗里，不跳页）。
  * payload 结构是 @one/wms / @one/core 工具返回的手写镜像（前端不依赖后端包类型）。
  */
 function followUpAction(invocation: ChatInvocation): FollowUpAction | undefined {

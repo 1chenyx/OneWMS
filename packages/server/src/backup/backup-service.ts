@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { MigrationBundle } from '@one/core';
 import type { AiProviderConfig } from '@one/ai';
+import type { AiConfigCatalog } from '../ai-config-store.js';
 
 /**
  * 自动备份（滚动保留）——0 基础用户的最后一道保险。
@@ -41,10 +42,13 @@ export interface BackupFile {
   /** 迁移包原样内嵌——恢复零转换，直接喂 importBundle */
   bundle: MigrationBundle;
   /**
-   * AI 配置（含明文 apiKey——备份文件属本地可信域，与迁移包同级）。
+   * 当前生效的那一条（含明文 apiKey——备份文件属本地可信域，与迁移包同级）。
    * 备份时未配置则无此字段：恢复时不动现有 AI 配置，防「恢复数据顺带把 AI 关掉」。
+   * 多模型的完整目录在 aiCatalog；旧备份只有这一条，恢复时升级成单条目录。
    */
   aiConfig?: AiProviderConfig;
+  /** 页面上保存的全部模型。没有则恢复端只看 aiConfig。 */
+  aiCatalog?: AiConfigCatalog;
 }
 
 /** 列表项（不解析文件内容——全部信息来自文件名与 stat） */
@@ -156,6 +160,7 @@ export function performBackup(options: {
   dir: string;
   bundle: MigrationBundle;
   aiConfig?: AiProviderConfig;
+  aiCatalog?: AiConfigCatalog;
   keep: number;
 }): { name: string; removed: string[] } {
   const createdAt = new Date().toISOString();
@@ -165,6 +170,7 @@ export function performBackup(options: {
     createdAt,
     bundle: options.bundle,
     ...(options.aiConfig ? { aiConfig: options.aiConfig } : {}),
+    ...(options.aiCatalog && options.aiCatalog.profiles.length > 0 ? { aiCatalog: options.aiCatalog } : {}),
   });
   return { name, removed: pruneBackups(options.dir, options.keep) };
 }

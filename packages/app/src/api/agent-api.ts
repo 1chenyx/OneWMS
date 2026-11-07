@@ -26,6 +26,29 @@ export interface AiConfigInput {
   apiKey?: string;
 }
 
+/** 已保存的一条模型（GET 不含密钥明文） */
+export interface AiProfilePublic {
+  id: string;
+  vendorId: string;
+  label: string;
+  kind: 'openai-compatible' | 'ollama';
+  model: string;
+  baseUrl: string;
+  apiKeySet: boolean;
+  active: boolean;
+}
+
+/** POST /api/ai-config/profiles：一次可加同一厂商的多个模型 */
+export interface AiProfileWrite {
+  vendorId: string;
+  label: string;
+  kind: 'openai-compatible' | 'ollama';
+  baseUrl?: string;
+  apiKey?: string;
+  models: string[];
+  activate?: boolean;
+}
+
 /** GET/PUT/DELETE /api/ai-config 响应：脱敏状态（apiKey 只报 apiKeySet 不回传明文） */
 export interface AiConfigStatus {
   configured: boolean;
@@ -37,7 +60,12 @@ export interface AiConfigStatus {
     /** 生效端点（ollama 未填时回显本机缺省） */
     baseUrl: string;
     apiKeySet: boolean;
+    id?: string;
+    vendorId?: string;
+    label?: string;
   };
+  /** 页面上保存的模型。环境变量来的配置不在这里。 */
+  profiles?: AiProfilePublic[];
 }
 
 /** POST /api/ai-config/test 响应（200 包结果——测试失败不是请求失败） */
@@ -73,8 +101,27 @@ export const agentApi = {
     }),
   /** 当前接入点上可选的模型名（失败时至少包含正在用的那个） */
   aiModels: () => request<{ models: string[] }>('/api/ai-config/models'),
-  /** 连通测试（body 缺省用当前生效配置打一轮最小补全） */
-  testAiConfig: (body?: AiConfigInput) =>
+  /** 追加一条或多条，不冲掉已经保存的其他模型 */
+  addAiProfiles: (body: AiProfileWrite) =>
+    request<AiConfigStatus>('/api/ai-config/profiles', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  /** 把已保存的某一条设为对话正在用的模型 */
+  activateAiProfile: (id: string) =>
+    request<AiConfigStatus>(`/api/ai-config/profiles/${encodeURIComponent(id)}/activate`, {
+      method: 'POST',
+    }),
+  /** 移除一条；删光则回落环境变量或关闭 */
+  deleteAiProfile: (id: string) =>
+    request<AiConfigStatus>(`/api/ai-config/profiles/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  /**
+   * 连通测试。body 缺省测当前生效配置；
+   * 带 profileId 测已保存的那条（不必再把密钥发一遍）。
+   */
+  testAiConfig: (body?: Partial<AiConfigInput> & { profileId?: string }) =>
     request<AiTestResult>('/api/ai-config/test', {
       method: 'POST',
       body: JSON.stringify(body ?? {}),

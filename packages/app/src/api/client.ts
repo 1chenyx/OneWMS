@@ -39,6 +39,8 @@ export type {
   AgentDef,
   AiConfigInput,
   AiConfigStatus,
+  AiProfilePublic,
+  AiProfileWrite,
   AiTestResult,
 } from './agent-api';
 export type { MemoryItem, MemoryListResponse, MemorySettings } from './memory-api';
@@ -56,6 +58,7 @@ export type {
   LedgerRow,
   Location,
   LocationDistribution,
+  Warehouse,
   Order,
   OrderLine,
   ReplenishmentSuggestion,

@@ -3,60 +3,171 @@ import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App as AntApp, ConfigProvider } from 'antd';
 import AiConfigPage from '../src/pages/AiConfigPage';
+import type { AiProfilePublic } from '../src/api/agent-api';
 
 /**
- * AI 模型配置页测试（M17）：mock 数据层 hooks。
- * 覆盖：状态卡三分支渲染（未配置 / 已配置）/ 表单校验 / 保存与提交体 /
- * 测试连接结果渲染 / 关闭 AI 二次确认 / 切换接入方式（ollama 免密钥、baseUrl 选填）。
+ * AI 模型配置页：厂商画廊（地址预填，只填密钥）+ 已保存的多模型。
+ * mock 数据层 hooks，不打真接口。
  */
 
-const saveMock = vi.fn();
+const addMock = vi.fn();
+const activateMock = vi.fn();
+const deleteMock = vi.fn();
 const clearMock = vi.fn();
 const testMock = vi.fn();
 
-/** 可变 fixture：每个用例渲染前赋值（mock 函数体惰性取值） */
-let statusFixture: {
+interface StatusFixture {
   configured: boolean;
   source: 'file' | 'env' | 'none';
-  config?: { kind: 'openai-compatible' | 'ollama'; model: string; baseUrl: string; apiKeySet: boolean };
-} = { configured: false, source: 'none' };
+  config?: {
+    kind: 'openai-compatible' | 'ollama';
+    model: string;
+    baseUrl: string;
+    apiKeySet: boolean;
+  };
+  profiles?: AiProfilePublic[];
+}
+
+let statusFixture: StatusFixture = { configured: false, source: 'none', profiles: [] };
 
 vi.mock('../src/api/hooks', () => ({
   useAiConfig: () => ({ isLoading: false, data: statusFixture }),
-  useSaveAiConfig: () => ({ mutateAsync: saveMock, isPending: false }),
+  useAddAiProfiles: () => ({ mutateAsync: addMock, isPending: false }),
+  useActivateAiProfile: () => ({ mutateAsync: activateMock, isPending: false }),
+  useDeleteAiProfile: () => ({ mutateAsync: deleteMock, isPending: false }),
   useClearAiConfig: () => ({ mutateAsync: clearMock, isPending: false }),
   useTestAiConfig: () => ({ mutateAsync: testMock, isPending: false }),
 }));
 
-// 禁用两字按钮自动插空格 + AntApp 提供 message 上下文
 const wrap = (ui: React.ReactNode) => (
   <ConfigProvider button={{ autoInsertSpace: false }}>
     <AntApp>{ui}</AntApp>
   </ConfigProvider>
 );
 
-// message/popconfirm portal 挂在 body 上，跨测试残留——统一清场
 afterEach(() => {
   cleanup();
   document.body.innerHTML = '';
 });
 
 beforeEach(() => {
-  saveMock.mockReset();
+  addMock.mockReset();
+  activateMock.mockReset();
+  deleteMock.mockReset();
   clearMock.mockReset();
   testMock.mockReset();
-  statusFixture = { configured: false, source: 'none' };
+  statusFixture = { configured: false, source: 'none', profiles: [] };
 });
 
-describe('状态卡渲染', () => {
-  it('未配置 → 状态 Tag 与「—」来源；无「关闭 AI」按钮', () => {
+describe('厂商画廊', () => {
+  it('国内厂商直接可见；国际厂商要点过去才出现', async () => {
+    const user = userEvent.setup();
     render(wrap(<AiConfigPage />));
-    expect(screen.getByText(/未配置（AI 入口将不可用/)).toBeInTheDocument();
-    expect(screen.getByText('—')).toBeInTheDocument(); // 来源 none
+    expect(screen.getByText('未配置')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'DeepSeek' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '通义千问' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '豆包（火山方舟）' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'OpenAI' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '关闭 AI' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByText('国际'));
+    expect(screen.getByRole('button', { name: 'OpenAI' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'xAI（Grok）' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'OpenRouter' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'DeepSeek' })).not.toBeInTheDocument();
   });
 
-  it('已配置（页面配置）→ 模型 / Base URL / 密钥已设置可见；表单回填', () => {
+  it('点 DeepSeek 带出预填地址和默认模型；没填密钥不能保存', async () => {
+    const user = userEvent.setup();
+    render(wrap(<AiConfigPage />));
+    expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'DeepSeek' }));
+    expect(screen.getByText('https://api.deepseek.com/v1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'deepseek-chat', pressed: true })).toBeInTheDocument();
+    expect(screen.getByLabelText('API Key')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '添加并设为当前' }));
+    expect(await screen.findByText('请填写 API Key')).toBeInTheDocument();
+    expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('填上密钥后按预填地址和默认模型保存', async () => {
+    addMock.mockResolvedValueOnce({
+      configured: true,
+      source: 'file',
+      config: { kind: 'openai-compatible', model: 'deepseek-chat', baseUrl: 'https://api.deepseek.com/v1', apiKeySet: true },
+      profiles: [],
+    });
+    const user = userEvent.setup();
+    render(wrap(<AiConfigPage />));
+    await user.click(screen.getByRole('button', { name: 'DeepSeek' }));
+    await user.type(screen.getByLabelText('API Key'), 'sk-test');
+    await user.click(screen.getByRole('button', { name: '添加并设为当前' }));
+
+    expect(addMock).toHaveBeenCalledWith({
+      vendorId: 'deepseek',
+      label: 'DeepSeek',
+      kind: 'openai-compatible',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'sk-test',
+      models: ['deepseek-chat'],
+      activate: true,
+    });
+    expect(await screen.findByText('已保存，当前使用 deepseek-chat')).toBeInTheDocument();
+  });
+
+  it('本地 Ollama 不出现密钥，保存体是 ollama', async () => {
+    addMock.mockResolvedValueOnce({
+      configured: true,
+      source: 'file',
+      config: { kind: 'ollama', model: 'qwen3:8b', baseUrl: 'http://localhost:11434/v1', apiKeySet: false },
+    });
+    const user = userEvent.setup();
+    render(wrap(<AiConfigPage />));
+    await user.click(screen.getByText('本地'));
+    await user.click(screen.getByRole('button', { name: 'Ollama' }));
+    expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument();
+    expect(screen.getByText('http://localhost:11434/v1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'qwen3:8b', pressed: true })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '添加并设为当前' }));
+    expect(addMock).toHaveBeenCalledWith({
+      vendorId: 'ollama',
+      label: 'Ollama',
+      kind: 'ollama',
+      baseUrl: 'http://localhost:11434/v1',
+      models: ['qwen3:8b'],
+      activate: true,
+    });
+  });
+});
+
+describe('已保存的模型', () => {
+  const profiles: AiProfilePublic[] = [
+    {
+      id: 'p1',
+      vendorId: 'deepseek',
+      label: 'DeepSeek',
+      kind: 'openai-compatible',
+      model: 'deepseek-chat',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKeySet: true,
+      active: true,
+    },
+    {
+      id: 'p2',
+      vendorId: 'openai',
+      label: 'OpenAI',
+      kind: 'openai-compatible',
+      model: 'gpt-4o-mini',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKeySet: true,
+      active: false,
+    },
+  ];
+
+  it('当前使用有标记；设为当前打到那一条', async () => {
     statusFixture = {
       configured: true,
       source: 'file',
@@ -66,114 +177,49 @@ describe('状态卡渲染', () => {
         baseUrl: 'https://api.deepseek.com/v1',
         apiKeySet: true,
       },
+      profiles,
     };
-    render(wrap(<AiConfigPage />));
-    expect(screen.getByText('已配置，可用')).toBeInTheDocument();
-    expect(screen.getByText('页面配置')).toBeInTheDocument();
-    expect(screen.getByText('deepseek-chat')).toBeInTheDocument();
-    expect(screen.getByText('已设置（不回显）')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('deepseek-chat')).toBeInTheDocument(); // 表单回填
-    expect(screen.getByDisplayValue('https://api.deepseek.com/v1')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '关闭 AI' })).toBeInTheDocument();
-  });
-});
-
-describe('表单校验与保存', () => {
-  it('必填校验：模型空 / 云 API 缺 Base URL → 报错且不提交', async () => {
-    const user = userEvent.setup();
-    render(wrap(<AiConfigPage />));
-    await user.click(screen.getByRole('button', { name: /保存并生效/ }));
-    expect(await screen.findByText('请填写模型名')).toBeInTheDocument();
-    expect(screen.getByText('云 API 必须填写 Base URL')).toBeInTheDocument();
-    expect(saveMock).not.toHaveBeenCalled();
-  });
-
-  it('填写完整 → 保存提交体正确；成功提示与表单密钥清空', async () => {
-    saveMock.mockResolvedValueOnce({
+    activateMock.mockResolvedValueOnce({
       configured: true,
       source: 'file',
-      config: { kind: 'openai-compatible', model: 'deepseek-chat', baseUrl: 'https://api.deepseek.com/v1', apiKeySet: true },
+      config: { model: 'gpt-4o-mini' },
     });
     const user = userEvent.setup();
     render(wrap(<AiConfigPage />));
-
-    await user.type(screen.getByPlaceholderText(/deepseek-chat/), 'deepseek-chat');
-    await user.type(screen.getByPlaceholderText(/api\.deepseek\.com/), 'https://api.deepseek.com/v1');
-    await user.type(screen.getByPlaceholderText('sk-...'), 'sk-test');
-    await user.click(screen.getByRole('button', { name: /保存并生效/ }));
-
-    expect(saveMock).toHaveBeenCalledWith({
-      kind: 'openai-compatible',
-      model: 'deepseek-chat',
-      baseUrl: 'https://api.deepseek.com/v1',
-      apiKey: 'sk-test',
-    });
-    expect(await screen.findByText(/已保存并生效（deepseek-chat）/)).toBeInTheDocument();
+    expect(screen.getByText('当前使用')).toBeInTheDocument();
+    expect(screen.getByText('gpt-4o-mini')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '设为当前' }));
+    expect(activateMock).toHaveBeenCalledWith('p2');
   });
 
-  it('切换到本地 Ollama → 密钥字段隐藏、Base URL 选填；保存体不含密钥', async () => {
-    saveMock.mockResolvedValueOnce({
-      configured: true,
-      source: 'file',
-      config: { kind: 'ollama', model: 'qwen3:8b', baseUrl: 'http://localhost:11434/v1', apiKeySet: false },
-    });
-    const user = userEvent.setup();
-    render(wrap(<AiConfigPage />));
-
-    // 「本地 Ollama」同时出现在速填按钮与 Radio 标签——按 radio 角色精确定位
-    await user.click(screen.getByRole('radio', { name: '本地 Ollama' }));
-    expect(screen.queryByPlaceholderText('sk-...')).not.toBeInTheDocument(); // 密钥字段隐藏
-    expect(screen.queryByPlaceholderText('留空保持已保存的密钥')).not.toBeInTheDocument();
-
-    await user.type(screen.getByPlaceholderText(/ollama list/), 'qwen3:8b');
-    await user.click(screen.getByRole('button', { name: /保存并生效/ }));
-
-    // ollama：baseUrl 留空合法（服务端补本机缺省）
-    expect(saveMock).toHaveBeenCalledWith({ kind: 'ollama', model: 'qwen3:8b' });
-  });
-});
-
-describe('测试连接', () => {
-  it('成功 → 耗时与模型回显', async () => {
-    testMock.mockResolvedValueOnce({ ok: true, model: 'deepseek-chat', latencyMs: 123, reply: 'pong' });
-    const user = userEvent.setup();
-    render(wrap(<AiConfigPage />));
-
-    await user.type(screen.getByPlaceholderText(/deepseek-chat/), 'deepseek-chat');
-    await user.type(screen.getByPlaceholderText(/api\.deepseek\.com/), 'https://api.deepseek.com/v1');
-    await user.click(screen.getByRole('button', { name: /测试连接/ }));
-
-    expect(await screen.findByText('连接成功（123 ms）')).toBeInTheDocument();
-    expect(screen.getByText(/回复：pong/)).toBeInTheDocument();
-  });
-
-  it('失败 → 失败原文回传（排障线索）', async () => {
-    testMock.mockResolvedValueOnce({ ok: false, model: 'x', message: '401 Unauthorized' });
-    const user = userEvent.setup();
-    render(wrap(<AiConfigPage />));
-
-    await user.type(screen.getByPlaceholderText(/deepseek-chat/), 'x');
-    await user.type(screen.getByPlaceholderText(/api\.deepseek\.com/), 'https://api.example.com/v1');
-    await user.click(screen.getByRole('button', { name: /测试连接/ }));
-
-    expect(await screen.findByText('连接失败')).toBeInTheDocument();
-    expect(screen.getByText('401 Unauthorized')).toBeInTheDocument();
-  });
-});
-
-describe('关闭 AI', () => {
-  it('已配置时可见 → 二次确认后调用删除端点', async () => {
+  it('关闭 AI 二次确认后清掉页面配置', async () => {
     statusFixture = {
       configured: true,
       source: 'file',
-      config: { kind: 'ollama', model: 'qwen3:8b', baseUrl: 'http://localhost:11434/v1', apiKeySet: false },
+      config: {
+        kind: 'ollama',
+        model: 'qwen3:8b',
+        baseUrl: 'http://localhost:11434/v1',
+        apiKeySet: false,
+      },
+      profiles: [
+        {
+          id: 'p1',
+          vendorId: 'ollama',
+          label: 'Ollama',
+          kind: 'ollama',
+          model: 'qwen3:8b',
+          baseUrl: 'http://localhost:11434/v1',
+          apiKeySet: false,
+          active: true,
+        },
+      ],
     };
     clearMock.mockResolvedValueOnce({ configured: false, source: 'none' });
     const user = userEvent.setup();
     render(wrap(<AiConfigPage />));
-
     await user.click(screen.getByRole('button', { name: '关闭 AI' }));
-    await user.click(await screen.findByRole('button', { name: '关闭' })); // popconfirm 确认（本套禁用了两字按钮插空格）
+    await user.click(await screen.findByRole('button', { name: '关闭' }));
     expect(clearMock).toHaveBeenCalled();
     expect(await screen.findByText('AI 已关闭')).toBeInTheDocument();
   });

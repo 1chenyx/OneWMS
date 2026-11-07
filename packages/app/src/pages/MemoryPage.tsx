@@ -113,7 +113,7 @@ export default function MemoryPage() {
     }
   };
 
-  /** 设置走慢通道：提交提议 → 引导到 AI 对话页的待确认面板拍板 */
+  /** 设置走慢通道：提交提议 → 到 AI 对话页的确认弹窗拍板 */
   const saveSettings = async () => {
     if (!settings || !settingsDraft) return;
     const changed: { autoMemory?: boolean; maxMemoryItems?: number } = {};
@@ -128,7 +128,7 @@ export default function MemoryPage() {
     setSavingSettings(true);
     try {
       await api.proposeMemorySettings(changed, '更新 AI 记忆设置');
-      message.success('已生成设置提议——请到「AI 对话」页确认后生效');
+      message.success('已生成设置提议——请到「AI 对话」页的确认窗口里拍板');
       navigate('chat');
     } catch (e) {
       message.error(
@@ -186,7 +186,7 @@ export default function MemoryPage() {
                 </Button>
               </Space>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                设置修改走慢通道：提交后在「AI 对话」页的待确认面板拍板才生效。记忆随事件账本多节点同步，
+                设置修改走慢通道：提交后在「AI 对话」页弹出确认，拍板才生效。记忆随事件账本多节点同步，
                 来源标签区分：{SOURCE_LABEL.auto} / {SOURCE_LABEL.ai} / {SOURCE_LABEL.manual}。
               </Typography.Text>
             </Space>

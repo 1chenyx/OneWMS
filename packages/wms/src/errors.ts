@@ -74,6 +74,96 @@ export class WarehouseNotFoundError extends CoreError {
   }
 }
 
+/** 模块关闭时拒绝序列号参数。 */
+export class SerialDisabledError extends CoreError {
+  constructor() {
+    super(
+      'WMS_SERIAL_DISABLED',
+      '序列号已关闭（module.serial）。请去掉序列号参数，或在设置里重新启用该模块。',
+    );
+  }
+}
+
+/** 按序列号管理的商品，这次数量变动没有写序列号。 */
+export class SerialRequiredError extends CoreError {
+  constructor(skuCode: string) {
+    super('WMS_SERIAL_REQUIRED', `SKU ${skuCode} 按序列号管理，请写上每一件的序列号`);
+  }
+}
+
+/** 没按序列号管理的商品却带了序列号。 */
+export class SerialNotTrackedError extends CoreError {
+  constructor(skuCode: string) {
+    super('WMS_SERIAL_NOT_TRACKED', `SKU ${skuCode} 不按序列号管理，请去掉序列号`);
+  }
+}
+
+/** 件数和序列号个数对不上。 */
+export class SerialCountError extends CoreError {
+  constructor(skuCode: string, quantity: number, count: number) {
+    super(
+      'WMS_SERIAL_COUNT',
+      `SKU ${skuCode} 的数量 ${quantity} 和序列号个数 ${count} 不一致。一个序列号对应一件`,
+    );
+  }
+}
+
+/** 要出库或移动的序列号不在这个库位批次上。 */
+export class SerialNotFoundError extends CoreError {
+  constructor(serialNo: string) {
+    super('WMS_SERIAL_NOT_FOUND', `序列号不在库或不在这个库位批次: ${serialNo}`);
+  }
+}
+
+/** 序列号已经在库，不能再入库。 */
+export class SerialAlreadyInStockError extends CoreError {
+  constructor(serialNo: string) {
+    super('WMS_SERIAL_IN_STOCK', `序列号已在库: ${serialNo}`);
+  }
+}
+
+/** 同一次提交里序列号重复。 */
+export class SerialDuplicateError extends CoreError {
+  constructor(serialNo: string) {
+    super('WMS_SERIAL_DUPLICATE', `序列号重复: ${serialNo}`);
+  }
+}
+
+/** 序列号和当前操作对不上：已有库存才启用、盘点改数、被单据占用、在托盘上。 */
+export class SerialStockError extends CoreError {
+  constructor(message: string) {
+    super('WMS_SERIAL_STOCK', message);
+  }
+}
+
+/** 模块关闭时拒绝托盘操作。 */
+export class LpnDisabledError extends CoreError {
+  constructor() {
+    super('WMS_LPN_DISABLED', '托盘已关闭（module.lpn）。请去掉托盘操作，或在设置里重新启用该模块。');
+  }
+}
+
+/** 托盘编码已存在 */
+export class LpnAlreadyExistsError extends CoreError {
+  constructor(lpnCode: string) {
+    super('WMS_LPN_EXISTS', `托盘编码已存在: ${lpnCode}`);
+  }
+}
+
+/** 托盘不存在 */
+export class LpnNotFoundError extends CoreError {
+  constructor(lpnCode: string) {
+    super('WMS_LPN_NOT_FOUND', `托盘不存在: ${lpnCode}`);
+  }
+}
+
+/** 要动的数量里有一部分已经装在托盘上。 */
+export class LpnPackedError extends CoreError {
+  constructor(label: string, take: number, loose: number) {
+    super('WMS_LPN_PACKED', `${label} 可动数量只有 ${loose}，这次要动 ${take}。已装托盘的货请整托移动或先卸下`);
+  }
+}
+
 /** 批次效期不一致（M11：同 SKU 同批次首个非空效期登记后，后继流水必须一致） */
 export class BatchExpiryMismatchError extends CoreError {
   constructor(skuCode: string, batchNo: string, known: string, given: string) {

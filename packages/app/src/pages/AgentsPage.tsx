@@ -101,7 +101,7 @@ export default function AgentsPage() {
     setSaving(true);
     try {
       await api.proposeAgents(agents, '更新 AI 助手定义');
-      message.success('已生成助手定义提议——请到「AI 对话」页确认后生效');
+      message.success('已生成助手定义提议——请到「AI 对话」页的确认窗口里拍板');
       navigate('chat');
     } catch (e) {
       message.error(

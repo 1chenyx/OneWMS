@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp, createAppContext, type AppContext } from '../src/index.js';
+import { readAiCatalog } from '../src/ai-config-store.js';
 
 /**
  * AI 模型配置端点直测（M17）：app.request 不起端口；不碰真实 LLM。
@@ -44,6 +45,19 @@ function setup(options?: {
 }
 
 const json = { 'content-type': 'application/json' };
+
+/** 落盘后的目录：v2，当前使用的那一条 */
+function activeSaved(): { model: string; apiKey?: string } {
+  const file = JSON.parse(readFileSync(join(dir!, 'ai-config.json'), 'utf-8')) as {
+    version: number;
+    activeId: string | null;
+    profiles: { id: string; model: string; apiKey?: string }[];
+  };
+  expect(file.version).toBe(2);
+  const profile = file.profiles.find((item) => item.id === file.activeId);
+  if (!profile) throw new Error('active profile missing');
+  return profile;
+}
 
 /** 本地一次性 HTTP 服务器：对任意请求恒回 401（AI SDK 不可重试错误） */
 async function startAuthRejectingServer(): Promise<{ server: Server; baseUrl: string }> {
@@ -145,9 +159,9 @@ describe('PUT /api/ai-config：保存热生效 + 落盘', () => {
     expect(data.config.model).toBe('qwen3:8b');
     expect(data.config.baseUrl).toBe('http://localhost:11434/v1'); // ollama 缺省回显
 
-    // 文件落盘（重启后仍是这份数据）
-    const file = JSON.parse(readFileSync(join(dir!, 'ai-config.json'), 'utf-8')) as Record<string, unknown>;
-    expect(file.model).toBe('qwen3:8b');
+    // 文件落盘（重启后仍是这份数据）——目录里当前那一条
+    expect(activeSaved().model).toBe('qwen3:8b');
+    expect(activeSaved().apiKey).toBeUndefined();
 
     // 热生效：provider 现场重建（无需重启进程）
     expect(ctx!.provider).toBeDefined();
@@ -203,9 +217,7 @@ describe('PUT /api/ai-config：保存热生效 + 落盘', () => {
       headers: json,
       body: JSON.stringify({ kind: 'openai-compatible', model: 'b', baseUrl: 'https://api.a.com/v1' }),
     });
-    let file = JSON.parse(readFileSync(join(dir!, 'ai-config.json'), 'utf-8')) as { model: string; apiKey?: string };
-    expect(file.model).toBe('b');
-    expect(file.apiKey).toBe('sk-1');
+    expect(activeSaved()).toMatchObject({ model: 'b', apiKey: 'sk-1' });
 
     // 同 kind 换 baseUrl（换服务商）→ 不沿用
     await app.request('/api/ai-config', {
@@ -213,9 +225,8 @@ describe('PUT /api/ai-config：保存热生效 + 落盘', () => {
       headers: json,
       body: JSON.stringify({ kind: 'openai-compatible', model: 'c', baseUrl: 'https://api.b.com/v1' }),
     });
-    file = JSON.parse(readFileSync(join(dir!, 'ai-config.json'), 'utf-8')) as { model: string; apiKey?: string };
-    expect(file.model).toBe('c');
-    expect(file.apiKey).toBeUndefined();
+    expect(activeSaved().model).toBe('c');
+    expect(activeSaved().apiKey).toBeUndefined();
 
     // 换 kind → 不沿用
     await app.request('/api/ai-config', {
@@ -313,5 +324,108 @@ describe('POST /api/ai-config/test：连通测试', () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe('配置目录：多模型与旧文件', () => {
+  it('旧的单对象配置文件读成一条目录，密钥还在', () => {
+    setup();
+    const path = join(dir!, 'ai-config.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        kind: 'openai-compatible',
+        model: 'deepseek-chat',
+        baseUrl: 'https://api.deepseek.com/v1',
+        apiKey: 'sk-old',
+      }),
+    );
+    const catalog = readAiCatalog(path);
+    expect(catalog?.activeId).toBe('legacy');
+    expect(catalog?.profiles).toHaveLength(1);
+    expect(catalog?.profiles[0]).toMatchObject({
+      vendorId: 'custom',
+      model: 'deepseek-chat',
+      apiKey: 'sk-old',
+    });
+  });
+
+  it('追加多条不冲掉已有的；同地址留空密钥沿用；换地址不沿用；切换和删除只动那一条', async () => {
+    const app = setup();
+    const created = await app.request('/api/ai-config/profiles', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({
+        vendorId: 'deepseek',
+        label: 'DeepSeek',
+        kind: 'openai-compatible',
+        baseUrl: 'https://api.deepseek.com/v1',
+        apiKey: 'sk-secret-xyz',
+        models: ['deepseek-chat', 'deepseek-reasoner'],
+      }),
+    });
+    expect(created.status).toBe(200);
+    let data = (await created.json()) as {
+      config: { model: string };
+      profiles: { id: string; model: string; apiKeySet: boolean; active: boolean }[];
+    };
+    expect(data.profiles.map((item) => item.model)).toEqual(['deepseek-chat', 'deepseek-reasoner']);
+    expect(data.config.model).toBe('deepseek-chat');
+    expect(data.profiles.every((item) => item.apiKeySet)).toBe(true);
+    expect(JSON.stringify(data)).not.toContain('sk-secret-xyz');
+
+    // 同地址再加一条、密钥留空 → 沿用已保存的密钥，不要求再贴一次
+    const reused = await app.request('/api/ai-config/profiles', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({
+        vendorId: 'deepseek',
+        label: 'DeepSeek',
+        kind: 'openai-compatible',
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-chat-extra',
+        activate: false,
+      }),
+    });
+    expect(reused.status).toBe(200);
+    const reusedFile = JSON.parse(readFileSync(join(dir!, 'ai-config.json'), 'utf-8')) as {
+      profiles: { model: string; apiKey?: string }[];
+    };
+    expect(reusedFile.profiles.find((item) => item.model === 'deepseek-chat-extra')?.apiKey).toBe('sk-secret-xyz');
+
+    const second = await app.request('/api/ai-config/profiles', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({
+        vendorId: 'openai',
+        label: 'OpenAI',
+        kind: 'openai-compatible',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o-mini',
+        activate: false,
+      }),
+    });
+    data = (await second.json()) as typeof data;
+    expect(data.profiles).toHaveLength(4);
+    const openai = data.profiles.find((item) => item.model === 'gpt-4o-mini');
+    expect(openai?.apiKeySet).toBe(false);
+    expect(data.config.model).toBe('deepseek-chat');
+
+    const reasoner = data.profiles.find((item) => item.model === 'deepseek-reasoner');
+    const activated = await app.request(`/api/ai-config/profiles/${reasoner!.id}/activate`, { method: 'POST' });
+    expect(activated.status).toBe(200);
+    data = (await activated.json()) as typeof data;
+    expect(data.config.model).toBe('deepseek-reasoner');
+    expect(ctx!.aiConfig?.model).toBe('deepseek-reasoner');
+
+    const removed = await app.request(`/api/ai-config/profiles/${reasoner!.id}`, { method: 'DELETE' });
+    data = (await removed.json()) as typeof data;
+    expect(data.profiles.map((item) => item.model).sort()).toEqual([
+      'deepseek-chat',
+      'deepseek-chat-extra',
+      'gpt-4o-mini',
+    ]);
+    expect(data.config.model).toBe('deepseek-chat');
+    expect(ctx!.aiConfig?.model).toBe('deepseek-chat');
   });
 });

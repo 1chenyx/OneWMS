@@ -293,17 +293,22 @@ describe('POST /api/backups/:name/restore：恢复闭环', () => {
     const srcDir = join(root, 'src');
     mkdirSync(srcDir, { recursive: true }); // 真实宿主的 db 目录由 start() 建好
     const src = setup({ workspaceId: 'ws-ai', backupDir: srcDir, aiConfigPath: join(srcDir, 'ai-config.json') });
-    await src.app.request('/api/ai-config', {
-      method: 'PUT',
+    await src.app.request('/api/ai-config/profiles', {
+      method: 'POST',
       headers: json,
       body: JSON.stringify({
+        vendorId: 'deepseek',
+        label: 'DeepSeek',
         kind: 'openai-compatible',
-        model: 'deepseek-chat',
         baseUrl: 'https://api.deepseek.com/v1',
         apiKey: 'sk-backup',
+        models: ['deepseek-chat', 'deepseek-reasoner'],
       }),
     });
     const created = (await (await src.app.request('/api/backups', { method: 'POST' })).json()) as { name: string };
+    const envelope = JSON.parse(readFileSync(join(srcDir, created.name), 'utf-8')) as BackupFile;
+    expect(envelope.aiConfig?.model).toBe('deepseek-chat');
+    expect(envelope.aiCatalog?.profiles).toHaveLength(2);
 
     // 换机场景：备份拷到新节点的备份目录，新节点从未配过 AI
     const dstDir = join(root, 'dst');
@@ -319,8 +324,19 @@ describe('POST /api/backups/:name/restore：恢复闭环', () => {
     expect(dst.ctx.provider).toBeDefined();
     expect(dst.ctx.aiConfig?.model).toBe('deepseek-chat');
     expect(dst.ctx.aiConfigSource).toBe('file');
-    const saved = JSON.parse(readFileSync(join(dstDir, 'ai-config.json'), 'utf-8')) as { apiKey?: string };
-    expect(saved.apiKey).toBe('sk-backup');
+    expect(dst.ctx.aiCatalog.profiles.map((item) => item.model).sort()).toEqual([
+      'deepseek-chat',
+      'deepseek-reasoner',
+    ]);
+    const saved = JSON.parse(readFileSync(join(dstDir, 'ai-config.json'), 'utf-8')) as {
+      version: number;
+      activeId: string | null;
+      profiles: { id: string; model: string; apiKey?: string }[];
+    };
+    expect(saved.version).toBe(2);
+    const active = saved.profiles.find((item) => item.id === saved.activeId);
+    expect(active?.apiKey).toBe('sk-backup');
+    expect(saved.profiles.every((item) => item.apiKey === 'sk-backup')).toBe(true);
   });
 
   it('错误面：文件名穿越 400 / 不存在 404 / 坏文件 400 / 跨工作区 400', async () => {

@@ -19,6 +19,12 @@ export const WMS_EVENT_TYPES = {
   locationUpdated: 'wms.location.updated',
   warehouseCreated: 'wms.warehouse.created',
   warehouseUpdated: 'wms.warehouse.updated',
+  serialReceived: 'wms.serial.received',
+  serialMoved: 'wms.serial.moved',
+  serialIssued: 'wms.serial.issued',
+  lpnCreated: 'wms.lpn.created',
+  lpnMoved: 'wms.lpn.moved',
+  lpnPacked: 'wms.lpn.packed',
   partnerCreated: 'wms.partner.created',
   partnerUpdated: 'wms.partner.updated',
   orderCreated: 'wms.order.created',
@@ -73,6 +79,8 @@ export interface SkuCreatedPayload {
   readonly reorderPoint?: number;
   /** 单位（A3，可选）：数量单位（如 kg / 箱 / 件）；空 = 数量不显示单位（兼容存量） */
   readonly unit?: string;
+  /** 按序列号管理（module.serial）。缺省 = 否 */
+  readonly serialTracked?: boolean;
   /** 字段注册表驱动的扩展字段（§5.2：核心列固定 + ext_data JSON 列） */
   readonly extData?: Record<string, unknown>;
 }
@@ -87,6 +95,8 @@ export interface SkuUpdatedPayload {
   readonly reorderPoint?: number;
   /** 单位（A3，可选）：显式传才改；空串 = 清空单位 */
   readonly unit?: string;
+  /** 按序列号管理。缺省 = 不改。只有 module.serial 启用时工具才会写。 */
+  readonly serialTracked?: boolean;
   /**
    * 档案状态（A2 软停用）：active = 启用（缺省）；archived = 已停用。
    * 只由 wms.sku.archive / wms.sku.unarchive 两个专用工具写入（不开放给通用 update）——
@@ -129,6 +139,58 @@ export interface WarehouseUpdatedPayload {
   readonly name?: string;
 }
 
+/** 序列号入库（新号，或已出库的号重新入库）。一件一个号。 */
+export interface SerialReceivedPayload {
+  readonly serialId: string;
+  readonly serialNo: string;
+  readonly skuId: string;
+  readonly locationId: string;
+  readonly batchNo: string;
+}
+
+/**
+ * 序列号换位置。lpnId 缺省 = 托盘归属不改；null = 离开托盘；字符串 = 装进该托盘。
+ */
+export interface SerialMovedPayload {
+  readonly serialId: string;
+  readonly serialNo: string;
+  readonly locationId: string;
+  readonly batchNo: string;
+  readonly lpnId?: string | null;
+}
+
+/** 序列号出库。号还在，状态变为已出库，可以再入库。 */
+export interface SerialIssuedPayload {
+  readonly serialId: string;
+  readonly serialNo: string;
+}
+
+/** 托盘诞生。locationId 可以是虚拟库位 DEFAULT。 */
+export interface LpnCreatedPayload {
+  readonly lpnId: string;
+  readonly lpnCode: string;
+  readonly locationId: string;
+}
+
+/** 整托换库位。库存流水另记，这里只改托盘自己的位置。 */
+export interface LpnMovedPayload {
+  readonly lpnId: string;
+  readonly lpnCode: string;
+  readonly locationId: string;
+}
+
+/**
+ * 托盘上某个 SKU+批次的件数。quantity 是装完之后的总数。
+ * 0 = 这行卸空，投影删行。
+ */
+export interface LpnPackedPayload {
+  readonly lpnId: string;
+  readonly lineId: string;
+  readonly skuId: string;
+  readonly batchNo: string;
+  readonly quantity: number;
+}
+
 // ── 往来单位（partner）payload ────────────────────────────────
 
 /**
@@ -168,6 +230,8 @@ export interface OrderLinePayload {
   readonly batchNo?: string;
   /** 批次效期（YYYY-MM-DD，仅入库行有意义）：随收货流水登记，同批次后继流水须一致（工具层校验） */
   readonly batchExpiryDate?: string;
+  /** 序列号（module.serial）。一个号一件。缺省 = 这行不带序列号 */
+  readonly serials?: readonly string[];
 }
 
 export interface OrderCreatedPayload {

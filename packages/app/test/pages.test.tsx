@@ -24,6 +24,7 @@ const agentsMock = vi.fn();
 const modelsMock = vi.fn();
 // 默认已配置（不弹引导卡）；未配置引导用例内覆盖返回值
 const aiConfigMock = vi.fn(() => ({ isLoading: false, data: { configured: true, source: 'file' } }));
+const proposalsMock = vi.fn(() => ({ isLoading: false, data: [] as Proposal[], refetch: vi.fn() }));
 
 const proposalFixture = {
   proposalId: 'p-1',
@@ -51,7 +52,7 @@ vi.mock('../src/api/hooks', () => ({
   }),
   useConfirmProposal: () => ({ mutateAsync: confirmMock, isPending: false }),
   useRejectProposal: () => ({ mutateAsync: rejectMock, isPending: false }),
-  useProposals: () => ({ isLoading: false, data: [proposalFixture] }),
+  useProposals: () => proposalsMock(),
   useAiConfig: () => aiConfigMock(),
 }));
 
@@ -95,12 +96,14 @@ describe('ProposalDetail：确认流程', () => {
     const user = userEvent.setup();
     render(wrap(<ProposalDetail proposalId="p-1" onDone={vi.fn()} />));
 
+    expect(screen.getByText('将改成')).toBeInTheDocument();
+    expect(screen.getByText('影响')).toBeInTheDocument();
     expect(screen.getByText('隐藏规格字段')).toBeInTheDocument();
     expect(screen.getByText(/字段「规格」将从界面隐藏/)).toBeInTheDocument();
-    expect(screen.getByText('/schema/entities/sku/extensions/1/visible')).toBeInTheDocument();
+    expect(screen.getByText(/没有额外风险/)).toBeInTheDocument();
+    expect(screen.queryByText('/schema/entities/sku/extensions/1/visible')).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: '确认应用' })); // 主按钮 → 弹出二次确认
-    await user.click(await screen.findByRole('button', { name: '应用' })); // popconfirm 确认
+    await user.click(screen.getByRole('button', { name: '确认应用' }));
     expect(confirmMock).toHaveBeenCalledWith({ id: 'p-1' });
     expect(await screen.findByText(/已应用/)).toBeInTheDocument();
   });
@@ -111,7 +114,6 @@ describe('ProposalDetail：确认流程', () => {
     render(wrap(<ProposalDetail proposalId="p-1" onDone={vi.fn()} />));
 
     await user.click(screen.getByRole('button', { name: '确认应用' }));
-    await user.click(await screen.findByRole('button', { name: '应用' }));
     expect(await screen.findByText(/重新提议/)).toBeInTheDocument();
   });
 
@@ -121,7 +123,6 @@ describe('ProposalDetail：确认流程', () => {
     render(wrap(<ProposalDetail proposalId="p-1" onDone={vi.fn()} />));
 
     await user.click(screen.getByRole('button', { name: '拒绝' }));
-    await user.click(await screen.findByRole('button', { name: '确认拒绝' }));
     expect(rejectMock).toHaveBeenCalledWith('p-1');
     expect(await screen.findByText(/已拒绝/)).toBeInTheDocument();
   });
@@ -132,6 +133,7 @@ describe('ChatPage：SSE 流式', () => {
     streamMock.mockReset();
     answerMock.mockReset();
     // 默认目录：内置三件套（Segmented 选项来源；个别用例可覆盖）
+    proposalsMock.mockReturnValue({ isLoading: false, data: [], refetch: vi.fn() });
     agentsMock.mockResolvedValue({
       agents: [
         { id: 'general', name: '通用助手', description: '', systemPrompt: '', tools: [] },
@@ -406,41 +408,26 @@ describe('ChatPage：SSE 流式', () => {
     expect(await screen.findByText('好的，按默认批次处理。')).toBeInTheDocument();
   });
 
-  it('profile.propose 成功 → 顶部待确认面板出现提议，对话页内直接确认（配置确认页已并入）', async () => {
-    streamMock.mockImplementationOnce(
-      async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
-        onEvent({ type: 'tool-call', callId: 'c1', toolId: 'profile.propose', args: {} });
-        onEvent({
-          type: 'tool-result',
-          callId: 'c1',
-          toolId: 'profile.propose',
-          ok: true,
-          payload: { proposalId: 'p-1', pendingConfirm: true },
-        });
-        onEvent({ type: 'text-delta', text: '已生成提议，等你确认。' });
-        onEvent({ type: 'turn-done', steps: 2 });
-      },
-    );
+  it('profile.propose 成功 → 立刻弹窗说明改动和影响，对话页内直接确认', async () => {
+    proposalsMock.mockReturnValue({ isLoading: false, data: [proposalFixture], refetch: vi.fn() });
     confirmMock.mockReset();
     confirmMock.mockResolvedValueOnce({ newVersion: 2, appliedOps: 1 });
     const user = userEvent.setup();
     render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
 
-    await user.click(screen.getByRole('textbox'));
-    await user.keyboard('隐藏规格字段');
-    await user.click(screen.getByRole('button', { name: /发送/ }));
+    const dialog = await screen.findByRole('dialog', { name: '请确认配置变更' });
+    expect(dialog).toHaveTextContent('隐藏规格字段');
+    expect(dialog).toHaveTextContent('字段「规格」将从界面隐藏（数据保留）');
+    expect(dialog).toHaveTextContent('共 1 项变更：字段 1。');
+    expect(dialog).toHaveTextContent('没有额外风险');
+    expect(screen.queryByText('待确认提议')).not.toBeInTheDocument();
+    expect(screen.queryByText('/schema/entities/sku/extensions/1/visible')).not.toBeInTheDocument();
 
-    expect(await screen.findByText('已生成提议，等你确认。')).toBeInTheDocument();
-    // 后置跳转按钮已移除：确认收敛在本页面板，不再跳配置确认页
-    expect(screen.queryByRole('button', { name: /去确认提议/ })).not.toBeInTheDocument();
-    // 顶部待确认面板：提议可见 → 展开详情 → 确认应用
-    expect(screen.getByText('待确认提议')).toBeInTheDocument();
-    expect(screen.getAllByText('隐藏规格字段').length).toBeGreaterThan(0); // 面板列表项 note
-    await user.click(screen.getByText('查看详情'));
-    expect(screen.getByText('/schema/entities/sku/extensions/1/visible')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '先放着' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '有 1 项配置等你确认' }));
 
     await user.click(screen.getByRole('button', { name: '确认应用' }));
-    await user.click(await screen.findByRole('button', { name: '应用' })); // popconfirm 确认
     expect(confirmMock).toHaveBeenCalledWith({ id: 'p-1' });
     expect(await screen.findByText(/已应用/)).toBeInTheDocument();
   });
@@ -454,6 +441,7 @@ describe('ChatPage：AI 未配置引导', () => {
   };
 
   beforeEach(() => {
+    proposalsMock.mockReturnValue({ isLoading: false, data: [], refetch: vi.fn() });
     aiConfigMock.mockImplementation(() => ({ isLoading: false, data: { configured: false, source: 'none' } }));
   });
   afterEach(() => {

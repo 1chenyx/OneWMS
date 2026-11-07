@@ -409,6 +409,7 @@ function useInvalidateLocations() {
   const qc = useQueryClient();
   return () => {
     void qc.invalidateQueries({ queryKey: ['locations'] });
+    void qc.invalidateQueries({ queryKey: ['warehouses'] });
     void qc.invalidateQueries({ queryKey: ['dashboard'] });
   };
 }
@@ -421,7 +422,7 @@ export function useCreateLocation() {
 export function useUpdateLocation() {
   const invalidate = useInvalidateLocations();
   return useMutation({
-    mutationFn: (params: { locationCode: string; body: { name?: string } }) =>
+    mutationFn: (params: { locationCode: string; body: { name?: string; warehouseCode?: string } }) =>
       api.updateLocation(params.locationCode, params.body),
     onSuccess: invalidate,
   });
@@ -635,6 +636,23 @@ export function useClearAiConfig() {
 /** 连通测试不改变服务端状态——无需失效缓存 */
 export function useTestAiConfig() {
   return useMutation({ mutationFn: api.testAiConfig });
+}
+
+/** 追加模型（同厂商可有多条）。保存后状态卡要重取。 */
+export function useAddAiProfiles() {
+  const invalidate = useInvalidateAiConfig();
+  return useMutation({ mutationFn: api.addAiProfiles, onSuccess: invalidate });
+}
+
+/** 切换「当前使用」。对话读的是生效配置，所以同样失效状态缓存。 */
+export function useActivateAiProfile() {
+  const invalidate = useInvalidateAiConfig();
+  return useMutation({ mutationFn: api.activateAiProfile, onSuccess: invalidate });
+}
+
+export function useDeleteAiProfile() {
+  const invalidate = useInvalidateAiConfig();
+  return useMutation({ mutationFn: api.deleteAiProfile, onSuccess: invalidate });
 }
 
 // ── 自动备份（滚动保留）──────────────────────────────────

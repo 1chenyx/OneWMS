@@ -226,13 +226,41 @@ export interface Hold {
   createdAt: string;
 }
 
-/** 库位（GET /api/locations，与 @one/wms LocationRecord 同形；DEFAULT 虚拟桶不在列） */
+/** 库位（GET /api/locations。未分仓时仓库字段为空；DEFAULT 虚拟桶不在列） */
 export interface Location {
   id: string;
   locationCode: string;
   name: string;
+  warehouseId?: string | null;
+  warehouseCode?: string | null;
+  warehouseName?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 仓库（GET /api/warehouses）。库位的上一层，不是库存桶。 */
+export interface Warehouse {
+  id: string;
+  warehouseCode: string;
+  name: string;
+  locationCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WarehouseStockRow {
+  skuCode: string;
+  name: string;
+  unit: string | null;
+  locationCode: string;
+  batchNo: string;
+  quantity: number;
+}
+
+export interface WarehouseStock {
+  warehouseCode: string;
+  name: string;
+  rows: WarehouseStockRow[];
 }
 
 /** 盘点单清单行（GET /api/stocktakes；scope 是编码展示，'全场' = 全仓） */
@@ -664,17 +692,30 @@ export const wmsApi = {
       { method: 'POST' },
     ),
   locations,
-  createLocation: (body: { locationCode: string; name?: string }) =>
+  createLocation: (body: { locationCode: string; name?: string; warehouseCode?: string }) =>
     request<{ locationId: string; locationCode: string; name: string }>('/api/locations', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  /** 编辑库位：只能改名（locationCode 是业务键不可改——历史单据引用它） */
-  updateLocation: (locationCode: string, body: { name?: string }) =>
+  /** 编辑库位：改名；多仓开启时还可以用 warehouseCode 划仓（空字符串表示划出） */
+  updateLocation: (locationCode: string, body: { name?: string; warehouseCode?: string }) =>
     request<{ locationId: string; locationCode: string; name: string }>(
       `/api/locations/${encodeURIComponent(locationCode)}`,
       { method: 'PUT', body: JSON.stringify(body) },
     ),
+  warehouses: () => request<Warehouse[]>('/api/warehouses'),
+  createWarehouse: (body: { warehouseCode: string; name?: string }) =>
+    request<{ warehouseId: string; warehouseCode: string; name: string }>('/api/warehouses', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateWarehouse: (warehouseCode: string, body: { name?: string }) =>
+    request<{ warehouseId: string; warehouseCode: string; name: string }>(
+      `/api/warehouses/${encodeURIComponent(warehouseCode)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  warehouseStock: (warehouseCode: string) =>
+    request<WarehouseStock>(`/api/warehouses/${encodeURIComponent(warehouseCode)}/stock`),
   stocktakes: () => request<Stocktake[]>('/api/stocktakes'),
   stocktakeDetail: (no: string) =>
     request<StocktakeDetail>(`/api/stocktakes/${encodeURIComponent(no)}`),

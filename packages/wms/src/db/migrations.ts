@@ -85,6 +85,7 @@ export function migrateWms(db: SqliteDatabase): void {
         reorder_point  INTEGER NOT NULL DEFAULT 0,
         status         TEXT NOT NULL DEFAULT 'active',
         unit           TEXT,
+        serial_tracked INTEGER NOT NULL DEFAULT 0,
         ext_data       TEXT NOT NULL DEFAULT '{}',
         created_at     TEXT NOT NULL,
         updated_at     TEXT NOT NULL,
@@ -93,6 +94,10 @@ export function migrateWms(db: SqliteDatabase): void {
       );
       CREATE INDEX IF NOT EXISTS idx_wms_sku_ws ON wms_sku (workspace_id);
     `);
+    const skuColsNow = db.pragma('table_info(wms_sku)') as { name: string }[];
+    if (skuColsNow.length > 0 && !skuColsNow.some((c) => c.name === 'serial_tracked')) {
+      db.exec(`ALTER TABLE wms_sku ADD COLUMN serial_tracked INTEGER NOT NULL DEFAULT 0`);
+    }
 
     // ── 库位主数据（M10，业务键：workspace + location_code；扁平模型，层级是生长点）──
     db.exec(`
@@ -223,6 +228,7 @@ export function migrateWms(db: SqliteDatabase): void {
         batch_expiry_date TEXT,
         quantity     REAL NOT NULL,
         fulfilled_qty REAL,
+        serials      TEXT,
         UNIQUE (workspace_id, order_id, sku_id, location_id, batch_no)
       );
       CREATE INDEX IF NOT EXISTS idx_wms_order_line_order ON wms_order_line (workspace_id, order_id);
@@ -232,6 +238,9 @@ export function migrateWms(db: SqliteDatabase): void {
     const lineColsNow = db.pragma('table_info(wms_order_line)') as { name: string }[];
     if (lineColsNow.length > 0 && !lineColsNow.some((c) => c.name === 'fulfilled_qty')) {
       db.exec(`ALTER TABLE wms_order_line ADD COLUMN fulfilled_qty REAL`);
+    }
+    if (lineColsNow.length > 0 && !lineColsNow.some((c) => c.name === 'serials')) {
+      db.exec(`ALTER TABLE wms_order_line ADD COLUMN serials TEXT`);
     }
 
     // 单据事件已入账标记。构造期从 cursor = -1 重放；单据状态转移不是幂等的

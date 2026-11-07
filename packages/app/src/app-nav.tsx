@@ -7,7 +7,7 @@ import type { ReactNode } from 'react';
  * 当前页属于哪个大类由 categoryOfPage(page) 推出，rail 据此高亮。
  * AI 聊天的「后置动作」经 navigate 跳到对应管理页（库存操作 → 库存页…），
  * filter 由目标页挂载时消费一次（useState 初始化器里 takeInitialFilter，取后即清）。
- * 提议确认不设独立页：慢通道拍板收敛在 AI 对话页的待确认面板。
+ * 提议确认不设独立页：慢通道拍板在 AI 对话页弹窗里完成。
  */
 
 /** 默认落地页：SKU 管理——「无 AI 也能用」是管理界面的主张，AI 是增强不是入口 */

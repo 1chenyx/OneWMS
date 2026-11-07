@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import type { AppContext } from '../context.js';
-import { readAiConfigFile, writeAiConfigFile } from '../ai-config-store.js';
+import { activeProvider, catalogFromProvider, parseAiConfigInput, sanitizeAiCatalog } from '../ai-config-store.js';
 import {
   deleteBackup,
   isValidBackupName,
@@ -61,12 +61,19 @@ function listBody(ctx: AppContext): BackupListBody {
   };
 }
 
-/** 备份内容 = 迁移包 + AI 配置文件（未配置则不带该字段）——端点与定时轮共用 */
+/**
+ * 备份内容 = 迁移包 + 页面上的模型目录（未配置则不带该字段）。
+ * 以内存里的目录为准，不回读磁盘：刚保存尚未落盘、或内存库没有文件时也跟运行态一致。
+ * aiConfig 仍写当前生效的那一条，旧的恢复逻辑和「备份里有没有模型」的断言都还能对上。
+ * 环境变量配的模型不进备份——那是进程启动参数，不是页面数据。
+ */
 export function backupSnapshot(ctx: AppContext) {
-  const aiConfig = ctx.aiConfigPath ? readAiConfigFile(ctx.aiConfigPath) : undefined;
+  const catalog = ctx.aiCatalog.profiles.length > 0 ? ctx.aiCatalog : undefined;
+  const aiConfig = catalog ? activeProvider(catalog) : undefined;
   return {
     bundle: ctx.core.migration.exportBundle(ctx.workspaceId),
     ...(aiConfig ? { aiConfig } : {}),
+    ...(catalog ? { aiCatalog: catalog } : {}),
   };
 }
 
@@ -111,12 +118,20 @@ export function backupRoutes(ctx: AppContext): Hono {
         ctx.memory.replay(); // 记忆投影一并重建
       }
 
-      // AI 配置：备份里有才恢复（没有就保持现状——恢复数据不该顺手关掉 AI）
+      // AI 配置：备份里有才恢复（没有就保持现状——恢复数据不该顺手关掉 AI）。
+      // 优先整份目录，这样多模型不会被压成一条；旧备份只有 aiConfig 时升级成单条目录。
+      // commitCatalog 同时写文件和热切换，避免只写盘、内存目录还是空的。
       let aiConfigRestored = false;
-      if (file.aiConfig && ctx.aiConfigPath !== null) {
-        writeAiConfigFile(ctx.aiConfigPath, file.aiConfig);
-        ctx.applyAiConfig(file.aiConfig, 'file');
+      const catalog = file.aiCatalog ? sanitizeAiCatalog(file.aiCatalog) : undefined;
+      if (catalog) {
+        ctx.commitCatalog(catalog);
         aiConfigRestored = true;
+      } else if (file.aiConfig) {
+        const parsed = parseAiConfigInput(file.aiConfig);
+        if (parsed.ok) {
+          ctx.commitCatalog(catalogFromProvider(parsed.config));
+          aiConfigRestored = true;
+        }
       }
       return c.json({ accepted, skipped, replayed, aiConfigRestored });
     })

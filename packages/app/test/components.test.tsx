@@ -307,7 +307,7 @@ describe('ToolInvocationCard：ui.ask 挂起/回填（M12 步骤3）', () => {
 describe('ToolInvocationCard：后置动作按钮（M12 步骤4）', () => {
   const wrap = (ui: React.ReactNode) => <ConfigProvider button={{ autoInsertSpace: false }}>{ui}</ConfigProvider>;
 
-  it('profile.propose 成功 → 无后置动作（确认收敛在对话页待确认面板，不跳页）', () => {
+  it('profile.propose 成功 → 无后置动作（确认在对话页弹窗里，不跳页）', () => {
     render(
       wrap(
         <ToolInvocationCard

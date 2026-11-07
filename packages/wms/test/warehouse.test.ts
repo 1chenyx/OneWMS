@@ -158,13 +158,16 @@ describe('module.warehouse', () => {
     await ws.tools.invoke('wms.location.create', { locationCode: 'A-01', name: '一号架' });
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 5, locationCode: 'A-01', reason: '期初' });
     const locationId = ws.locations.byCode('A-01')!.id;
-    const before = ws.events.count();
+    let watermark = -1;
+    ws.events.forEach((env) => {
+      watermark = env.lamport;
+    });
     await ws.tools.invoke('wms.location.update', { locationCode: 'A-01', warehouseCode: 'WH-1' });
     const assigned: string[] = [];
     ws.events.forEach((env) => {
-      if (env.lamport > 0) assigned.push(env.type);
-    }, { fromLamport: before - 1 });
-    expect(assigned.filter((type) => type === 'wms.inventory.adjusted')).toEqual([]);
+      assigned.push(env.type);
+    }, { fromLamport: watermark });
+    expect(assigned).toEqual(['wms.location.updated']);
     expect(qtyAt('A-01')).toBe(5);
     expect(listWarehouseStock(ws, 'WH-1').rows).toEqual([
       expect.objectContaining({ locationCode: 'A-01', quantity: 5 }),

@@ -128,6 +128,29 @@ function parseProfile(raw: unknown): AiModelProfile | undefined {
   return { id, vendorId, label, ...parsed.config };
 }
 
+function isCatalogShape(raw: unknown): raw is { version: 2; activeId?: unknown; profiles: unknown[] } {
+  return (
+    raw !== null &&
+    typeof raw === 'object' &&
+    !Array.isArray(raw) &&
+    (raw as { version?: unknown }).version === 2 &&
+    Array.isArray((raw as { profiles?: unknown }).profiles)
+  );
+}
+
+/**
+ * 校验一份目录（备份恢复与读文件共用）。
+ * 丢掉坏条目；一条合法的都没有 → undefined。activeId 对不上就落到第一条。
+ */
+export function sanitizeAiCatalog(raw: unknown): AiConfigCatalog | undefined {
+  if (!isCatalogShape(raw)) return undefined;
+  const profiles = raw.profiles.map(parseProfile).filter((item): item is AiModelProfile => item !== undefined);
+  if (profiles.length === 0) return undefined;
+  const requested = typeof raw.activeId === 'string' ? raw.activeId : '';
+  const activeId = profiles.some((item) => item.id === requested) ? requested : profiles[0]!.id;
+  return { version: 2, activeId, profiles };
+}
+
 /**
  * 读配置目录。v2 读多模型；v1 单对象升级成一条。
  * 不存在、损坏、没有合法条目 → undefined（按未配置处理，不阻断启动）。
@@ -139,18 +162,13 @@ export function readAiCatalog(path: string): AiConfigCatalog | undefined {
   } catch {
     return undefined;
   }
-  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
-    const body = raw as Record<string, unknown>;
-    if (body.version === 2 && Array.isArray(body.profiles)) {
-      const profiles = body.profiles.map(parseProfile).filter((item): item is AiModelProfile => item !== undefined);
-      if (profiles.length === 0) {
-        console.warn(`[one-server] AI 配置文件没有合法模型，已忽略（${path}）`);
-        return undefined;
-      }
-      const requested = typeof body.activeId === 'string' ? body.activeId : '';
-      const activeId = profiles.some((item) => item.id === requested) ? requested : profiles[0]!.id;
-      return { version: 2, activeId, profiles };
+  if (isCatalogShape(raw)) {
+    const catalog = sanitizeAiCatalog(raw);
+    if (!catalog) {
+      console.warn(`[one-server] AI 配置文件没有合法模型，已忽略（${path}）`);
+      return undefined;
     }
+    return catalog;
   }
   const legacy = parseAiConfigInput(raw);
   if (!legacy.ok) {

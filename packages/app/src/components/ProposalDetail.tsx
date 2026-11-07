@@ -1,14 +1,22 @@
-import { App as AntApp, Button, Descriptions, Popconfirm, Space, Spin, Table, Tag, Typography } from 'antd';
-import type { PatchOp } from '@one/core';
+import { Alert, App as AntApp, Button, List, Space, Spin, Typography } from 'antd';
 import { useConfirmProposal, useProposalDetail, useRejectProposal } from '../api/hooks';
 import { ApiError } from '../api/client';
-import ImpactReportView from './ImpactReportView';
 
 /**
- * 提议详情：note/patch 摘要 + 影响报告 + 确认/拒绝（§4.1 人工确认权）。
+ * 配置确认正文：人话说明这次改成什么样、有什么影响。
+ * 弹窗本身就是拍板，不再套一层二次确认。
  * 确认后的错误按 code 分支提示：409 STALE = 报告已过期（配置变了，请重新提议）。
  */
-export default function ProposalDetail({ proposalId, onDone }: { proposalId: string; onDone: () => void }) {
+export default function ProposalDetail({
+  proposalId,
+  onDone,
+  onLater,
+}: {
+  proposalId: string;
+  onDone: () => void;
+  /** 先不拍板，提议仍留着 */
+  onLater?: () => void;
+}) {
   const { message } = AntApp.useApp();
   const detail = useProposalDetail(proposalId);
   const confirm = useConfirmProposal();
@@ -17,6 +25,7 @@ export default function ProposalDetail({ proposalId, onDone }: { proposalId: str
   if (detail.isLoading) return <Spin />;
   if (detail.error) return <div>加载失败：{String((detail.error as Error).message)}</div>;
   const proposal = detail.data!;
+  const warnings = proposal.report.items.filter((item) => item.severity === 'warning');
 
   const doConfirm = async () => {
     try {
@@ -42,73 +51,51 @@ export default function ProposalDetail({ proposalId, onDone }: { proposalId: str
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Descriptions column={2} size="small" bordered>
-        <Descriptions.Item label="提议人">
-          <Typography.Text code>{proposal.proposedBy}</Typography.Text>
-        </Descriptions.Item>
-        <Descriptions.Item label="基于版本">v{proposal.baseVersion}</Descriptions.Item>
-        <Descriptions.Item label="说明" span={2}>
-          {proposal.note ?? '（无说明）'}
-        </Descriptions.Item>
-      </Descriptions>
+      <div>
+        <Typography.Text type="secondary">这次要改</Typography.Text>
+        <Typography.Paragraph style={{ margin: '4px 0 0', fontSize: 16 }}>
+          {proposal.note ?? proposal.report.summary}
+        </Typography.Paragraph>
+        <Typography.Text type="secondary">基于当前配置 v{proposal.baseVersion}</Typography.Text>
+      </div>
 
       <div>
-        <Typography.Title level={5}>变更内容（JSON Patch）</Typography.Title>
-        <Table<PatchOp>
-          size="small"
-          rowKey={(op) => `${op.op}:${op.path}`}
-          pagination={false}
-          dataSource={proposal.patch}
-          columns={[
-            {
-              title: '操作',
-              dataIndex: 'op',
-              width: 90,
-              render: (op: string) => (
-                <Tag
-                  color={op === 'remove' ? 'red' : op === 'add' ? 'green' : 'blue'}
-                  bordered={false}
-                >
-                  {op}
-                </Tag>
-              ),
-            },
-            { title: '路径', dataIndex: 'path', render: (p: string) => <Typography.Text code>{p}</Typography.Text> },
-            {
-              title: '值',
-              dataIndex: 'value',
-              render: (v: unknown) => (
-                <Typography.Text code style={{ fontSize: 12 }}>
-                  {JSON.stringify(v)}
-                </Typography.Text>
-              ),
-            },
-          ]}
+        <Typography.Text strong>将改成</Typography.Text>
+        <List
+          dataSource={proposal.report.items}
+          locale={{ emptyText: '报告里没有具体改动' }}
+          split={false}
+          renderItem={(item) => (
+            <List.Item style={{ padding: '6px 0', border: 'none' }}>
+              <Alert
+                style={{ width: '100%' }}
+                type={item.severity === 'warning' ? 'warning' : 'info'}
+                showIcon
+                message={item.description}
+              />
+            </List.Item>
+          )}
         />
       </div>
 
       <div>
-        <Typography.Title level={5}>影响报告</Typography.Title>
-        <ImpactReportView report={proposal.report} />
+        <Typography.Text strong>影响</Typography.Text>
+        <Typography.Paragraph style={{ margin: '4px 0 8px' }}>{proposal.report.summary}</Typography.Paragraph>
+        {warnings.length > 0 ? (
+          <Alert type="warning" showIcon message={`有 ${warnings.length} 项需要注意。确认后立刻生效。`} />
+        ) : (
+          <Alert type="success" showIcon message="没有额外风险。确认后立刻生效，这次变更可以追溯。" />
+        )}
       </div>
 
-      <Space>
-        <Popconfirm
-          title="确认应用这份配置变更？"
-          description="应用后立即生效（热应用，可追溯）。"
-          okText="应用"
-          cancelText="再想想"
-          onConfirm={doConfirm}
-        >
-          <Button type="primary" loading={confirm.isPending}>
-            确认应用
-          </Button>
-        </Popconfirm>
-        <Popconfirm title="拒绝这份提议？" okText="确认拒绝" cancelText="取消" onConfirm={doReject}>
-          <Button danger loading={reject.isPending}>
-            拒绝
-          </Button>
-        </Popconfirm>
+      <Space wrap>
+        <Button type="primary" loading={confirm.isPending} onClick={() => void doConfirm()}>
+          确认应用
+        </Button>
+        <Button danger loading={reject.isPending} onClick={() => void doReject()}>
+          拒绝
+        </Button>
+        {onLater ? <Button onClick={onLater}>先放着</Button> : null}
       </Space>
     </Space>
   );

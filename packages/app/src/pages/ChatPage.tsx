@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useRef, useState } from 'react';
 import type { ButtonProps } from 'antd';
 import { DownOutlined, PaperClipOutlined, SendOutlined } from '@ant-design/icons';
-import { Alert, App as AntApp, Badge, Button, Card, Dropdown, Input, List, Space, Spin, Tag, Typography } from 'antd';
+import { Alert, App as AntApp, Button, Card, Dropdown, Input, Modal, Space, Spin, Tag, Typography } from 'antd';
 import { api } from '../api/client';
 import type { AgentDef, ChatAttachmentPayload, ChatInvocation } from '../api/client';
 import { useAiConfig, useProposals } from '../api/hooks';
@@ -21,9 +21,8 @@ import PageHeader from '../components/PageHeader';
  *  - 输入框底部两个下拉：切换助手（选项来自 GET /api/agents）、切换模型
  *    （同一接入点上的模型名，选项来自 GET /api/ai-config/models）。
  *    切换助手 = 换新会话 + 清空历史（流式中锁定）；切换模型不换会话；
- *  - 待确认提议面板：慢通道的人工拍板收敛在本页（配置确认页已并入）——
- *    AI 对话里的 profile.propose、助手管理/AI 记忆的保存提议都出现在顶部
- *    面板，展开详情即可直接确认/拒绝，不再单独设页跳转；
+ *  - 配置确认：profile.propose、助手定义、AI 记忆设置的提议一到就弹窗，
+ *    写明将改成什么样、有什么影响；关掉后可从输入框上方再打开；
  *  - 流式渲染：一组工具调用先收成一句人话，展开才看明细；助手文本逐 delta 增长；
  *  - 成功的操作展开后仍可去对应管理页；
  *  - 输入区可以带上 Excel、CSV 或文本，用户说怎么处理，助手就怎么处理。
@@ -75,16 +74,17 @@ export default function ChatPage() {
   const listRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // 待确认提议（慢通道人工拍板面）：5s 轮询 + 新提议落地即刷（见下方 effect）
+  // 待确认提议：5s 轮询 + 对话里刚提议就刷新。新提议立刻弹窗，不堆在页头。
   const proposalsQuery = useProposals();
   const proposals = proposalsQuery.data;
-  const [activeProposalId, setActiveProposalId] = useState<string | null>(null);
+  const [openProposalId, setOpenProposalId] = useState<string | null>(null);
+  const promptedRef = useRef(new Set<string>());
 
   // AI 未配置引导：检测到未配置即在顶部展示引导卡（AiConfigPage 保存后缓存失效、返回即消失）
   const aiConfigQuery = useAiConfig();
   const aiUnconfigured = aiConfigQuery.data !== undefined && !aiConfigQuery.data.configured;
 
-  // 对话里 profile.propose 刚成功 → 立即刷新待确认面板（不等 5s 轮询）。
+  // 对话里 profile.propose 刚成功 → 立即刷新提议（不等 5s 轮询）。
   // refetch 经 ref 中转：依赖只留 proposeCount，避免查询对象身份变化触发回流。
   const proposeCount = chat.turns.reduce(
     (n, t) => n + t.invocations.filter((i) => i.toolId === 'profile.propose' && i.ok === true).length,
@@ -95,6 +95,21 @@ export default function ChatPage() {
   useEffect(() => {
     if (proposeCount > 0) void refetchProposals.current?.();
   }, [proposeCount]);
+
+  // 还没弹过的提议马上打开。关掉或拍板后不再自动弹出同一条。
+  useEffect(() => {
+    const pending = proposals ?? [];
+    if (openProposalId && pending.some((item) => item.proposalId === openProposalId)) return;
+    const fresh = pending.find((item) => !promptedRef.current.has(item.proposalId));
+    if (fresh) {
+      promptedRef.current.add(fresh.proposalId);
+      setOpenProposalId(fresh.proposalId);
+      return;
+    }
+    if (openProposalId) setOpenProposalId(null);
+  }, [proposals, openProposalId]);
+
+  const holdProposal = () => setOpenProposalId(null);
 
   // 助手清单（M16）：挂载拉取；失败静默——仅显示当前 agentId，切换器空态可接受
   useEffect(() => {
@@ -196,46 +211,19 @@ export default function ChatPage() {
           }
         />
       ) : null}
-      {/* 待确认提议面板：仅在有 pending 提议时出现；确认/拒绝后列表失效即消失 */}
-      {proposals && proposals.length > 0 ? (
-        <Card
-          size="small"
-          title="待确认提议"
-          extra={<Badge count={proposals.length} />}
-        >
-          <List
-            size="small"
-            dataSource={proposals}
-            renderItem={(p) => (
-              <List.Item
-                actions={[
-                  <a
-                    key="open"
-                    onClick={() =>
-                      setActiveProposalId(p.proposalId === activeProposalId ? null : p.proposalId)
-                    }
-                  >
-                    {p.proposalId === activeProposalId ? '收起' : '查看详情'}
-                  </a>,
-                ]}
-              >
-                <List.Item.Meta
-                  title={
-                    <Space>
-                      <Typography.Text code>{p.proposedBy}</Typography.Text>
-                      <Typography.Text type="secondary">基于 v{p.baseVersion}</Typography.Text>
-                    </Space>
-                  }
-                  description={p.note ?? p.summary}
-                />
-              </List.Item>
-            )}
-          />
-          {activeProposalId ? (
-            <ProposalDetail proposalId={activeProposalId} onDone={() => setActiveProposalId(null)} />
-          ) : null}
-        </Card>
-      ) : null}
+      <Modal
+        title="请确认配置变更"
+        open={openProposalId !== null}
+        onCancel={holdProposal}
+        footer={null}
+        width={640}
+        destroyOnHidden
+        maskClosable={false}
+      >
+        {openProposalId ? (
+          <ProposalDetail proposalId={openProposalId} onDone={holdProposal} onLater={holdProposal} />
+        ) : null}
+      </Modal>
       <Card
         style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
         styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 } }}
@@ -245,7 +233,7 @@ export default function ChatPage() {
             <Typography.Paragraph type="secondary" style={{ padding: 24 }}>
               试试说：「建一个 SKU：A-1001 轴承」「A-1001 入库 50 个」。
               也可以导入 Excel、CSV 或文本，再说怎么处理，比如「按这张表入库」或「这些是新商品，帮我建档」。
-              改配置类请求会生成待确认提议，出现在本页顶部，由你直接拍板。
+              改配置会立刻弹出确认，写明要改成什么样、有什么影响。
             </Typography.Paragraph>
           ) : null}
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -273,6 +261,13 @@ export default function ChatPage() {
             {chat.isStreaming ? <Spin tip="思考中…" /> : null}
           </Space>
         </div>
+        {proposals && proposals.length > 0 && openProposalId === null ? (
+          <div style={{ marginTop: 12 }}>
+            <Button onClick={() => setOpenProposalId(proposals[0]!.proposalId)}>
+              有 {proposals.length} 项配置等你确认
+            </Button>
+          </div>
+        ) : null}
         <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-end', gap: 8 }}>
           <div
             aria-label="对话输入"
