@@ -5,9 +5,11 @@ import type { ColumnsType } from 'antd/es/table';
 import type { FieldExtension } from '@one/core';
 import { useArchiveSku, useProfileSnapshot, useSkus, useUnarchiveSku } from '../api/hooks';
 import type { Sku } from '../api/client';
+import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
 import SkuFormModal from '../components/SkuFormModal';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { SkuSheetPort } from '../components/sheet-specs';
+import { serverPagination, monoCell, numCell } from '../components/table-style';
 
 /**
  * SKU 管理页——动态列是 Profile 配置的第一个真实消费闭环：
@@ -23,7 +25,13 @@ import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
 export default function SkusPage() {
   const [query, setQuery] = useState('');
   const [showArchived, setShowArchived] = useState(false);
-  const { data: skus, isLoading } = useSkus(query || undefined, showArchived);
+  const list = useListPage(`${query}|${showArchived ? 1 : 0}`);
+  const { data: skus, isLoading } = useSkus(query || undefined, showArchived, {
+    limit: list.limit,
+    offset: list.offset,
+  });
+  const skuPayload = skus as Sku[] | ListPage<Sku> | undefined;
+  const rows = rowsOf(skuPayload);
   const snapshot = useProfileSnapshot();
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Sku | null>(null);
@@ -156,6 +164,7 @@ export default function SkusPage() {
             >
               显示已停用
             </Checkbox>
+            <SkuSheetPort extensions={extensions} />
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新建 SKU
             </Button>
@@ -166,12 +175,16 @@ export default function SkusPage() {
         <Table<Sku>
           rowKey="id"
           columns={columns}
-          dataSource={skus ?? []}
+          dataSource={rows}
           loading={isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={serverPagination({
+            current: list.page,
+            total: totalOf(skuPayload),
+            onChange: list.setPage,
+          })}
           locale={{ emptyText: query ? '没有匹配的 SKU' : '还没有 SKU，点右上角新建或让 AI 帮你建' }}
         />
-        {extensions.length === 0 && skus && skus.length > 0 ? (
+        {extensions.length === 0 && rows.length > 0 ? (
           <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
             扩展字段全部隐藏中。想让 AI 增加/恢复字段，去「AI 对话」页提需求。
           </Typography.Text>

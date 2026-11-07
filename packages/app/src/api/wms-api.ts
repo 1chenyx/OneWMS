@@ -1,3 +1,4 @@
+import type { ListPage } from './page';
 import { request } from './request';
 
 /** 与 @one/wms 的 SkuRecord 同形（前端不依赖 wms 包类型，只镜像 HTTP 契约） */
@@ -43,9 +44,32 @@ export interface Order {
   partnerCode: string | null;
   partnerName: string | null;
   note: string | null;
+  /** 原单号。有值表示这张单是退货 */
+  returnOfOrderNo?: string | null;
+  /** 预计到货日。有值表示这张入库单是到货预报 */
+  expectedAt?: string | null;
   createdAt: string;
   updatedAt: string;
   lines: OrderLine[];
+}
+
+/** GET /api/orders/:orderNo/returnable */
+export interface ReturnableLine {
+  skuCode: string;
+  name: string;
+  unit: string | null;
+  batchNo: string;
+  batchExpiryDate: string | null;
+  locationCode: string;
+  postedQty: number;
+  remaining: number;
+}
+
+export interface ReturnableView {
+  sourceOrderNo: string;
+  sourceDirection: 'in' | 'out';
+  direction: 'in' | 'out';
+  lines: ReturnableLine[];
 }
 
 /** 往来单位（M21，GET /api/partners；供应商/客户统一档案，kind 区分） */
@@ -138,8 +162,10 @@ export interface InventoryRow {
   skuCode: string;
   name: string;
   quantity: number;
-  /** 活动冻结合计（M19）；available = quantity − held（单据出库拦截同一口径） */
+  /** 活动冻结合计（M19） */
   held: number;
+  /** 拣货占用。缺省当 0。available = quantity − held − reserved */
+  reserved?: number;
   available: number;
   /** 安全库存（M20）：>0 且 available < 它 → 低库存预警（前端标红/过滤） */
   reorderPoint: number;
@@ -147,7 +173,7 @@ export interface InventoryRow {
   unit: string | null;
 }
 
-/** 库存分桶明细行（GET /api/inventory/buckets；CSV 导出到桶粒度用） */
+/** 库存分桶明细行（GET /api/inventory/buckets；Excel 导出到桶粒度用） */
 export interface InventoryBucketRow {
   skuCode: string;
   name: string;
@@ -260,25 +286,132 @@ export interface ExpiryBatchRow {
   buckets: { locationCode: string; quantity: number }[];
 }
 
+/** 库存汇总分页。hasReserved 表示全库还有占用，不限于当前页。 */
+export interface InventoryListPage extends ListPage<InventoryRow> {
+  hasReserved: boolean;
+}
+
 /** GET /api/inventory/expiry 响应（today 供前端展示「截至」语境） */
 export interface ExpiryBoard {
   today: string;
   rows: ExpiryBatchRow[];
 }
 
+/**
+ * SKU 清单：q = 编码/名称/条码 模糊搜索（M18）；barcode = 条码精确匹配（不过滤停用）。
+ * A2 软停用：默认只回启用档；includeArchived = 回全量（SKU 管理页勾选「显示已停用」时用）。
+ * 不传 limit 时是全量数组；传入 limit 时是分页信封。
+ */
+function skus(query?: {
+  q?: string;
+  barcode?: string;
+  includeArchived?: boolean;
+}): Promise<Sku[]>;
+function skus(query: {
+  q?: string;
+  barcode?: string;
+  includeArchived?: boolean;
+  limit: number;
+  offset?: number;
+}): Promise<ListPage<Sku>>;
+function skus(query?: {
+  q?: string;
+  barcode?: string;
+  includeArchived?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<Sku[] | ListPage<Sku>> {
+  const params = new URLSearchParams();
+  if (query?.q) params.set('q', query.q);
+  if (query?.barcode) params.set('barcode', query.barcode);
+  if (query?.includeArchived) params.set('includeArchived', '1');
+  writePage(params, query);
+  const qs = params.toString();
+  return request<Sku[] | ListPage<Sku>>(qs ? `/api/skus?${qs}` : '/api/skus');
+}
+
+/** 不传 limit 时是全量数组；传入 limit 时按单号分页。 */
+function orders(direction?: 'in' | 'out'): Promise<Order[]>;
+function orders(
+  direction: 'in' | 'out' | undefined,
+  page: { q?: string; limit: number; offset?: number },
+): Promise<ListPage<Order>>;
+function orders(
+  direction?: 'in' | 'out',
+  page?: { q?: string; limit?: number; offset?: number },
+): Promise<Order[] | ListPage<Order>> {
+  const params = new URLSearchParams();
+  if (direction) params.set('direction', direction);
+  if (page?.q) params.set('q', page.q);
+  writePage(params, page);
+  const qs = params.toString();
+  return request<Order[] | ListPage<Order>>(qs ? `/api/orders?${qs}` : '/api/orders');
+}
+
+/** 往来单位清单（M21）：kind = supplier/customer 过滤；q = 编码/名称模糊。不传 limit 时是全量数组。 */
+function partners(query?: { kind?: 'supplier' | 'customer'; q?: string }): Promise<Partner[]>;
+function partners(query: {
+  kind?: 'supplier' | 'customer';
+  q?: string;
+  limit: number;
+  offset?: number;
+}): Promise<ListPage<Partner>>;
+function partners(query?: {
+  kind?: 'supplier' | 'customer';
+  q?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<Partner[] | ListPage<Partner>> {
+  const params = new URLSearchParams();
+  if (query?.kind) params.set('kind', query.kind);
+  if (query?.q) params.set('q', query.q);
+  writePage(params, query);
+  const qs = params.toString();
+  return request<Partner[] | ListPage<Partner>>(qs ? `/api/partners?${qs}` : '/api/partners');
+}
+
+/** 库存汇总。不传 limit 时是全量数组；传入 limit 时带 hasReserved。 */
+function inventory(query?: { q?: string; skuCode?: string; lowOnly?: boolean }): Promise<InventoryRow[]>;
+function inventory(query: {
+  q?: string;
+  skuCode?: string;
+  lowOnly?: boolean;
+  limit: number;
+  offset?: number;
+}): Promise<InventoryListPage>;
+function inventory(query?: {
+  q?: string;
+  skuCode?: string;
+  lowOnly?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<InventoryRow[] | InventoryListPage> {
+  const params = new URLSearchParams();
+  if (query?.q) params.set('q', query.q);
+  if (query?.skuCode) params.set('skuCode', query.skuCode);
+  if (query?.lowOnly) params.set('lowOnly', '1');
+  writePage(params, query);
+  const qs = params.toString();
+  return request<InventoryRow[] | InventoryListPage>(qs ? `/api/inventory?${qs}` : '/api/inventory');
+}
+
+/** 库位清单。不传 limit 时是全量数组；q 在服务端过滤。 */
+function locations(query?: { q?: string }): Promise<Location[]>;
+function locations(query: { q?: string; limit: number; offset?: number }): Promise<ListPage<Location>>;
+function locations(query?: {
+  q?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<Location[] | ListPage<Location>> {
+  const params = new URLSearchParams();
+  if (query?.q) params.set('q', query.q);
+  writePage(params, query);
+  const qs = params.toString();
+  return request<Location[] | ListPage<Location>>(qs ? `/api/locations?${qs}` : '/api/locations');
+}
+
 export const wmsApi = {
-  /**
-   * SKU 清单：q = 编码/名称/条码 模糊搜索（M18）；barcode = 条码精确匹配（不过滤停用）。
-   * A2 软停用：默认只回启用档；includeArchived = 回全量（SKU 管理页勾选「显示已停用」时用）。
-   */
-  skus: (query?: { q?: string; barcode?: string; includeArchived?: boolean }) => {
-    const params = new URLSearchParams();
-    if (query?.q) params.set('q', query.q);
-    if (query?.barcode) params.set('barcode', query.barcode);
-    if (query?.includeArchived) params.set('includeArchived', '1');
-    const qs = params.toString();
-    return request<Sku[]>(qs ? `/api/skus?${qs}` : '/api/skus');
-  },
+  skus,
   createSku: (body: {
     skuCode: string;
     name: string;
@@ -331,8 +464,7 @@ export const wmsApi = {
       `/api/skus/${encodeURIComponent(skuCode)}/unarchive`,
       { method: 'POST' },
     ),
-  orders: (direction?: 'in' | 'out') =>
-    request<Order[]>(direction ? `/api/orders?direction=${direction}` : '/api/orders'),
+  orders,
   orderConflicts: () =>
     request<
       {
@@ -354,14 +486,7 @@ export const wmsApi = {
       `/api/order-conflicts/${encodeURIComponent(eventId)}/dismiss`,
       { method: 'POST' },
     ),
-  /** 往来单位清单（M21）：kind = supplier/customer 过滤；q = 编码/名称模糊 */
-  partners: (query?: { kind?: 'supplier' | 'customer'; q?: string }) => {
-    const params = new URLSearchParams();
-    if (query?.kind) params.set('kind', query.kind);
-    if (query?.q) params.set('q', query.q);
-    const qs = params.toString();
-    return request<Partner[]>(qs ? `/api/partners?${qs}` : '/api/partners');
-  },
+  partners,
   createPartner: (body: {
     partnerCode: string;
     kind: 'supplier' | 'customer';
@@ -427,11 +552,28 @@ export const wmsApi = {
   dashboardLocations: () => request<LocationDistribution[]>('/api/dashboard/locations'),
   dashboardOrders: () => request<OrderStateCount[]>('/api/dashboard/orders'),
   dashboardAlerts: () => request<AlertSummary>('/api/dashboard/alerts'),
+  /** 原单还能退多少。模块关闭、原单未入账、或原单本身是退货单时 400。 */
+  orderReturnable: (orderNo: string) =>
+    request<ReturnableView>(`/api/orders/${encodeURIComponent(orderNo)}/returnable`),
   createOrder: (body: {
     direction: 'in' | 'out';
-    lines: { skuCode: string; quantity: number }[];
+    lines: {
+      skuCode: string;
+      quantity: number;
+      locationCode?: string;
+      batchNo?: string;
+      batchExpiryDate?: string;
+    }[];
+    /** 单据号（可选，缺省由服务端生成）。导入时用来把多行并成一张单 */
+    orderNo?: string;
     /** 往来单位编码（M21）：入库单=供应商 / 出库单=客户 */
     partnerCode?: string;
+    /** 原单号（module.return）。客退填出库单号，退供填入库单号 */
+    returnOf?: string;
+    /** 到货预报（module.asn）。true = 入库单先停在已预报，收货才加库存 */
+    asn?: boolean;
+    /** 预计到货日 YYYY-MM-DD，仅和 asn 一起用 */
+    expectedAt?: string;
     note?: string;
   }) =>
     request<{ orderId: string; orderNo: string; state: string }>('/api/orders', {
@@ -467,8 +609,8 @@ export const wmsApi = {
       method: 'POST',
       body: JSON.stringify({ targets }),
     }),
-  inventory: () => request<InventoryRow[]>('/api/inventory'),
-  /** 库存分桶明细（SKU×库位×批次）——CSV 导出用 */
+  inventory,
+  /** 库存分桶明细（SKU×库位×批次）——Excel 导出用 */
   inventoryBuckets: () => request<InventoryBucketRow[]>('/api/inventory/buckets'),
   /** 库存流水（导出/对账）——limit 上限 5000，skuCode 可选过滤 */
   ledger: (query?: { limit?: number; skuCode?: string }) => {
@@ -498,8 +640,7 @@ export const wmsApi = {
       `/api/holds/${encodeURIComponent(holdId)}/release`,
       { method: 'POST' },
     ),
-  locations: (query?: { q?: string }) =>
-    request<Location[]>(query?.q ? `/api/locations?q=${encodeURIComponent(query.q)}` : '/api/locations'),
+  locations,
   createLocation: (body: { locationCode: string; name?: string }) =>
     request<{ locationId: string; locationCode: string; name: string }>('/api/locations', {
       method: 'POST',
@@ -537,3 +678,9 @@ export const wmsApi = {
       { method: 'POST' },
     ),
 };
+
+function writePage(params: URLSearchParams, page?: { limit?: number; offset?: number }): void {
+  if (page?.limit == null) return;
+  params.set('limit', String(page.limit));
+  if (page.offset) params.set('offset', String(page.offset));
+}

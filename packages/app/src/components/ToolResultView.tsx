@@ -100,7 +100,7 @@ export default function ToolResultView({ toolId, payload }: { toolId: string; pa
     case 'ui.ask':
       return renderAsk(payload);
     default:
-      return renderJson(payload);
+      return renderPlain(payload);
   }
 }
 
@@ -112,7 +112,7 @@ function renderQuery(payload: unknown): ReactNode {
       : renderFlatRows(payload as FlatRow[]);
   }
   if (isSkuGroup(payload)) return renderSingleGroup(payload);
-  return renderJson(payload);
+  return renderPlain(payload);
 }
 
 /** 形态一：库位平铺（「这个库位里有什么」——行含批次与效期） */
@@ -183,7 +183,7 @@ function renderGroupList(groups: SkuGroup[]) {
 }
 
 function renderExpiring(payload: unknown) {
-  if (!Array.isArray(payload)) return renderJson(payload);
+  if (!Array.isArray(payload)) return renderPlain(payload);
   const { rows: capped, total, truncated } = capRows(payload as ExpiringRow[]);
   const columns: ColumnsType<ExpiringRow> = [
     { title: 'SKU', dataIndex: 'skuCode' },
@@ -202,7 +202,7 @@ function renderExpiring(payload: unknown) {
 }
 
 function renderLocationList(payload: unknown) {
-  if (!Array.isArray(payload)) return renderJson(payload);
+  if (!Array.isArray(payload)) return renderPlain(payload);
   const { rows: capped, total, truncated } = capRows(payload as LocationRow[]);
   const columns: ColumnsType<LocationRow> = [
     { title: '库位', dataIndex: 'locationCode' },
@@ -217,12 +217,92 @@ function renderLocationList(payload: unknown) {
   );
 }
 
-/** 兜底：JSON 直出（写操作的小结果 / 未来新工具） */
-function renderJson(payload: unknown) {
+const FIELD_LABEL: Record<string, string> = {
+  skuCode: '编码',
+  name: '名称',
+  barcode: '条码',
+  unit: '单位',
+  quantity: '数量',
+  orderNo: '单号',
+  direction: '方向',
+  state: '状态',
+  locationCode: '库位',
+  batchNo: '批次',
+  batchExpiryDate: '效期',
+  partnerCode: '往来单位',
+  total: '总量',
+  lineCount: '行数',
+  daysLeft: '剩余',
+  createdAt: '时间',
+};
+
+function fieldLabel(key: string): string {
+  return FIELD_LABEL[key] ?? key;
+}
+
+function showCell(key: string, value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (key === 'direction') return value === 'in' ? '入库' : value === 'out' ? '出库' : String(value);
+  if (typeof value === 'object') return '';
+  return String(value);
+}
+
+function isPlainRow(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** 对象数组 → 表格。内部 id 不进列，列名用中文。 */
+function renderObjectTable(rows: Record<string, unknown>[]) {
+  const keys: string[] = [];
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      if (key === 'key' || key.endsWith('Id') || keys.includes(key)) continue;
+      if (rows.some((item) => item[key] !== null && item[key] !== undefined && typeof item[key] !== 'object')) {
+        keys.push(key);
+      }
+      if (keys.length >= 8) break;
+    }
+    if (keys.length >= 8) break;
+  }
+  if (keys.length === 0) return null;
+  const { rows: capped, total, truncated } = capRows(rows);
+  const columns: ColumnsType<Record<string, unknown>> = keys.map((key) => ({
+    title: fieldLabel(key),
+    dataIndex: key,
+    render: (value: unknown) => showCell(key, value),
+  }));
   return (
-    <Typography.Text code style={{ fontSize: 12, wordBreak: 'break-all' }}>
-      {JSON.stringify(payload)}
-    </Typography.Text>
+    <>
+      <Table size="small" columns={columns} dataSource={withKeys(capped)} pagination={false} />
+      {truncated ? <TruncationNote total={total} /> : null}
+    </>
+  );
+}
+
+/** 写操作和未专门排版的结果：短句，不把对象摊成 JSON */
+function renderPlain(payload: unknown): ReactNode {
+  if (Array.isArray(payload) && payload.every(isPlainRow)) return renderObjectTable(payload);
+  const row = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : undefined;
+  if (row && Array.isArray(row.rows) && row.rows.every(isPlainRow)) {
+    return renderObjectTable(row.rows as Record<string, unknown>[]);
+  }
+  if (!row) {
+    if (payload === null || payload === undefined) return null;
+    return <Typography.Text>{String(payload)}</Typography.Text>;
+  }
+  const lines = Object.entries(row)
+    .filter(([key, value]) => !key.endsWith('Id') && value !== null && value !== undefined && typeof value !== 'object')
+    .slice(0, 6)
+    .map(([key, value]) => `${fieldLabel(key)} ${showCell(key, value)}`);
+  if (lines.length === 0) return null;
+  return (
+    <ul style={{ margin: 0, paddingLeft: 18 }}>
+      {lines.map((line) => (
+        <li key={line}>{line}</li>
+      ))}
+    </ul>
   );
 }
 

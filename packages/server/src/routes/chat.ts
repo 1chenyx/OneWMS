@@ -10,6 +10,13 @@ import {
   type LlmProvider,
 } from '@one/ai';
 import type { AppContext } from '../context.js';
+import {
+  attachmentSessionTools,
+  composeUserText,
+  rememberAttachments,
+  takeAttachments,
+  type StoredAttachment,
+} from '../chat-attachments.js';
 import { scheduleMemoryExtraction } from '../memory-hook.js';
 
 /**
@@ -50,6 +57,8 @@ interface PendingAsk {
 interface ChatSession {
   id: string;
   history: AgentMessage[];
+  /** 本会话已导入的文件（表格全文在这里，模型消息里只有预览） */
+  attachments: StoredAttachment[];
   /** streaming = 有一条消息正在处理（含 ask 挂起中；同一会话串行，防止历史交错） */
   status: 'idle' | 'streaming';
   updatedAt: number;
@@ -79,7 +88,7 @@ export function chatRoutes(ctx: AppContext): Hono {
     for (const [sid, s] of sessions) {
       if (s.status === 'idle' && now - s.updatedAt > SESSION_IDLE_MS) sessions.delete(sid);
     }
-    const session: ChatSession = { id, history: [], status: 'idle', updatedAt: now };
+    const session: ChatSession = { id, history: [], attachments: [], status: 'idle', updatedAt: now };
     sessions.set(id, session);
     return session;
   };
@@ -102,9 +111,13 @@ export function chatRoutes(ctx: AppContext): Hono {
           503,
         );
       }
-      const body = await c.req.json().catch(() => ({}) as { message?: unknown; agentId?: unknown });
+      const body = await c.req.json().catch(() => ({}) as { message?: unknown; agentId?: unknown; attachments?: unknown });
       const message = typeof body.message === 'string' ? body.message.trim() : '';
-      if (!message) {
+      const taken = takeAttachments(body.attachments);
+      if (!taken.ok) {
+        return c.json({ code: 'BAD_REQUEST', message: taken.message }, 400);
+      }
+      if (!message && taken.items.length === 0) {
         return c.json({ code: 'BAD_REQUEST', message: 'message 不能为空' }, 400);
       }
       const agentId = typeof body.agentId === 'string' && body.agentId.trim() ? body.agentId.trim() : 'general';
@@ -123,13 +136,29 @@ export function chatRoutes(ctx: AppContext): Hono {
         );
       }
       session.status = 'streaming';
+      session.attachments = rememberAttachments(session.attachments, taken.items);
+      const userText = composeUserText(message, taken.items, session.attachments);
       // 现场装配（M16）：定义 → 工具授权 + 人设 prompt + 模型覆盖 + actor；
       // 记忆注入（快照以消息为粒度——上轮提取结果下一轮对话即生效）
+      // 本会话有附件时才挂查看/落库工具。只读助手没有业务写权限，不能落库。
       const agentProvider = providerFor(ctx, base, def.model);
       ctx.memory.sync();
+      const catalog = ctx.ws.tools.list();
+      const allowApply = def.tools.some((id) => {
+        const tool = catalog.find((item) => item.id === id);
+        return tool?.permission === 'write' && id.startsWith('wms.');
+      });
       const agent = createAgentFromDef(ctx.ws, agentProvider, def, {
         nodeId: ctx.core.nodeId,
         memories: ctx.memory.memory.list(),
+        sessionTools:
+          session.attachments.length > 0
+            ? attachmentSessionTools({
+                getFiles: () => session.attachments,
+                allowApply,
+                ws: ctx.ws,
+              })
+            : undefined,
       });
 
       return streamSSE(c, async (stream) => {
@@ -137,7 +166,7 @@ export function chatRoutes(ctx: AppContext): Hono {
         let reply: AskReply | undefined;
         try {
           // 手动驱动生成器：yield 的事件推 SSE；return 值是完整历史（turn-done 后提交）
-          const run = agent.stream(message, session.history)[Symbol.asyncIterator]();
+          const run = agent.stream(userText, session.history)[Symbol.asyncIterator]();
           for (;;) {
             const { value, done } = reply === undefined ? await run.next() : await run.next(reply);
             reply = undefined;

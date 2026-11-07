@@ -34,15 +34,17 @@ describe('ImpactReportView', () => {
 });
 
 describe('ToolInvocationCard', () => {
-  it('成功调用：绿色标记 + 工具名 + 参数', () => {
+  it('成功调用：用人话说明结果，不展示工具名和 JSON', () => {
     render(
       <ToolInvocationCard
-        invocation={{ callId: 'c1', toolId: 'wms.sku.create', args: { skuCode: 'A-1' }, ok: true, payload: { skuId: 'x' } }}
+        invocation={{ callId: 'c1', toolId: 'wms.sku.create', args: { skuCode: 'A-1', name: '螺丝' }, ok: true, payload: { skuId: 'x', skuCode: 'A-1' } }}
       />,
     );
-    expect(screen.getByText('wms.sku.create')).toBeInTheDocument();
+    expect(screen.getByText('创建了商品 A-1 螺丝')).toBeInTheDocument();
     expect(screen.getByText('成功')).toBeInTheDocument();
-    expect(screen.getByText(/skuCode/)).toBeInTheDocument();
+    expect(screen.queryByText('wms.sku.create')).not.toBeInTheDocument();
+    expect(screen.queryByText(/skuCode/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\{/)).not.toBeInTheDocument();
   });
 
   it('被拒调用：红色标记 + 错误原因可见（护栏透明）', () => {
@@ -189,7 +191,7 @@ describe('ToolInvocationCard：查询结果表格渲染（M12 步骤2）', () =>
     expect(screen.queryByText('2026-01-02T03:04:05.000Z')).not.toBeInTheDocument();
   });
 
-  it('非查询工具：兜底 JSON 直出', () => {
+  it('写操作结果用人话，不把返回值摊成 JSON', () => {
     render(
       <ToolInvocationCard
         invocation={{
@@ -201,7 +203,9 @@ describe('ToolInvocationCard：查询结果表格渲染（M12 步骤2）', () =>
         }}
       />,
     );
-    expect(screen.getByText(/"skuCode":"A-9"/)).toBeInTheDocument();
+    expect(screen.getByText('创建了商品 A-9')).toBeInTheDocument();
+    expect(screen.queryByText(/skuId/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\{/)).not.toBeInTheDocument();
   });
 
   it('结果超 50 行：截断为前 50 行 + 总数提示', () => {

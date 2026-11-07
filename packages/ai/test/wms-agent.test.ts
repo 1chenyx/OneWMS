@@ -114,6 +114,7 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     expect(req.tools.map((t) => t.id)).not.toContain('profile.propose');
     expect(req.tools.map((t) => t.id).sort()).toEqual([
       'core.oplog.query',
+      'tools.load',
       'wms.inventory.adjust',
       'wms.inventory.expiring',
       'wms.inventory.hold',
@@ -149,6 +150,12 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
       'wms.stocktake.create',
       'wms.stocktake.query',
     ]);
+    // 常驻是一行摘要；高频查询保持完整说明。长规则等 tools.load 之后再附上
+    const orderCreate = req.tools.find((t) => t.id === 'wms.order.create');
+    expect(orderCreate?.description).toBe('创建一张入库单或出库单');
+    expect(orderCreate?.parameters.properties?.direction?.description).toBeUndefined();
+    expect(orderCreate?.parameters.properties?.lines?.description).toContain('skuCode');
+    expect(req.tools.find((t) => t.id === 'wms.inventory.query')?.description).toContain('byLocation');
     // 默认 actor（无 nodeId 后缀）
     expect(agent.actor).toBe('ai:general');
   });
@@ -163,6 +170,7 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     // 慢通道行为规则（§4.1：确认权在人类，AI 只提议 + 转述报告）
     expect(system).toContain('profile.propose');
     expect(system).toContain('无权代替用户确认');
+    expect(system).toContain('chat.attachment.apply');
     // Profile 摘要：wms 种子的三个基础扩展字段与两条默认流程
     expect(system).toContain('当前配置（Profile）：');
     expect(system).toContain('sku.spec（规格');
@@ -170,7 +178,14 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     expect(system).toContain('流程 inbound');
     expect(system).toContain('流程 outbound');
     // readonly 只装配 read 工具（写工具不在 function calling 清单里）
-    expect(requests[0].tools.every((t) => t.id === 'ui.ask' || ws.tools.list().find((x) => x.id === t.id)?.permission === 'read')).toBe(true);
+    expect(
+      requests[0].tools.every(
+        (t) =>
+          t.id === 'ui.ask' ||
+          t.id === 'tools.load' ||
+          ws.tools.list().find((x) => x.id === t.id)?.permission === 'read',
+      ),
+    ).toBe(true);
   });
 
   it('记忆注入：memories 选项 → System Prompt「记忆」段（行为规则后、Profile 前，每条带 id）', async () => {
@@ -282,7 +297,46 @@ describe('createAgentFromDef：授权过滤与委托口子（M16）', () => {
     expect(agent.tools.map((t) => t.id)).toEqual(['wms.sku.create', 'wms.inventory.query']);
     expect(agent.actor).toBe('ai:spot');
     await agent.run('查一下');
-    expect(requests[0].tools.map((t) => t.id)).toEqual(['wms.sku.create', 'wms.inventory.query']);
+    expect(requests[0].tools.map((t) => t.id)).toEqual(['wms.sku.create', 'wms.inventory.query', 'tools.load']);
+  });
+
+  it('会话工具只进 stream：run 看不到，调用走注入的 invoke', async () => {
+    const meta = {
+      id: 'chat.attachment.read',
+      label: '查看附件',
+      description: '读附件',
+      parameters: { type: 'object' as const, properties: {}, required: [] as string[] },
+      permission: 'read' as const,
+    };
+    let seenActor = '';
+    const { provider, requests } = scriptedProvider([{ text: '好的', toolCalls: [] }]);
+    const agent = createAgentFromDef(ws, provider, defOf('general'), {
+      sessionTools: [{ meta, invoke: async () => ({ ok: true }) }],
+    });
+    await agent.run('普通问题');
+    expect(requests[0].tools.map((t) => t.id)).not.toContain('chat.attachment.read');
+
+    const streamed = scriptedProvider([
+      { text: '', toolCalls: [{ callId: 'c1', toolId: 'chat.attachment.read', args: { attachmentId: 'a1' } }] },
+      { text: '看过了', toolCalls: [] },
+    ]);
+    const streaming = createAgentFromDef(ws, streamed.provider, defOf('general'), {
+      sessionTools: [
+        {
+          meta,
+          invoke: async (_args, actor) => {
+            seenActor = actor;
+            return { name: '入库.csv' };
+          },
+        },
+      ],
+    });
+    const events = [];
+    for await (const ev of streaming.stream('看看附件')) events.push(ev);
+    expect(streamed.requests[0].tools.map((t) => t.id)).toContain('chat.attachment.read');
+    expect(streamed.requests[0].tools.map((t) => t.id)).toContain('ui.ask');
+    expect(seenActor).toBe('ai:general');
+    expect(events.some((ev) => ev.type === 'tool-result' && ev.ok === true)).toBe(true);
   });
 
   it('授权了不在场的工具：静默丢弃（定义是脏面，不炸装配）', () => {

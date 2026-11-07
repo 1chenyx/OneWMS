@@ -23,6 +23,7 @@ export {
   type InventoryRecord,
   type LedgerRecord,
   type HoldRecord,
+  type ReservationRecord,
 } from './views/inventory-view.js';
 export {
   StocktakeView,
@@ -84,8 +85,12 @@ export { createWmsTools } from './tools/wms-tools.js';
 export { readWmsSettings } from './config/wms-settings.js';
 export type { WmsSettings } from './config/wms-settings.js';
 
-export { listOrdersWithLines, withOrderLines } from './queries/order-queries.js';
+export { listOrdersWithLines, listOrdersWithLinesPage, withOrderLines } from './queries/order-queries.js';
+export { getReturnable } from './queries/return-queries.js';
+export type { ReturnableLine, ReturnableView } from './queries/return-queries.js';
 export type { OrderWithLines } from './queries/order-queries.js';
+export { toListPage } from './queries/page.js';
+export type { ListPage } from './queries/page.js';
 export { listPickingsWithLines, withPickingLines } from './queries/picking-queries.js';
 export type { PickingWithLines, PickingLineWithMeta } from './queries/picking-queries.js';
 export {
@@ -106,6 +111,7 @@ export {
   getExpiryBoard,
   listHoldRows,
   listInventorySummary,
+  listInventorySummaryPage,
   listLedger,
 } from './queries/inventory-queries.js';
 export type {
@@ -113,6 +119,7 @@ export type {
   ExpiryBoard,
   ExpiryLevel,
   HoldListRow,
+  InventorySummaryPage,
   InventorySummaryRow,
   LedgerRow,
 } from './queries/inventory-queries.js';
@@ -143,6 +150,7 @@ export {
   WorkflowNotFoundError,
   InsufficientStockError,
   StockHeldError,
+  StockReservedError,
   HoldExceedsStockError,
   HoldNotFoundError,
   OrderStateConflictError,
@@ -163,6 +171,17 @@ export {
   PartialQtyExceededError,
   PartialUnwindError,
   PartialNotOnPostError,
+  ReturnDisabledError,
+  ReturnDirectionError,
+  ReturnNotPostedError,
+  ReturnOfReturnError,
+  ReturnLineNotFoundError,
+  ReturnQtyExceededError,
+  ReturnAllocationError,
+  AsnDisabledError,
+  AsnDirectionError,
+  AsnWithReturnError,
+  AsnExpectedAtError,
   PickingNotFoundError,
   PickingExistsError,
   PickingNotOpenError,

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App as AntApp, ConfigProvider } from 'antd';
 import type { Mock } from 'vitest';
 import OrdersPage from '../src/pages/OrdersPage';
@@ -128,11 +129,13 @@ vi.mock('../src/api/hooks', () => ({
 }));
 
 const wrap = (ui: React.ReactNode) => (
-  <ConfigProvider button={{ autoInsertSpace: false }}>
-    <AntApp>
-      <AppNavProvider>{ui}</AppNavProvider>
-    </AntApp>
-  </ConfigProvider>
+  <QueryClientProvider client={new QueryClient()}>
+    <ConfigProvider button={{ autoInsertSpace: false }}>
+      <AntApp>
+        <AppNavProvider>{ui}</AppNavProvider>
+      </AntApp>
+    </ConfigProvider>
+  </QueryClientProvider>
 );
 
 let printSpy: Mock;

@@ -1,6 +1,7 @@
 import type { WmsWorkspace } from '../wms.js';
 import { readWmsSettings } from '../config/wms-settings.js';
 import { codeOfLocation } from '../state/inventory-policy.js';
+import { toListPage, type ListPage } from './page.js';
 
 export interface InventorySummaryRow {
   skuId: string;
@@ -8,15 +9,17 @@ export interface InventorySummaryRow {
   name: string;
   quantity: number;
   held: number;
+  /** 其他出库单的拣货占用合计。可用量 = 余量 − 冻结 − 占用。 */
+  reserved: number;
   available: number;
   reorderPoint: number;
   /** 数量单位（A3）：null = 不显示 */
   unit: string | null;
 }
 
-/** 按 SKU 汇总库存：跨库位求和，活动冻结合计，available = 余量 − 冻结。 */
+/** 按 SKU 汇总库存：跨库位求和。available = 余量 − 冻结 − 拣货占用。 */
 export function listInventorySummary(ws: WmsWorkspace): InventorySummaryRow[] {
-  const bySku = new Map<string, Omit<InventorySummaryRow, 'available'>>();
+  const bySku = new Map<string, Omit<InventorySummaryRow, 'available' | 'reserved'>>();
   for (const row of ws.inventory.list()) {
     const sku = ws.skus.byId(row.skuId);
     const current = bySku.get(row.skuId) ?? {
@@ -36,8 +39,28 @@ export function listInventorySummary(ws: WmsWorkspace): InventorySummaryRow[] {
     if (current) current.held += hold.quantity;
   }
   return [...bySku.values()]
-    .map((row) => ({ ...row, available: row.quantity - row.held }))
+    .map((row) => {
+      const reserved = ws.inventory.reservedOfSku(row.skuId);
+      return { ...row, reserved, available: row.quantity - row.held - reserved };
+    })
     .sort((a, b) => a.skuCode.localeCompare(b.skuCode));
+}
+
+export interface InventorySummaryPage extends ListPage<InventorySummaryRow> {
+  /** 全库是否还有占用行。分页后当前页可能看不到，列仍要留。 */
+  hasReserved: boolean;
+}
+
+/**
+ * 库存汇总的 SQL 分页。口径与 listInventorySummary 相同：只含有库存行的 SKU，
+ * available = 余量 − 冻结 − 占用。q 匹配编码/名称；skuCode 精确；lowOnly = 安全库存 > 0 且可用量低于阈值。
+ */
+export function listInventorySummaryPage(
+  ws: WmsWorkspace,
+  opts: { q?: string; skuCode?: string; lowOnly?: boolean; limit: number; offset: number },
+): InventorySummaryPage {
+  const { rows, total, hasReserved } = ws.inventory.summaryPage(opts);
+  return { ...toListPage(rows, total, opts.limit, opts.offset), hasReserved };
 }
 
 export interface LedgerRow {

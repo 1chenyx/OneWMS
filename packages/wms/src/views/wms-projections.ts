@@ -52,10 +52,13 @@ export class WmsProjections {
     this.db.prepare(`DELETE FROM wms_inventory_ledger WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_inventory WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_inventory_hold WHERE workspace_id = ?`).run(this.workspaceId);
+    this.db.prepare(`DELETE FROM wms_inventory_reservation WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_stocktake WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_stocktake_line WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_picking WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_picking_line WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_order_conflict WHERE workspace_id = ?`).run(this.workspaceId);
+    // 清掉已入账标记，全量重放才能把单据再写回来（标记还在的话 applyEvent 会整段跳过）。
+    this.db.prepare(`DELETE FROM wms_order_apply WHERE workspace_id = ?`).run(this.workspaceId);
   }
 }

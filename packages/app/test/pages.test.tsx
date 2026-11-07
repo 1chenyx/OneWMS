@@ -65,7 +65,8 @@ vi.mock('../src/api/client', async (importOriginal) => {
       message: string,
       agentId: string,
       onEvent: (ev: ChatStreamEvent) => void,
-    ) => streamMock(sessionId, message, agentId, onEvent),
+      attachments?: unknown,
+    ) => streamMock(sessionId, message, agentId, onEvent, attachments),
     answerChatAsk: (sessionId: string, callId: string, answer: string | null) =>
       answerMock(sessionId, callId, answer),
     api: { ...actual.api, agents: () => agentsMock() },
@@ -163,9 +164,68 @@ describe('ChatPage：SSE 流式', () => {
     await user.click(screen.getByRole('button', { name: /发送/ }));
 
     expect(await screen.findByText('已创建 SKU A-1。')).toBeInTheDocument();
-    expect(screen.getByText('wms.sku.create')).toBeInTheDocument(); // 工具过程可见
-    expect(screen.getByText('成功')).toBeInTheDocument(); // tool-result 回填终态
-    expect(streamMock).toHaveBeenCalledWith(expect.any(String), '建一个 SKU', 'general', expect.any(Function));
+    expect(screen.getByRole('button', { name: /创建了商品 A-1 螺丝/ })).toBeInTheDocument();
+    expect(screen.queryByText('wms.sku.create')).not.toBeInTheDocument();
+    expect(screen.queryByText(/skuCode/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /创建了商品 A-1 螺丝/ }));
+    expect(screen.getByText('成功')).toBeInTheDocument();
+    expect(streamMock).toHaveBeenCalledWith(expect.any(String), '建一个 SKU', 'general', expect.any(Function), undefined);
+  });
+
+  it('多条工具调用收成一句，展开后才看到每一条', async () => {
+    streamMock.mockImplementationOnce(
+      async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
+        onEvent({ type: 'tool-call', callId: 'c1', toolId: 'wms.sku.create', args: { skuCode: 'A-1', name: '螺丝' } });
+        onEvent({ type: 'tool-result', callId: 'c1', toolId: 'wms.sku.create', ok: true, payload: { skuCode: 'A-1' } });
+        onEvent({ type: 'tool-call', callId: 'c2', toolId: 'wms.order.create', args: { direction: 'in' }, });
+        onEvent({
+          type: 'tool-result',
+          callId: 'c2',
+          toolId: 'wms.order.create',
+          ok: true,
+          payload: { orderNo: 'IN-1', state: 'created' },
+        });
+        onEvent({ type: 'turn-done', steps: 2 });
+      },
+    );
+    const user = userEvent.setup();
+    render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('按表处理');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+
+    const summary = await screen.findByRole('button', { name: /做了 2 项/ });
+    expect(screen.queryByText('创建了商品 A-1 螺丝')).not.toBeInTheDocument();
+    expect(screen.queryByText(/\{/)).not.toBeInTheDocument();
+    await user.click(summary);
+    expect(screen.getByText('创建了商品 A-1 螺丝')).toBeInTheDocument();
+    expect(screen.getByText('开了入库单 IN-1')).toBeInTheDocument();
+  });
+
+  it('导入 CSV 后连同说明一起发送', async () => {
+    streamMock.mockImplementationOnce(
+      async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
+        onEvent({ type: 'text-delta', text: '看到了 1 行。' });
+        onEvent({ type: 'turn-done', steps: 1 });
+      },
+    );
+    const user = userEvent.setup();
+    render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+    const csv = new File(['编码,名称,数量\nA-1,螺丝,10\n'], '入库.csv', { type: 'text/csv' });
+    await user.upload(screen.getByLabelText('导入文件'), csv);
+    expect(await screen.findByText(/入库.csv · 1 行/)).toBeInTheDocument();
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('按这张表入库');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+    expect(await screen.findByText('看到了 1 行。')).toBeInTheDocument();
+    const payload = streamMock.mock.calls[0]?.[4] as Array<{ name: string; kind: string; headers: string[]; rows: string[][] }>;
+    expect(payload).toHaveLength(1);
+    expect(payload[0]).toMatchObject({
+      name: '入库.csv',
+      kind: 'table',
+      headers: ['编码', '名称', '数量'],
+      rows: [['A-1', '螺丝', '10']],
+    });
   });
 
   it('助手切换（M16）：Segmented 选项来自目录 → 切换清空历史 → 消息携带新 agentId', async () => {
@@ -198,8 +258,8 @@ describe('ChatPage：SSE 流式', () => {
     await user.click(screen.getByRole('button', { name: /发送/ }));
     expect(await screen.findByText('好的。')).toBeInTheDocument();
 
-    expect(streamMock).toHaveBeenNthCalledWith(1, sids[0], '查库存', 'general', expect.any(Function));
-    expect(streamMock).toHaveBeenNthCalledWith(2, sids[1], '再查一次', 'readonly', expect.any(Function));
+    expect(streamMock).toHaveBeenNthCalledWith(1, sids[0], '查库存', 'general', expect.any(Function), undefined);
+    expect(streamMock).toHaveBeenNthCalledWith(2, sids[1], '再查一次', 'readonly', expect.any(Function), undefined);
     expect(sids[0]).not.toBe(sids[1]); // 切换 = 换新会话（历史按助手隔离）
   });
 

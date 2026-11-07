@@ -16,6 +16,7 @@ import {
 import { readWmsSettings } from '../config/wms-settings.js';
 import { allocateFromBuckets } from '../state/allocation.js';
 import { assertOutboundBuckets } from '../state/outbound-guards.js';
+import { planReservationReleases } from '../state/reservation.js';
 import { assertNonNegativeQty, codeOfLocation, QTY_EPS, resolveLocation } from '../state/inventory-policy.js';
 import {
   assertTransition,
@@ -209,7 +210,7 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
     id: 'wms.picking.close',
     label: '拣货关单',
     description:
-      '关单并统一扣减：全部行拣满（实拣量 = 应拣量）才可关单；逐张出库单按 outbound 流程（when 过滤后）断言可流转到 shipped；以实拣桶做过期/余量/冻结硬校验；原子落账——每单 shipped + 逐行扣减流水（reason: picking:单号）+ 拣货单 closed，同生共死。',
+      '关单并统一扣减：全部行拣满（实拣量 = 应拣量）才可关单；逐张出库单按 outbound 流程（when 过滤后）断言可流转到 shipped；以实拣桶做过期/余量/冻结/占用硬校验（本单自己的占用不算）；原子落账——每单 shipped + 释放该单拣货占用 + 逐行扣减流水（reason: picking:单号）+ 拣货单 closed，同生共死。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -252,7 +253,7 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
           quantity: line.pickedQty,
         });
       }
-      assertOutboundBuckets(ws, outbound);
+      assertOutboundBuckets(ws, outbound, [...ordersById.keys()]);
 
       // 原子落账：拣货事件先于扣减事件的全序（每单 state → 逐行流水 → 拣货单 closed）
       const adjustedLines: { orderNo: string; skuCode: string; locationCode: string; batchNo: string; delta: number }[] = [];
@@ -266,6 +267,9 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
             from: order.state,
             to: 'shipped',
           });
+          for (const release of planReservationReleases(ws, order)) {
+            ctx.appendEvent(WMS_EVENT_TYPES.inventoryReservationReleased, release);
+          }
           for (const line of lines.filter((l) => l.orderId === orderId)) {
             const locationId = line.pickedLocationId ?? line.suggestedLocationId;
             const batchNo = line.pickedBatchNo ?? line.suggestedBatchNo;

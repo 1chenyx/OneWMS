@@ -1,3 +1,10 @@
+import {
+  applyLoad,
+  catalogBlock,
+  expandedGroupsFromHistory,
+  presentCatalog,
+  TOOLS_LOAD_ID,
+} from './tool-catalog.js';
 import type {
   AgentMessage,
   AgentToolMeta,
@@ -50,6 +57,11 @@ export interface RunAgentDeps {
   invoke: (toolId: string, args: Record<string, unknown>) => Promise<unknown>;
   /** 编排步数上限，默认 8 */
   maxSteps?: number;
+  /**
+   * 工具目录（createAgentFromDef 开启）。常驻瘦 schema，tools.load 把一组的
+   * 完整说明升进下一轮；该调用不进 invoke。缺省关闭，编排单测保持原样透传。
+   */
+  catalog?: boolean;
 }
 
 /**
@@ -63,11 +75,12 @@ export async function runAgent(userText: string, deps: RunAgentDeps): Promise<Ag
   const messages: AgentMessage[] = [{ role: 'user', text: userText }];
   const invocations: AgentInvocation[] = [];
   let steps = 0;
+  const catalog = startCatalog(tools, messages, deps.catalog === true);
 
   for (;;) {
     if (++steps > maxSteps) throw new AgentStepLimitError(maxSteps);
 
-    const res = await provider.completeTurn({ system, messages, tools });
+    const res = await provider.completeTurn({ system, messages, tools: toolsForTurn(catalog, tools) });
 
     // 终态：模型不再调用工具 → 本轮文本即最终回复
     if (res.toolCalls.length === 0) {
@@ -80,6 +93,12 @@ export async function runAgent(userText: string, deps: RunAgentDeps): Promise<Ag
     // 逐个执行：任何异常都转为 ok=false 的结果回传——循环不中断（§4.2 快通道护栏语义）
     const results: ToolCallResult[] = [];
     for (const call of res.toolCalls) {
+      const settled = catalog ? settleCatalog(call, catalog) : undefined;
+      if (settled) {
+        results.push(settled);
+        invocations.push({ toolId: call.toolId, args: call.args, ok: settled.ok, payload: settled.payload });
+        continue;
+      }
       let result: ToolCallResult;
       try {
         const payload = await invoke(call.toolId, call.args);
@@ -143,12 +162,13 @@ export async function* streamAgent(
 
   const messages: AgentMessage[] = [...(deps.history ?? []), { role: 'user', text: userText }];
   let steps = 0;
+  const catalog = startCatalog(tools, messages, deps.catalog === true);
 
   for (;;) {
     if (++steps > maxSteps) throw new AgentStepLimitError(maxSteps);
 
     // 单轮模型调用：yield 增量文本（直译为 text-delta 事件），return 完整响应
-    const turn = streamOneTurn(provider, { system, messages, tools });
+    const turn = streamOneTurn(provider, { system, messages, tools: toolsForTurn(catalog, tools) });
     let res: LlmTurnResponse;
     for (;;) {
       const { value, done } = await turn.next();
@@ -189,6 +209,22 @@ export async function* streamAgent(
         };
         continue;
       }
+      // tools.load 与未授权 / 未加载的调用都在编排层结算，不进 invoke
+      if (catalog) {
+        const settled = settleCatalog(call, catalog);
+        if (settled) {
+          yield { type: 'tool-call', callId: call.callId, toolId: call.toolId, args: call.args };
+          results.push(settled);
+          yield {
+            type: 'tool-result',
+            callId: call.callId,
+            toolId: call.toolId,
+            ok: settled.ok,
+            payload: settled.payload,
+          };
+          continue;
+        }
+      }
       yield { type: 'tool-call', callId: call.callId, toolId: call.toolId, args: call.args };
       let result: ToolCallResult;
       try {
@@ -209,6 +245,46 @@ export async function* streamAgent(
     }
     messages.push({ role: 'tool-results', results });
   }
+}
+
+interface CatalogRuntime {
+  domain: AgentToolMeta[];
+  session: AgentToolMeta[];
+  expanded: Set<string>;
+}
+
+/** 从本轮工具里拆出业务工具与会话壳（ui.ask）。目录关闭时返回 undefined */
+function startCatalog(
+  tools: AgentToolMeta[],
+  messages: AgentMessage[],
+  enabled: boolean,
+): CatalogRuntime | undefined {
+  if (!enabled) return undefined;
+  return {
+    domain: tools.filter((t) => t.id !== 'ui.ask' && t.id !== TOOLS_LOAD_ID),
+    session: tools.filter((t) => t.id === 'ui.ask'),
+    expanded: expandedGroupsFromHistory(messages),
+  };
+}
+
+function toolsForTurn(catalog: CatalogRuntime | undefined, fallback: AgentToolMeta[]): AgentToolMeta[] {
+  if (!catalog) return fallback;
+  return presentCatalog(catalog.domain, catalog.expanded, catalog.session);
+}
+
+/**
+ * 目录内结算：tools.load 记入已加载组；越权或未加载的调用直接回错误。
+ * 返回 undefined 表示这是一次普通业务调用，交给 invoke。
+ */
+function settleCatalog(call: ToolCallRequest, catalog: CatalogRuntime): ToolCallResult | undefined {
+  if (call.toolId === TOOLS_LOAD_ID) {
+    const outcome = applyLoad(catalog.domain, call.args);
+    if (outcome.ok && outcome.group) catalog.expanded.add(outcome.group);
+    return { callId: call.callId, toolId: call.toolId, ok: outcome.ok, payload: outcome.payload };
+  }
+  const blocked = catalogBlock(call.toolId, catalog.domain, catalog.expanded);
+  if (!blocked) return undefined;
+  return { callId: call.callId, toolId: call.toolId, ok: false, payload: blocked };
 }
 
 /** next() 注入值的运行时校验：缺省（普通 next() 恢复）或形状非法一律按 declined 处理 */

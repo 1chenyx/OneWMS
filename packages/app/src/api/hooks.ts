@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
+import type { InventoryListPage, InventoryRow, Location, Order, Partner, Sku } from './client';
+import type { ListPage } from './page';
 
 /** Profile 快照：动态列 / 流转按钮的数据源（切页挂载即刷新，提议确认后自然可见） */
 export function useProfileSnapshot() {
@@ -11,12 +13,28 @@ export function useProfileSnapshot() {
 /** SKU 清单（q = 编码/名称/条码 模糊搜索，M18；空串 = 全量）。queryKey 带 q，
  *  搜索翻页互不串缓存；invalidateQueries({ queryKey: ['skus'] }) 前缀匹配仍全失效。
  *  A2：默认只回启用档；includeArchived = 回全量（SKU 管理页「显示已停用」）。 */
-export function useSkus(q?: string, includeArchived?: boolean) {
+export function useSkus(q?: string, includeArchived?: boolean): ReturnType<typeof useQuery<Sku[]>>;
+export function useSkus(
+  q: string | undefined,
+  includeArchived: boolean | undefined,
+  page: { limit: number; offset: number },
+): ReturnType<typeof useQuery<ListPage<Sku>>>;
+export function useSkus(
+  q?: string,
+  includeArchived?: boolean,
+  page?: { limit: number; offset: number },
+): ReturnType<typeof useQuery<Sku[]>> | ReturnType<typeof useQuery<ListPage<Sku>>> {
+  const base = {
+    ...(q ? { q } : {}),
+    ...(includeArchived ? { includeArchived } : {}),
+  };
   return useQuery({
-    queryKey: ['skus', q ?? '', includeArchived ? 'all' : 'active'],
-    queryFn: () =>
-      api.skus(q || includeArchived ? { ...(q ? { q } : {}), ...(includeArchived ? { includeArchived } : {}) } : undefined),
-  });
+    queryKey: page
+      ? ['skus', q ?? '', includeArchived ? 'all' : 'active', page.limit, page.offset]
+      : ['skus', q ?? '', includeArchived ? 'all' : 'active'],
+    queryFn: async (): Promise<Sku[] | ListPage<Sku>> =>
+      page ? api.skus({ ...base, limit: page.limit, offset: page.offset }) : api.skus(base),
+  }) as ReturnType<typeof useQuery<Sku[]>> | ReturnType<typeof useQuery<ListPage<Sku>>>;
 }
 
 export function useCreateSku() {
@@ -76,11 +94,33 @@ export function useUnarchiveSku() {
 
 /** 往来单位清单（kind = supplier/customer；queryKey 带 kind/q 防串缓存，
  *  invalidateQueries({ queryKey: ['partners'] }) 前缀匹配仍全失效） */
-export function usePartners(query?: { kind?: 'supplier' | 'customer'; q?: string }) {
+export function usePartners(query?: { kind?: 'supplier' | 'customer'; q?: string }): ReturnType<
+  typeof useQuery<Partner[]>
+>;
+export function usePartners(query: {
+  kind?: 'supplier' | 'customer';
+  q?: string;
+  limit: number;
+  offset: number;
+}): ReturnType<typeof useQuery<ListPage<Partner>>>;
+export function usePartners(query?: {
+  kind?: 'supplier' | 'customer';
+  q?: string;
+  limit?: number;
+  offset?: number;
+}): ReturnType<typeof useQuery<Partner[]>> | ReturnType<typeof useQuery<ListPage<Partner>>> {
+  const paged = query?.limit != null;
   return useQuery({
-    queryKey: ['partners', query?.kind ?? '', query?.q ?? ''],
-    queryFn: () => api.partners(query),
-  });
+    queryKey: paged
+      ? ['partners', query?.kind ?? '', query?.q ?? '', query.limit, query.offset ?? 0]
+      : ['partners', query?.kind ?? '', query?.q ?? ''],
+    queryFn: async (): Promise<Partner[] | ListPage<Partner>> => {
+      if (query?.limit != null) {
+        return api.partners({ ...query, limit: query.limit, offset: query.offset ?? 0 });
+      }
+      return api.partners(query);
+    },
+  }) as ReturnType<typeof useQuery<Partner[]>> | ReturnType<typeof useQuery<ListPage<Partner>>>;
 }
 
 function useInvalidatePartners() {
@@ -212,8 +252,22 @@ export function useDismissConflict() {
   });
 }
 
-export function useOrders(direction?: 'in' | 'out') {
-  return useQuery({ queryKey: ['orders', direction ?? 'all'], queryFn: () => api.orders(direction) });
+export function useOrders(direction?: 'in' | 'out'): ReturnType<typeof useQuery<Order[]>>;
+export function useOrders(
+  direction: 'in' | 'out' | undefined,
+  page: { q?: string; limit: number; offset: number },
+): ReturnType<typeof useQuery<ListPage<Order>>>;
+export function useOrders(
+  direction?: 'in' | 'out',
+  page?: { q?: string; limit: number; offset: number },
+): ReturnType<typeof useQuery<Order[]>> | ReturnType<typeof useQuery<ListPage<Order>>> {
+  return useQuery({
+    queryKey: page
+      ? ['orders', direction ?? 'all', page.q ?? '', page.limit, page.offset]
+      : ['orders', direction ?? 'all'],
+    queryFn: async (): Promise<Order[] | ListPage<Order>> =>
+      page ? api.orders(direction, page) : api.orders(direction),
+  }) as ReturnType<typeof useQuery<Order[]>> | ReturnType<typeof useQuery<ListPage<Order>>>;
 }
 
 export function useCreateOrder() {
@@ -261,8 +315,26 @@ export function usePutawayOrder() {
 
 // ── 库存 ─────────────────────────────────────────────
 
-export function useInventory() {
-  return useQuery({ queryKey: ['inventory'], queryFn: api.inventory });
+export function useInventory(): ReturnType<typeof useQuery<InventoryRow[]>>;
+export function useInventory(query: {
+  q?: string;
+  lowOnly?: boolean;
+  limit: number;
+  offset: number;
+}): ReturnType<typeof useQuery<InventoryListPage>>;
+export function useInventory(query?: {
+  q?: string;
+  lowOnly?: boolean;
+  limit: number;
+  offset: number;
+}): ReturnType<typeof useQuery<InventoryRow[]>> | ReturnType<typeof useQuery<InventoryListPage>> {
+  return useQuery({
+    queryKey: query
+      ? ['inventory', query.q ?? '', query.lowOnly ? 'low' : 'all', query.limit, query.offset]
+      : ['inventory'],
+    queryFn: async (): Promise<InventoryRow[] | InventoryListPage> =>
+      query ? api.inventory(query) : api.inventory(),
+  }) as ReturnType<typeof useQuery<InventoryRow[]>> | ReturnType<typeof useQuery<InventoryListPage>>;
 }
 
 export function useAdjustInventory() {
@@ -317,8 +389,19 @@ export function useExpiryBoard() {
 // ── 盘点（M17）────────────────────────────────────────
 
 /** 实体库位清单（盘点范围勾选的数据源；DEFAULT 虚拟桶不在列） */
-export function useLocations() {
-  return useQuery({ queryKey: ['locations'], queryFn: () => api.locations() });
+export function useLocations(): ReturnType<typeof useQuery<Location[]>>;
+export function useLocations(page: { limit: number; offset: number }): ReturnType<
+  typeof useQuery<ListPage<Location>>
+>;
+export function useLocations(page?: {
+  limit: number;
+  offset: number;
+}): ReturnType<typeof useQuery<Location[]>> | ReturnType<typeof useQuery<ListPage<Location>>> {
+  return useQuery({
+    queryKey: page ? ['locations', page.limit, page.offset] : ['locations'],
+    queryFn: async (): Promise<Location[] | ListPage<Location>> =>
+      page ? api.locations(page) : api.locations(),
+  }) as ReturnType<typeof useQuery<Location[]>> | ReturnType<typeof useQuery<ListPage<Location>>>;
 }
 
 /** 库位增改：影响盘点范围勾选与库存分布看板，一并失效 */

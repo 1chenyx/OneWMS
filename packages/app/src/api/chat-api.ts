@@ -20,6 +20,24 @@ export interface ChatInvocation {
   payload?: unknown;
 }
 
+/** 用户导入的文件。表格按行给模型，文本按原文给模型。 */
+export interface ChatAttachmentPayload {
+  id: string;
+  name: string;
+  kind: 'table' | 'text';
+  headers: string[];
+  rows: string[][];
+  text: string;
+}
+
+/** 气泡上的文件摘要，不把整表留在界面状态里 */
+export interface ChatAttachmentChip {
+  id: string;
+  name: string;
+  kind: 'table' | 'text';
+  rows?: number;
+}
+
 /**
  * 发送一条消息并逐事件消费 SSE 流（agentId 选助手，缺省 'general'）。
  * 非流式错误（503/400/404/409 等 JSON 响应）统一抛 ApiError——UI 按 code 分支提示。
@@ -29,11 +47,16 @@ export async function streamChatMessage(
   message: string,
   agentId: string,
   onEvent: (ev: ChatStreamEvent) => void,
+  attachments?: ChatAttachmentPayload[],
 ): Promise<void> {
   const res = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/message`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ message, agentId }),
+    body: JSON.stringify({
+      message,
+      agentId,
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    }),
   });
   if (!res.ok || !res.body) {
     const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string };

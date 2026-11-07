@@ -25,6 +25,9 @@ import { wmsManifest } from './wms-manifest.js';
 import { putawayManifest } from './putaway-manifest.js';
 import { reversalManifest } from './reversal-manifest.js';
 import { partialManifest } from './partial-manifest.js';
+import { reservationManifest } from './reservation-manifest.js';
+import { returnManifest } from './return-manifest.js';
+import { asnManifest } from './asn-manifest.js';
 
 /**
  * WmsDomain —— 领域装配器：把仓储领域「挂载」到一个内核实例上。
@@ -42,6 +45,9 @@ export class WmsDomain {
   readonly #putawayManifest: ModuleManifest;
   readonly #reversalManifest: ModuleManifest;
   readonly #partialManifest: ModuleManifest;
+  readonly #reservationManifest: ModuleManifest;
+  readonly #returnManifest: ModuleManifest;
+  readonly #asnManifest: ModuleManifest;
   readonly #cache = new Map<string, WmsWorkspace>();
 
   private constructor(core: OneCore) {
@@ -58,10 +64,16 @@ export class WmsDomain {
     this.#putawayManifest = putawayManifest(putawayToolDefs);
     this.#reversalManifest = reversalManifest();
     this.#partialManifest = partialManifest();
+    this.#reservationManifest = reservationManifest();
+    this.#returnManifest = returnManifest();
+    this.#asnManifest = asnManifest();
     core.exposeModuleRegistry().registerManifest(this.#manifest);
     core.exposeModuleRegistry().registerManifest(this.#putawayManifest);
     core.exposeModuleRegistry().registerManifest(this.#reversalManifest);
     core.exposeModuleRegistry().registerManifest(this.#partialManifest);
+    core.exposeModuleRegistry().registerManifest(this.#reservationManifest);
+    core.exposeModuleRegistry().registerManifest(this.#returnManifest);
+    core.exposeModuleRegistry().registerManifest(this.#asnManifest);
   }
 
   /** 把领域挂到内核上（幂等心智：attach 两次 = 工具覆盖注册 + 表 IF NOT EXISTS + 目录覆盖登记） */
@@ -81,6 +93,9 @@ export class WmsDomain {
         this.#putawayManifest,
         this.#reversalManifest,
         this.#partialManifest,
+        this.#reservationManifest,
+        this.#returnManifest,
+        this.#asnManifest,
       );
       this.#cache.set(workspaceId, ws);
     }
@@ -123,6 +138,9 @@ export class WmsWorkspace {
   readonly #putawayManifest: ModuleManifest;
   readonly #reversalManifest: ModuleManifest;
   readonly #partialManifest: ModuleManifest;
+  readonly #reservationManifest: ModuleManifest;
+  readonly #returnManifest: ModuleManifest;
+  readonly #asnManifest: ModuleManifest;
   #cursor = -1;
 
   constructor(
@@ -133,6 +151,9 @@ export class WmsWorkspace {
     putawayManifest: ModuleManifest,
     reversalManifest: ModuleManifest,
     partialManifest: ModuleManifest,
+    reservationManifest: ModuleManifest,
+    returnManifest: ModuleManifest,
+    asnManifest: ModuleManifest,
   ) {
     this.#facade = core.workspace(workspaceId);
     this.#db = db;
@@ -141,6 +162,9 @@ export class WmsWorkspace {
     this.#putawayManifest = putawayManifest;
     this.#reversalManifest = reversalManifest;
     this.#partialManifest = partialManifest;
+    this.#reservationManifest = reservationManifest;
+    this.#returnManifest = returnManifest;
+    this.#asnManifest = asnManifest;
     this.events = this.#facade.events;
     this.fields = this.#facade.fields;
     this.tools = this.#facade.tools;
@@ -158,6 +182,9 @@ export class WmsWorkspace {
     this.#installOptional(this.#putawayManifest);
     this.#installOptional(this.#reversalManifest);
     this.#installOptional(this.#partialManifest);
+    this.#installOptional(this.#reservationManifest);
+    this.#installOptional(this.#returnManifest);
+    this.#installOptional(this.#asnManifest);
   }
 
   /**

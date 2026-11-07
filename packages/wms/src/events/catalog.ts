@@ -26,6 +26,8 @@ export const WMS_EVENT_TYPES = {
   inventoryAdjusted: 'wms.inventory.adjusted',
   inventoryHeld: 'wms.inventory.held',
   inventoryReleased: 'wms.inventory.released',
+  inventoryReserved: 'wms.inventory.reserved',
+  inventoryReservationReleased: 'wms.inventory.reservation_released',
   stocktakeCreated: 'wms.stocktake.created',
   stocktakeCounted: 'wms.stocktake.counted',
   stocktakeStateChanged: 'wms.stocktake.state_changed',
@@ -152,6 +154,13 @@ export interface OrderCreatedPayload {
   readonly direction: OrderDirection;
   /** 往来单位 id（M21，可选）：入库单=供应商 / 出库单=客户；缺省 null */
   readonly partnerId?: string;
+  /** 原单 id（module.return）。缺省 = 普通出入库 */
+  readonly returnOfOrderId?: string;
+  /**
+   * 到货预报（module.asn）。在场 = 单据从已预报起步，收货前不加库存。
+   * 缺省 = 直接入库，状态仍是 created。
+   */
+  readonly asn?: { readonly expectedAt?: string };
   readonly lines: readonly OrderLinePayload[];
   readonly note?: string;
 }
@@ -228,6 +237,36 @@ export interface InventoryReleasedPayload {
   readonly skuId: string;
   readonly skuCode: string;
   readonly reason?: string;
+}
+
+/**
+ * 拣货占用诞生（module.reservation）：出库单进入只预检的转移时，按行把数量
+ * 标成不可再被其他出库单拿走。不改物理量、不落库存流水。
+ * 投影是 wms_inventory_reservation 的活动行，幂等键 = reservationId。
+ */
+export interface InventoryReservedPayload {
+  readonly reservationId: string;
+  readonly orderId: string;
+  readonly orderNo: string;
+  readonly skuId: string;
+  readonly skuCode: string;
+  readonly locationId: string;
+  readonly locationCode: string;
+  readonly batchNo: string;
+  readonly quantity: number;
+}
+
+/** 拣货占用释放：发货或取消时按 reservationId 删掉活动行。数量留在事件里供审计。 */
+export interface InventoryReservationReleasedPayload {
+  readonly reservationId: string;
+  readonly orderId: string;
+  readonly orderNo: string;
+  readonly skuId: string;
+  readonly skuCode: string;
+  readonly locationId: string;
+  readonly locationCode: string;
+  readonly batchNo: string;
+  readonly quantity: number;
 }
 
 // ── 盘点（M17）payload ─────────────────────────────────────────

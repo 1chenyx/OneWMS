@@ -306,6 +306,7 @@ describe('库存端点', () => {
         name: '螺丝',
         quantity: 30,
         held: 0,
+        reserved: 0,
         available: 30,
         reorderPoint: 0,
         unit: null,
@@ -636,6 +637,7 @@ describe('盘点端点（M17：清单进度 / 明细联查 / 录实盘 / 关单�
         name: '螺丝',
         quantity: 7,
         held: 0,
+        reserved: 0,
         available: 7,
         reorderPoint: 0,
         unit: null,
@@ -646,6 +648,7 @@ describe('盘点端点（M17：清单进度 / 明细联查 / 录实盘 / 关单�
         name: '螺母',
         quantity: 11,
         held: 0,
+        reserved: 0,
         available: 11,
         reorderPoint: 0,
         unit: null,
@@ -709,6 +712,7 @@ describe('冻结端点（M19）', () => {
         name: '螺丝',
         quantity: 10,
         held: 4,
+        reserved: 0,
         available: 6,
         reorderPoint: 0,
         unit: null,
@@ -799,5 +803,161 @@ describe('安全库存端点（M20）', () => {
       available: 10,
     });
     expect(inv.find((r) => r.skuCode === 'B-2')!.reorderPoint).toBe(0);
+  });
+});
+
+describe('列表 SQL 分页', () => {
+  it('不传 limit 仍是数组；传 limit 返回分页壳；非法 limit 400', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/skus', { skuCode: 'B-2', name: '螺母' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 3, reason: '期初' });
+    await post(app, '/api/orders', { direction: 'in', lines: [{ skuCode: 'A-1', quantity: 1 }] });
+
+    const all = (await (await app.request('/api/skus')).json()) as unknown[];
+    expect(Array.isArray(all)).toBe(true);
+    expect(all).toHaveLength(2);
+
+    const page = (await (await app.request('/api/skus?limit=1&offset=1')).json()) as {
+      total: number;
+      limit: number;
+      offset: number;
+      hasMore: boolean;
+      rows: { skuCode: string }[];
+    };
+    expect(page).toMatchObject({ total: 2, limit: 1, offset: 1, hasMore: false });
+    expect(page.rows).toHaveLength(1);
+
+    const bad = await app.request('/api/skus?limit=0');
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { code: string }).code).toBe('BAD_QUERY');
+
+    const inv = (await (await app.request('/api/inventory?limit=10')).json()) as {
+      total: number;
+      rows: { skuCode: string; quantity: number; reserved: number }[];
+      hasReserved: boolean;
+    };
+    expect(inv.total).toBe(1);
+    expect(inv.hasReserved).toBe(false);
+    expect(inv.rows[0]).toMatchObject({ skuCode: 'A-1', quantity: 3, reserved: 0 });
+
+    const orders = (await (await app.request('/api/orders?limit=10')).json()) as {
+      total: number;
+      rows: { lines: unknown[] }[];
+    };
+    expect(orders.total).toBe(1);
+    expect(orders.rows[0]!.lines).toHaveLength(1);
+
+    const barcode = (await (await app.request('/api/skus?barcode=nope')).json()) as unknown[];
+    expect(Array.isArray(barcode)).toBe(true);
+  });
+});
+
+describe('退货端点（module.return）', () => {
+  it('未发货不能退；发货后可退数量可查，returnOf 开出客退单', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 10 });
+    const created = (await (
+      await post(app, '/api/orders', {
+        direction: 'out',
+        orderNo: 'OUT-1',
+        lines: [{ skuCode: 'A-1', quantity: 10 }],
+      })
+    ).json()) as { orderNo: string };
+    expect(created.orderNo).toBe('OUT-1');
+
+    const early = await app.request('/api/orders/OUT-1/returnable');
+    expect(early.status).toBe(400);
+    expect(((await early.json()) as { code: string }).code).toBe('WMS_RETURN_NOT_POSTED');
+
+    const rejected = await post(app, '/api/orders', {
+      direction: 'in',
+      returnOf: 'OUT-1',
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+    expect(rejected.status).toBe(400);
+    expect(((await rejected.json()) as { code: string }).code).toBe('WMS_RETURN_NOT_POSTED');
+
+    const plain = await post(app, '/api/orders', {
+      direction: 'in',
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+    expect(plain.status).toBe(201);
+
+    await post(app, '/api/orders/OUT-1/transition', { to: 'picking' });
+    const shipped = await post(app, '/api/orders/OUT-1/transition', { to: 'shipped' });
+    expect(shipped.status).toBe(200);
+
+    const view = (await (await app.request('/api/orders/OUT-1/returnable')).json()) as {
+      sourceOrderNo: string;
+      direction: string;
+      lines: { skuCode: string; remaining: number; postedQty: number }[];
+    };
+    expect(view).toMatchObject({ sourceOrderNo: 'OUT-1', direction: 'in' });
+    expect(view.lines[0]).toMatchObject({ skuCode: 'A-1', postedQty: 10, remaining: 10 });
+
+    const ret = await post(app, '/api/orders', {
+      direction: 'in',
+      orderNo: 'RT-1',
+      returnOf: 'OUT-1',
+      lines: [{ skuCode: 'A-1', quantity: 4 }],
+    });
+    expect(ret.status).toBe(201);
+
+    const orders = (await (await app.request('/api/orders')).json()) as {
+      orderNo: string;
+      returnOfOrderNo: string | null;
+    }[];
+    expect(orders.find((o) => o.orderNo === 'RT-1')!.returnOfOrderNo).toBe('OUT-1');
+    expect(orders.find((o) => o.orderNo === 'OUT-1')!.returnOfOrderNo).toBeNull();
+  });
+});
+
+describe('到货预报端点（module.asn）', () => {
+  it('预报单停在 announced 且不加库存；收货后加库存；不带 asn 仍是 created', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    const asn = await post(app, '/api/orders', {
+      direction: 'in',
+      orderNo: 'ASN-1',
+      asn: true,
+      expectedAt: '2026-11-20',
+      lines: [{ skuCode: 'A-1', quantity: 6 }],
+    });
+    expect(asn.status).toBe(201);
+    expect(((await asn.json()) as { state: string }).state).toBe('announced');
+
+    const before = (await (await app.request('/api/inventory')).json()) as unknown[];
+    expect(before).toHaveLength(0);
+
+    const orders = (await (await app.request('/api/orders')).json()) as {
+      orderNo: string;
+      state: string;
+      expectedAt: string | null;
+    }[];
+    expect(orders.find((o) => o.orderNo === 'ASN-1')).toMatchObject({
+      state: 'announced',
+      expectedAt: '2026-11-20',
+    });
+
+    const received = await post(app, '/api/orders/ASN-1/transition', { to: 'received' });
+    expect(received.status).toBe(200);
+    const inv = (await (await app.request('/api/inventory')).json()) as { skuCode: string; quantity: number }[];
+    expect(inv.find((row) => row.skuCode === 'A-1')!.quantity).toBe(6);
+
+    const direct = await post(app, '/api/orders', {
+      direction: 'in',
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+    expect(((await direct.json()) as { state: string }).state).toBe('created');
+
+    const rejected = await post(app, '/api/orders', {
+      direction: 'out',
+      asn: true,
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+    expect(rejected.status).toBe(400);
+    expect(((await rejected.json()) as { code: string }).code).toBe('WMS_ASN_DIRECTION');
   });
 });

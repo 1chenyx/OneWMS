@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { DownOutlined, PlusOutlined, PrinterOutlined, VerticalAlignTopOutlined } from '@ant-design/icons';
+import { DownOutlined, PlusOutlined, PrinterOutlined, RollbackOutlined, VerticalAlignTopOutlined } from '@ant-design/icons';
 import { Alert, App as AntApp, Button, Card, Dropdown, Input, InputNumber, Segmented, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ProfileSnapshot } from '@one/core';
@@ -7,10 +7,13 @@ import { evalWhenCondition } from '@one/core/when';
 import { useAcceptConflict, useDismissConflict, useOrderConflicts, useOrders, useProfileSnapshot, useTransitionOrder } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { Order, OrderLine } from '../api/client';
+import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
 import OrderFormModal from '../components/OrderFormModal';
 import PutawayModal from '../components/PutawayModal';
+import ReturnModal from '../components/ReturnModal';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell, numCell, printTd, printTh } from '../components/table-style';
+import { OrderSheetPort } from '../components/sheet-specs';
+import { serverPagination, monoCell, numCell, printTd, printTh } from '../components/table-style';
 import { fmtQty } from '../lib/format';
 import { useAppNav } from '../app-nav';
 
@@ -23,14 +26,26 @@ import { useAppNav } from '../app-nav';
  * （弹窗可选归位目标库位；服务端工具 wms.order.putaway 是行为权威）。
  * P1 表格规范：单号等宽列；明细收进展开行（主表只留主干）；流转按钮收进
  * Dropdown（点选目标态 → modal.confirm 二次确认——出入库动库存，不裸点）；
- * 客户端分页。
+ * 清单按页向服务端要，单号过滤走 q。打印仍用当前页里的那张单据。
  * AI 跳转携带的 orderNo 预填过滤框（M12 步骤4，挂载时一次性消费）。
  */
 export default function OrdersPage() {
   const { message, modal } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
   const [direction, setDirection] = useState<'all' | 'in' | 'out'>('all');
-  const { data: orders, isLoading } = useOrders(direction === 'all' ? undefined : direction);
+  const [orderNoFilter, setOrderNoFilter] = useState(() => takeInitialFilter()?.orderNo ?? '');
+  const noKw = orderNoFilter.trim();
+  const list = useListPage(`${direction}|${noKw}`);
+  const { data: orders, isLoading } = useOrders(direction === 'all' ? undefined : direction, {
+    q: noKw || undefined,
+    limit: list.limit,
+    offset: list.offset,
+  });
+  const orderPayload = orders as Order[] | ListPage<Order> | undefined;
+  // 测试桩仍返回整表数组，过滤留在客户端。服务端分页时 q 已经过滤过。
+  const visibleOrders = Array.isArray(orderPayload)
+    ? orderPayload.filter((o) => (noKw ? o.orderNo.toLowerCase().includes(noKw.toLowerCase()) : true))
+    : rowsOf(orderPayload);
   const snapshot = useProfileSnapshot();
   const transition = useTransitionOrder();
   const conflicts = useOrderConflicts();
@@ -38,14 +53,9 @@ export default function OrdersPage() {
   const dismissConflict = useDismissConflict();
   const [formOpen, setFormOpen] = useState(false);
   const [putawayOrder, setPutawayOrder] = useState<Order | null>(null);
+  const [returnOrder, setReturnOrder] = useState<Order | null>(null);
   /** A1 打印：正在打印的单据（非空 = 打印区已挂载，可拉起系统打印） */
   const [printOrder, setPrintOrder] = useState<Order | null>(null);
-  const [orderNoFilter, setOrderNoFilter] = useState(() => takeInitialFilter()?.orderNo ?? '');
-
-  const noKw = orderNoFilter.trim().toLowerCase();
-  const visibleOrders = noKw
-    ? (orders ?? []).filter((o) => o.orderNo.toLowerCase().includes(noKw))
-    : (orders ?? []);
 
   const doTransition = async (
     orderNo: string,
@@ -118,7 +128,25 @@ export default function OrdersPage() {
   };
 
   const columns: ColumnsType<Order> = [
-    { title: '单号', dataIndex: 'orderNo', key: 'orderNo', onCell: monoCell },
+    {
+      title: '单号',
+      dataIndex: 'orderNo',
+      key: 'orderNo',
+      onCell: monoCell,
+      render: (v: string, r) =>
+        r.returnOfOrderNo ? (
+          <span>
+            {v}
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                原单 {r.returnOfOrderNo}
+              </Typography.Text>
+            </div>
+          </span>
+        ) : (
+          v
+        ),
+    },
     {
       title: '方向',
       dataIndex: 'direction',
@@ -128,8 +156,12 @@ export default function OrdersPage() {
         { text: '出库', value: 'out' },
       ],
       onFilter: (v, r) => r.direction === v,
-      render: (v: Order['direction']) =>
-        v === 'in' ? <Tag color="blue">入库</Tag> : <Tag color="orange">出库</Tag>,
+      render: (v: Order['direction'], r) => {
+        if (r.returnOfOrderNo) {
+          return v === 'in' ? <Tag color="cyan">客退</Tag> : <Tag color="gold">退供</Tag>;
+        }
+        return v === 'in' ? <Tag color="blue">入库</Tag> : <Tag color="orange">出库</Tag>;
+      },
     },
     {
       title: '状态',
@@ -137,7 +169,20 @@ export default function OrdersPage() {
       key: 'state',
       render: (v: string, r) => {
         const label = stateLabel(snapshot.data, v, r.direction);
-        return <Tag color={v === 'done' ? 'green' : v === 'canceled' ? 'default' : 'processing'}>{label}</Tag>;
+        return (
+          <span>
+            <Tag color={v === 'done' ? 'green' : v === 'canceled' ? 'default' : v === 'announced' ? 'gold' : 'processing'}>
+              {label}
+            </Tag>
+            {r.expectedAt ? (
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  预计 {r.expectedAt}
+                </Typography.Text>
+              </div>
+            ) : null}
+          </span>
+        );
       },
     },
     {
@@ -183,14 +228,27 @@ export default function OrdersPage() {
     {
       title: '流转',
       key: 'actions',
-      width: 150,
+      width: 220,
       render: (_, r) => {
         const nexts = nextStates(snapshot.data, r.direction, r.state);
         const canPutaway =
           r.direction === 'in' && r.state === 'received' && nexts.includes('putaway');
-        if (nexts.length === 0) return <Typography.Text type="secondary">—</Typography.Text>;
+        const showReturn = canStartReturn(snapshot.data, r);
+        if (nexts.length === 0 && !showReturn) return <Typography.Text type="secondary">—</Typography.Text>;
         return (
           <>
+            {showReturn ? (
+              <Tooltip title="按原单开退货单（module.return）。客退入库，退供出库">
+                <Button
+                  size="small"
+                  icon={<RollbackOutlined />}
+                  style={{ marginRight: 8 }}
+                  onClick={() => setReturnOrder(r)}
+                >
+                  退货
+                </Button>
+              </Tooltip>
+            ) : null}
             {canPutaway ? (
               <Tooltip title="确认上架，可选归位目标库位（module.putaway）">
                 <Button
@@ -205,6 +263,7 @@ export default function OrdersPage() {
                 </Button>
               </Tooltip>
             ) : null}
+            {nexts.length > 0 ? (
             <Dropdown
               trigger={['click']}
               menu={{
@@ -222,6 +281,7 @@ export default function OrdersPage() {
                 流转 <DownOutlined />
               </Button>
             </Dropdown>
+            ) : null}
           </>
         );
       },
@@ -250,6 +310,9 @@ export default function OrdersPage() {
               value={orderNoFilter}
               onChange={(e) => setOrderNoFilter(e.target.value)}
               style={{ width: 180 }}
+            />
+            <OrderSheetPort
+              labelState={(state, direction) => stateLabel(snapshot.data, state, direction)}
             />
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setFormOpen(true)}>
               新建单据
@@ -304,7 +367,11 @@ export default function OrdersPage() {
           columns={columns}
           dataSource={visibleOrders}
           loading={isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={serverPagination({
+            current: list.page,
+            total: totalOf(orderPayload),
+            onChange: list.setPage,
+          })}
           locale={{ emptyText: '还没有单据' }}
           expandable={{
             rowExpandable: (r) => r.lines.length > 0,
@@ -356,6 +423,7 @@ export default function OrdersPage() {
         />
         <OrderFormModal open={formOpen} onClose={() => setFormOpen(false)} />
         <PutawayModal open={putawayOrder !== null} order={putawayOrder} onClose={() => setPutawayOrder(null)} />
+        <ReturnModal open={returnOrder !== null} order={returnOrder} onClose={() => setReturnOrder(null)} />
       </Card>
 
       {printOrder ? (
@@ -366,6 +434,8 @@ export default function OrdersPage() {
             </Typography.Title>
             <div style={{ fontSize: 12, color: '#444', marginBottom: 8 }}>
               创建时间：{printOrder.createdAt.slice(0, 19).replace('T', ' ')}
+              {printOrder.returnOfOrderNo ? `　原单号：${printOrder.returnOfOrderNo}` : ''}
+              {printOrder.expectedAt ? `　预计到货：${printOrder.expectedAt}` : ''}
               {printOrder.partnerName ? `　往来单位：${printOrder.partnerName}` : ''}
               {printOrder.note ? `　备注：${printOrder.note}` : ''}
             </div>
@@ -451,6 +521,14 @@ function allowsPartialQty(
   if (edge?.effect === 'increase') return false;
   if (edge?.effect === 'decrease') return true;
   return to === settingState(snapshot, 'outboundDecreaseState', 'shipped');
+}
+
+/** 已入账、且本身不是退货单时，可以按原单开退货。完成态没有下一步也仍然显示。 */
+function canStartReturn(snapshot: ProfileSnapshot | undefined, order: Order): boolean {
+  if (snapshot?.modules['module.return']?.enabled !== true) return false;
+  if (order.returnOfOrderNo) return false;
+  if (order.direction === 'out') return order.state === 'shipped' || order.state === 'done';
+  return order.state === 'received' || order.state === 'putaway' || order.state === 'done';
 }
 
 function settingState(snapshot: ProfileSnapshot, key: string, fallback: string): string {

@@ -21,7 +21,6 @@ export type Page =
   | 'skus'
   | 'partners'
   | 'locations'
-  | 'dataPort'
   | 'labels'
   | 'orders'
   | 'pickings'

@@ -219,7 +219,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         quantity,
         total,
         held: held + quantity,
-        available: total - held - quantity,
+        available: total - held - quantity - ws.inventory.reservedOfSku(sku.id),
       };
     },
   };
@@ -259,7 +259,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         quantity: hold.quantity,
         total,
         held,
-        available: total - held,
+        available: total - held - ws.inventory.reservedOfSku(hold.skuId),
       };
     },
   };
@@ -268,7 +268,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
     id: 'wms.inventory.query',
     label: '查询库存',
     description:
-      '查询库存余量（按 SKU 汇总，可下钻库位与批次明细；分组形态含 held 冻结合计与 available 可用量 = 总量 − 冻结）。给 skuCode 查单个 SKU（返回 total 总量与 byLocation 分库位明细，库位内再列 batches 批次明细）；都不给列出全部 SKU 的分组清单；给 locationCode 查该库位内有哪些货（平铺行，含批次号与效期）。库位 DEFAULT 是默认库位、批次 DEFAULT 是虚拟批次（未指定维度的库存归宿）。',
+      '查询库存余量（按 SKU 汇总，可下钻库位与批次明细；分组形态含 held 冻结合计、reserved 拣货占用，以及 available 可用量 = 总量 − 冻结 − 占用）。给 skuCode 查单个 SKU（返回 total 总量与 byLocation 分库位明细，库位内再列 batches 批次明细）；都不给列出全部 SKU 的分组清单；给 locationCode 查该库位内有哪些货（平铺行，含批次号与效期）。库位 DEFAULT 是默认库位、批次 DEFAULT 是虚拟批次（未指定维度的库存归宿）。',
     permission: 'read',
     parameters: {
       type: 'object',
@@ -311,7 +311,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
       }
 
       // 形态二：按 SKU 分组——total 总量 + byLocation 分库位明细（内嵌 batches 批次明细）
-      //   + M19 冻结三件套：held 冻结合计 / available 可用量（= total − held）
+      //   + held 冻结合计 / reserved 拣货占用 / available = total − held − reserved
       const groupOf = (skuId: string) => {
         const sku = ws.skus.byId(skuId);
         const rows = ws.inventory.list().filter((r) => r.skuId === skuId);
@@ -332,13 +332,15 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         }
         const total = rows.reduce((a, r) => a + r.quantity, 0);
         const held = ws.inventory.heldOf(skuId);
+        const reserved = ws.inventory.reservedOfSku(skuId);
         return {
           skuId,
           skuCode: sku?.skuCode ?? '(已删除)',
           name: sku?.name ?? '',
           total,
           held,
-          available: total - held,
+          reserved,
+          available: total - held - reserved,
           byLocation: [...byLoc.entries()].map(([locationId, l]) => ({
             locationCode: codeOfLocation(ws, locationId),
             locationName: nameOf(locationId),
@@ -401,7 +403,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
     id: 'wms.inventory.lowstock',
     label: '低库存预警',
     description:
-      '低库存预警清单：列出安全库存（reorderPoint，经 sku.create/update 设置）大于 0 且可用量低于它的 SKU——可用量 = 全库位合计余量 − 冻结合计（M19 同一口径，冻结会吃掉可用量触发预警）。每行含 total 余量 / held 冻结 / available 可用量 / reorderPoint 阈值 / shortage 缺口（阈值 − 可用），按缺口降序（最缺的在前）。给 skuCode 只查该 SKU（可用于确认单品的预警状态）。补货建议的入口数据源；纯读操作，不产生事件。',
+      '低库存预警清单：列出安全库存（reorderPoint，经 sku.create/update 设置）大于 0 且可用量低于它的 SKU——可用量 = 全库位合计余量 − 冻结合计 − 拣货占用。冻结和占用都会吃掉可用量从而触发预警。每行含 total 余量 / held 冻结 / reserved 占用 / available 可用量 / reorderPoint 阈值 / shortage 缺口（阈值 − 可用），按缺口降序（最缺的在前）。给 skuCode 只查该 SKU（可用于确认单品的预警状态）。补货建议的入口数据源；纯读操作，不产生事件。',
     permission: 'read',
     parameters: {
       type: 'object',
@@ -425,14 +427,17 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         .map((s) => {
           const total = ws.inventory.totalOf(s.id);
           const held = ws.inventory.heldOf(s.id);
+          const reserved = ws.inventory.reservedOfSku(s.id);
+          const available = total - held - reserved;
           return {
             skuCode: s.skuCode,
             name: s.name,
             total,
             held,
-            available: total - held,
+            reserved,
+            available,
             reorderPoint: s.reorderPoint,
-            shortage: s.reorderPoint - (total - held),
+            shortage: s.reorderPoint - available,
           };
         })
         .filter((r) => r.available < r.reorderPoint)

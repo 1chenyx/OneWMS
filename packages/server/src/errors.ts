@@ -13,7 +13,19 @@ const STATUS_BY_CODE: Record<string, 404 | 409 | 422> = {
   KEY_EXISTS: 409, // 工作区密钥已存在（换密钥会使存量密文不可解，M7）
 };
 
+/** 列表分页参数不合法。不是领域错误，单独映射 400。 */
+export class BadQueryError extends Error {
+  readonly code = 'BAD_QUERY' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'BadQueryError';
+  }
+}
+
 export const apiErrorHandler: ErrorHandler = (err, c) => {
+  if (err instanceof BadQueryError) {
+    return c.json({ code: err.code, message: err.message }, 400);
+  }
   if (err instanceof CoreError) {
     const status = STATUS_BY_CODE[err.code] ?? 400; // 工具/领域错误统一 400（快通道护栏语义）
     return c.json({ code: err.code, message: err.message }, status);

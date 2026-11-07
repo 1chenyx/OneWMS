@@ -4,9 +4,11 @@ import { Button, Card, Input, Segmented, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { usePartners } from '../api/hooks';
 import type { Partner } from '../api/client';
+import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
 import PartnerFormModal from '../components/PartnerFormModal';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell } from '../components/table-style';
+import { PartnerSheetPort } from '../components/sheet-specs';
+import { serverPagination, monoCell } from '../components/table-style';
 
 /**
  * 往来单位管理页（M21）——供应商/客户统一档案。
@@ -18,10 +20,15 @@ type KindView = 'all' | 'supplier' | 'customer';
 export default function PartnersPage() {
   const [kindView, setKindView] = useState<KindView>('all');
   const [query, setQuery] = useState('');
+  const list = useListPage(`${kindView}|${query}`);
   const { data: partners, isLoading } = usePartners({
     kind: kindView === 'all' ? undefined : kindView,
     q: query || undefined,
+    limit: list.limit,
+    offset: list.offset,
   });
+  const payload = partners as Partner[] | ListPage<Partner> | undefined;
+  const rows = rowsOf(payload);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Partner | null>(null);
 
@@ -39,11 +46,6 @@ export default function PartnersPage() {
       dataIndex: 'kind',
       key: 'kind',
       width: 96,
-      filters: [
-        { text: '供应商', value: 'supplier' },
-        { text: '客户', value: 'customer' },
-      ],
-      onFilter: (v, r) => r.kind === v,
       render: (v: Partner['kind']) =>
         v === 'supplier' ? <Typography.Text type="warning">供应商</Typography.Text> : <Typography.Text type="success">客户</Typography.Text>,
     },
@@ -99,6 +101,7 @@ export default function PartnersPage() {
               onSearch={(v) => setQuery(v.trim())}
               style={{ width: 200 }}
             />
+            <PartnerSheetPort />
             <Button
               type="primary"
               icon={<PlusOutlined />}
@@ -116,9 +119,13 @@ export default function PartnersPage() {
         <Table<Partner>
           rowKey="id"
           columns={columns}
-          dataSource={partners ?? []}
+          dataSource={rows}
           loading={isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={serverPagination({
+            current: list.page,
+            total: totalOf(payload),
+            onChange: list.setPage,
+          })}
           locale={{
             emptyText:
               query || kindView !== 'all'

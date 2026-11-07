@@ -148,6 +148,37 @@ export class PartnerView {
 
   /** kind 精确，q 对编码和名称做包含匹配 */
   listMatching(opts: { kind?: PartnerKind; q?: string }): PartnerRecord[] {
+    const { where, args } = this.#match(opts);
+    const rows = this.db
+      .prepare<unknown[], PartnerRow>(
+        `SELECT * FROM wms_partner WHERE ${where} ORDER BY partner_code`,
+      )
+      .all(...args) as unknown as PartnerRow[];
+    return rows.map(rowToRecord);
+  }
+
+  /** 与 listMatching 同一套条件，SQL LIMIT/OFFSET。 */
+  listMatchingPage(opts: {
+    kind?: PartnerKind;
+    q?: string;
+    limit: number;
+    offset: number;
+  }): { rows: PartnerRecord[]; total: number } {
+    const { where, args } = this.#match(opts);
+    const total = (
+      this.db.prepare(`SELECT COUNT(*) AS total FROM wms_partner WHERE ${where}`).get(...args) as {
+        total: number;
+      }
+    ).total;
+    const rows = this.db
+      .prepare<unknown[], PartnerRow>(
+        `SELECT * FROM wms_partner WHERE ${where} ORDER BY partner_code LIMIT ? OFFSET ?`,
+      )
+      .all(...args, opts.limit, opts.offset) as unknown as PartnerRow[];
+    return { rows: rows.map(rowToRecord), total };
+  }
+
+  #match(opts: { kind?: PartnerKind; q?: string }): { where: string; args: unknown[] } {
     const where = ['workspace_id = ?'];
     const args: unknown[] = [this.workspaceId];
     if (opts.kind) {
@@ -159,12 +190,7 @@ export class PartnerView {
       const pat = `%${opts.q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
       args.push(pat, pat);
     }
-    const rows = this.db
-      .prepare<unknown[], PartnerRow>(
-        `SELECT * FROM wms_partner WHERE ${where.join(' AND ')} ORDER BY partner_code`,
-      )
-      .all(...args) as unknown as PartnerRow[];
-    return rows.map(rowToRecord);
+    return { where: where.join(' AND '), args };
   }
 
   #byIdRaw(id: string): PartnerRow | undefined {

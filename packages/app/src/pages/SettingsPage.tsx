@@ -542,7 +542,7 @@ function FlowModulesPanel() {
         </Typography.Title>
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
           启停走慢通道（提议 → 影响报告 → 确认生效），与 AI 的配置提议同一队列——确认权在用户。
-          停用 module.putaway 回到「收货即完成」。停用 module.reversal 后，已收货和已发货不能再取消。停用 module.partial 后，收货和发货按订单数量整单入账，不能改少。历史单据不受影响。
+          停用 module.putaway 回到「收货即完成」。停用 module.reversal 后，已收货和已发货不能再取消。停用 module.partial 后，收货和发货按订单数量整单入账，不能改少。停用 module.reservation 后，新的拣货不再占用可用量，库存仍在发货时扣减；已经占用的数量保留到发货或取消。停用 module.return 后，不能再按原单号开新的退货单；已经开出的退货单和历史记录保留，仍可按普通单据继续流转。停用 module.asn 后，不能再开到货预报；已经预报的单仍可收货或取消，直接入库不受影响。历史单据不受影响。
         </Typography.Paragraph>
         <Table
           rowKey={(r) => r[0]}

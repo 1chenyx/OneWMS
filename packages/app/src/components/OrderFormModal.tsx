@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { App as AntApp, Button, Form, Input, InputNumber, Modal, Radio, Select, Space, Typography } from 'antd';
+import { App as AntApp, Button, Form, Input, InputNumber, Modal, Radio, Select, Space, Switch, Typography } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { useCreateOrder, usePartners, useSkus } from '../api/hooks';
+import { useCreateOrder, usePartners, useProfileSnapshot, useSkus } from '../api/hooks';
 import { ApiError } from '../api/client';
 import ScanInput from './ScanInput';
 
@@ -17,12 +17,16 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
   const { data: skus } = useSkus();
   const { data: partners } = usePartners();
   const create = useCreateOrder();
+  const snapshot = useProfileSnapshot();
+  const asnModule = snapshot.data?.modules['module.asn']?.enabled === true;
   const [direction, setDirection] = useState<'in' | 'out'>('in');
+  const [asn, setAsn] = useState(false);
 
   useEffect(() => {
     if (open) {
       form.resetFields();
       setDirection('in');
+      setAsn(false);
     }
   }, [open, form]);
 
@@ -49,15 +53,23 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
     lines: { skuCode: string; quantity: number }[];
     partnerCode?: string;
     note?: string;
+    asn?: boolean;
+    expectedAt?: string;
   }) => {
+    const expectedAt = values.expectedAt?.trim() ?? '';
+    if (values.asn && expectedAt && !/^\d{4}-\d{2}-\d{2}$/.test(expectedAt)) {
+      message.error('预计到货日请用 YYYY-MM-DD');
+      return;
+    }
     try {
       const r = await create.mutateAsync({
         direction: values.direction,
         lines: values.lines,
         partnerCode: values.partnerCode || undefined,
         note: values.note || undefined,
+        ...(values.asn ? { asn: true, ...(expectedAt ? { expectedAt } : {}) } : {}),
       });
-      message.success(`单据 ${r.orderNo} 已创建`);
+      message.success(values.asn ? `预报单 ${r.orderNo} 已创建` : `单据 ${r.orderNo} 已创建`);
       onClose();
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : `创建失败：${String(e)}`);
@@ -89,6 +101,11 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
               setDirection(e.target.value);
               // 方向切换 → 清空已选往来单位（供应商/客户不匹配新方向）
               form.setFieldValue('partnerCode', undefined);
+              if (e.target.value !== 'in') {
+                setAsn(false);
+                form.setFieldValue('asn', false);
+                form.setFieldValue('expectedAt', undefined);
+              }
             }}
             optionType="button"
             buttonStyle="solid"
@@ -113,6 +130,23 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
             }
           />
         </Form.Item>
+        {asnModule && direction === 'in' ? (
+          <>
+            <Form.Item name="asn" label="到货预报" valuePropName="checked" extra="货还没到。收到货再收货，那时才加库存。">
+              <Switch
+                onChange={(checked) => {
+                  setAsn(checked);
+                  if (!checked) form.setFieldValue('expectedAt', undefined);
+                }}
+              />
+            </Form.Item>
+            {asn ? (
+              <Form.Item name="expectedAt" label="预计到货日（可选）">
+                <Input placeholder="YYYY-MM-DD" />
+              </Form.Item>
+            ) : null}
+          </>
+        ) : null}
         <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
           可扫码录入：扫一件货加一行/数量 +1（条码或编码均可）。
           <ScanInput onScan={handleScan} style={{ marginTop: 8, width: '100%' }} />

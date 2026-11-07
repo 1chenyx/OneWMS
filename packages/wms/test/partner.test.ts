@@ -189,7 +189,7 @@ describe('订单关联（入库=供应商 / 出库=客户）', () => {
 });
 
 describe('老库收敛（M21 第四道检测）', () => {
-  it('wms_order 缺 partner_id 列 → 文件库重开 → 投影整组重建，partnerId 完整恢复', async () => {
+  it('wms_order 缺 partner_id 列 → 文件库重开 → 只重建单据，partnerId 完整恢复', async () => {
     const file = join(tmpdir(), `onewms-m21-conv-${randomUUID()}.db`);
     try {
       // ① 当前代码跑出 M20 时代的业务事实（事件进 oplog）
@@ -227,13 +227,15 @@ describe('老库收敛（M21 第四道检测）', () => {
             INSERT INTO wms_order (id, workspace_id, order_no, direction, state, note, ext_data, created_at, updated_at)
             SELECT id, workspace_id, order_no, direction, state, note, ext_data, created_at, updated_at FROM wms_order_legacy;
             DROP TABLE wms_order_legacy;
+            INSERT INTO wms_inventory (workspace_id, sku_id, location_id, batch_no, quantity)
+            SELECT workspace_id, id, 'SENTINEL-BUCKET', 'DEFAULT', 99 FROM wms_sku LIMIT 1;
           `);
         } finally {
           db.close();
         }
       }
-      // ③ 重开：migrateWms 检测 wms_order 缺 partner_id → 投影整组 DROP →
-      //    sync() 全量重建；事件携带 partnerId → 关联完整恢复
+      // ③ 重开：缺 partner_id → 单据头和行一起丢再重放。事件里的 partnerId 恢复。
+      //    没事件的库存桶必须还在。
       {
         const core2 = OneCore.open(file);
         const d2 = WmsDomain.attach(core2);
@@ -242,6 +244,8 @@ describe('老库收敛（M21 第四道检测）', () => {
         expect(partner).toBeDefined();
         const order = w2.orders.list('in')[0];
         expect(order.partnerId).toBe(partner.id);
+        const sku = w2.skus.byCode('A-1')!;
+        expect(w2.inventory.quantityOf(sku.id, 'SENTINEL-BUCKET', 'DEFAULT')).toBe(99);
         core2.close();
       }
     } finally {

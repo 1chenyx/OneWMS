@@ -1,5 +1,5 @@
 import type { Database as SqliteDatabase } from 'better-sqlite3';
-import { DEFAULT_BATCH_NO, DEFAULT_LOCATION_ID } from '../events/catalog.js';
+import { DEFAULT_BATCH_NO, DEFAULT_LOCATION_ID, WMS_EVENT_TYPES } from '../events/catalog.js';
 
 /**
  * 领域表结构（@one/wms 私有表，全部 wms_ 前缀）。
@@ -14,65 +14,60 @@ import { DEFAULT_BATCH_NO, DEFAULT_LOCATION_ID } from '../events/catalog.js';
  */
 export function migrateWms(db: SqliteDatabase): void {
   db.transaction(() => {
-    // ── 老库收敛（投影整组 DROP 重建）──
-    // 九张投影表全是 oplog 的缓存（事件是唯一真相）——检测到旧结构即整组 DROP，
-    // 由 WmsWorkspace 构造期 sync()（cursor = -1 全量追账）重建。必须整组 DROP：
-    // applyEvent 有幂等早退（orderCreated 见单已存在即 return），单丢一张表会让
-    // 兄弟表永远不重建。内核 oplog 本函数不碰——那是唯一不可丢的真相。
-    // 四道检测覆盖五条升级路径（M9→M11 / M10→M11 / ≤M17→M18 / ≤M19→M20 / ≤M20→M21），
-    // 任一命中即重建：
-    //  1. 流水表缺 batch_no 列 = M10 及以前结构（M9 结构同样命中——两列皆缺）；
-    //  2. wms_sku 缺 barcode 列 = M17 及以前结构（M18 条码管理）；
-    //  3. wms_sku 缺 reorder_point 列 = M19 及以前结构（M20 安全库存）；
-    //  4. wms_order 缺 partner_id 列 = M20 及以前结构（M21 往来单位）。
-    //  5. wms_order_line.quantity 声明为 INTEGER = 小数数量改造前结构（REAL 化）。
-    // M19 冻结表 / M21 partner / picking 表是纯新增（无既有表列变更），但 partner_id
-    // 检测触发的整组 DROP 会连带把它们一并重建（IF NOT EXISTS 对新库无感）。
-    const dropAll = () => {
-      db.exec(`
-        DROP TABLE IF EXISTS wms_sku;
-        DROP TABLE IF EXISTS wms_location;
-        DROP TABLE IF EXISTS wms_partner;
-        DROP TABLE IF EXISTS wms_order;
-        DROP TABLE IF EXISTS wms_order_line;
-        DROP TABLE IF EXISTS wms_inventory_ledger;
-        DROP TABLE IF EXISTS wms_inventory;
-        DROP TABLE IF EXISTS wms_inventory_hold;
-        DROP TABLE IF EXISTS wms_stocktake;
-        DROP TABLE IF EXISTS wms_stocktake_line;
-        DROP TABLE IF EXISTS wms_picking;
-        DROP TABLE IF EXISTS wms_picking_line;
-        DROP TABLE IF EXISTS wms_order_conflict;
-      `);
+    // ── 老库收敛（按早退边界重建，不整组 DROP）──
+    // 投影是 oplog 的缓存。构造期 sync() 从 cursor = -1 重放，内核 oplog 本函数不碰。
+    // applyEvent 有幂等早退：同一条 handler 写的表必须一起丢，否则兄弟表补不回来；
+    // 没被这条 handler 写到的表留下——重放对它们是空操作，哨兵行不会被清掉。
+    //  1. 流水或汇总缺 batch_no：成对丢 wms_inventory_ledger + wms_inventory。
+    //     流水用 event_id 早退，只丢流水会让汇总被重放再加一遍。主键带批次，不能 ALTER。
+    //  2. wms_sku 缺 barcode / reorder_point / status / unit：只丢 wms_sku。
+    //     ALTER DEFAULT 0 补不出事件里的 reorderPoint；skuCreated 见行即 return。
+    //  3. wms_order 缺 partner_id，或行缺 location_id / batch_no：头和行一起丢。
+    //     orderCreated 见单即 return，单丢行会永远补不回。
+    //  4. 行 quantity 不是 REAL：搬进新表（SQLite 不能改列类型）。不能丢了再重放，
+    //     头还在，早退会把行弄丢。
+    // 冻结、往来单位、盘点、拣货、占用、冲突队列是纯新增，CREATE IF NOT EXISTS 即可。
+    const info = (table: string) => db.pragma(`table_info(${table})`) as { name: string; type: string }[];
+    const has = (cols: { name: string }[], name: string) => cols.some((c) => c.name === name);
+    const drop = (...tables: string[]) => {
+      for (const table of tables) db.exec(`DROP TABLE IF EXISTS ${table}`);
     };
-    const ledgerCols = db.pragma('table_info(wms_inventory_ledger)') as { name: string }[];
-    if (ledgerCols.length > 0 && !ledgerCols.some((c) => c.name === 'batch_no')) {
-      dropAll();
+
+    const ledgerCols = info('wms_inventory_ledger');
+    const inventoryCols = info('wms_inventory');
+    if (
+      (ledgerCols.length > 0 && !has(ledgerCols, 'batch_no')) ||
+      (inventoryCols.length > 0 && !has(inventoryCols, 'batch_no'))
+    ) {
+      drop('wms_inventory_ledger', 'wms_inventory');
     }
-    const skuCols = db.pragma('table_info(wms_sku)') as { name: string }[];
-    if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'barcode')) {
-      dropAll();
+
+    const skuCols = info('wms_sku');
+    if (
+      skuCols.length > 0 &&
+      (!has(skuCols, 'barcode') ||
+        !has(skuCols, 'reorder_point') ||
+        !has(skuCols, 'status') ||
+        !has(skuCols, 'unit'))
+    ) {
+      drop('wms_sku');
     }
-    if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'reorder_point')) {
-      dropAll();
-    }
-    // A2 软停用 status 列 / A3 单位 unit 列——老库缺列即整组重建（事件重放收敛）
-    if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'status')) {
-      dropAll();
-    }
-    if (skuCols.length > 0 && !skuCols.some((c) => c.name === 'unit')) {
-      dropAll();
-    }
-    const orderCols = db.pragma('table_info(wms_order)') as { name: string }[];
-    if (orderCols.length > 0 && !orderCols.some((c) => c.name === 'partner_id')) {
-      dropAll();
-    }
-    // 数量列 REAL 化（小数数量）：老库 quantity 声明为 INTEGER → 整组重建
-    const orderLineCols = db.pragma('table_info(wms_order_line)') as { name: string; type: string }[];
-    if (orderLineCols.length > 0) {
-      const qtyCol = orderLineCols.find((c) => c.name === 'quantity');
+
+    const orderCols = info('wms_order');
+    const lineCols = info('wms_order_line');
+    const lineMissingDims =
+      lineCols.length > 0 && (!has(lineCols, 'location_id') || !has(lineCols, 'batch_no'));
+    const orderMissingPartner = orderCols.length > 0 && !has(orderCols, 'partner_id');
+    // 头被丢掉就要重放单据事件。留下的头不能再被重放写成冲突，见下方 wms_order_apply。
+    let rebuildOrders = false;
+    if (lineMissingDims || orderMissingPartner) {
+      drop('wms_order', 'wms_order_line');
+      rebuildOrders = true;
+    } else if (lineCols.length > 0) {
+      const qtyCol = lineCols.find((c) => c.name === 'quantity');
       if (qtyCol && qtyCol.type.toUpperCase() !== 'REAL') {
-        dropAll();
+        db.exec(`DROP INDEX IF EXISTS idx_wms_order_line_order`);
+        db.exec(`ALTER TABLE wms_order_line RENAME TO wms_order_line_qty_legacy`);
       }
     }
 
@@ -144,6 +139,8 @@ export function migrateWms(db: SqliteDatabase): void {
         direction    TEXT NOT NULL,
         state        TEXT NOT NULL,
         partner_id   TEXT,
+        return_of_order_id TEXT,
+        expected_at  TEXT,
         note         TEXT,
         ext_data     TEXT NOT NULL DEFAULT '{}',
         created_at   TEXT NOT NULL,
@@ -153,6 +150,19 @@ export function migrateWms(db: SqliteDatabase): void {
       CREATE INDEX IF NOT EXISTS idx_wms_order_ws ON wms_order (workspace_id, direction);
       CREATE INDEX IF NOT EXISTS idx_wms_order_time ON wms_order (workspace_id, created_at);
     `);
+    // 退货：原单 id。老库加列，不重建（旧单据都不是退货，保持 NULL）
+    const orderColsNow = db.pragma('table_info(wms_order)') as { name: string }[];
+    if (orderColsNow.length > 0 && !orderColsNow.some((c) => c.name === 'return_of_order_id')) {
+      db.exec(`ALTER TABLE wms_order ADD COLUMN return_of_order_id TEXT`);
+    }
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_wms_order_return ON wms_order (workspace_id, return_of_order_id)`,
+    );
+    // 到货预报：预计到货日。老库加列，不重建（旧单据都不是预报，保持 NULL）
+    const orderColsAfterReturn = db.pragma('table_info(wms_order)') as { name: string }[];
+    if (orderColsAfterReturn.length > 0 && !orderColsAfterReturn.some((c) => c.name === 'expected_at')) {
+      db.exec(`ALTER TABLE wms_order ADD COLUMN expected_at TEXT`);
+    }
 
     // 状态冲突队列（投影，可丢）：from 对不上的 state_changed 落在这里，不改单据状态。
     db.exec(`
@@ -188,10 +198,37 @@ export function migrateWms(db: SqliteDatabase): void {
       );
       CREATE INDEX IF NOT EXISTS idx_wms_order_line_order ON wms_order_line (workspace_id, order_id);
     `);
-    // 短收短发：已入账净量。老库加列，不整组重建（事件重放能补上新事件；旧事件保持 NULL = 按订单数量）
+    copyOrderLineQtyLegacy(db);
+    // 短收短发：已入账净量。老库加列，不重建（旧事件保持 NULL = 按订单数量）
     const lineColsNow = db.pragma('table_info(wms_order_line)') as { name: string }[];
     if (lineColsNow.length > 0 && !lineColsNow.some((c) => c.name === 'fulfilled_qty')) {
       db.exec(`ALTER TABLE wms_order_line ADD COLUMN fulfilled_qty REAL`);
+    }
+
+    // 单据事件已入账标记。构造期从 cursor = -1 重放；单据状态转移不是幂等的
+    // （from 对不上就记冲突）。头没丢时先把账本里的单据事件登记进来，重放直接跳过，
+    // 避免每次重开都把已经入账的转移再记成一条冲突。头被重建时清掉标记，让重放补表。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_order_apply (
+        workspace_id TEXT NOT NULL,
+        event_id     TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, event_id)
+      );
+    `);
+    if (rebuildOrders) {
+      db.exec(`DELETE FROM wms_order_apply`);
+    } else {
+      const types = [
+        WMS_EVENT_TYPES.orderCreated,
+        WMS_EVENT_TYPES.orderStateChanged,
+        WMS_EVENT_TYPES.orderConflictAccepted,
+        WMS_EVENT_TYPES.orderConflictDismissed,
+      ];
+      const placeholders = types.map(() => '?').join(', ');
+      db.prepare(
+        `INSERT OR IGNORE INTO wms_order_apply (workspace_id, event_id)
+         SELECT workspace_id, event_id FROM oplog WHERE type IN (${placeholders})`,
+      ).run(...types);
     }
 
     // ── 库存流水（append-only；一事件一行，event_id 即幂等键；M11 加批次维度）──
@@ -245,6 +282,25 @@ export function migrateWms(db: SqliteDatabase): void {
         created_at   TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_wms_hold_sku ON wms_inventory_hold (workspace_id, sku_id);
+    `);
+
+    // ── 拣货占用（module.reservation）：活动占用行。纯新增表，老库 CREATE 即可，
+    //    不触发整组 DROP——历史事件里没有占用，空表即正确。释放即删行。──
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_inventory_reservation (
+        id           TEXT NOT NULL PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        order_id     TEXT NOT NULL,
+        order_no     TEXT NOT NULL,
+        sku_id       TEXT NOT NULL,
+        location_id  TEXT NOT NULL,
+        batch_no     TEXT NOT NULL,
+        quantity     REAL NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_reservation_sku
+        ON wms_inventory_reservation (workspace_id, sku_id);
+      CREATE INDEX IF NOT EXISTS idx_wms_reservation_order
+        ON wms_inventory_reservation (workspace_id, order_id);
     `);
 
     // ── 盘点单主表（M17，业务键：workspace + stocktake_no）──
@@ -328,4 +384,27 @@ export function migrateWms(db: SqliteDatabase): void {
         ON wms_picking_line (workspace_id, picking_id);
     `);
   })();
+}
+
+/** quantity 列从 INTEGER 搬到 REAL。源表可能还没有 fulfilled_qty。 */
+function copyOrderLineQtyLegacy(db: SqliteDatabase): void {
+  const legacy = db
+    .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'wms_order_line_qty_legacy'`)
+    .get();
+  if (!legacy) return;
+  const cols = db.pragma('table_info(wms_order_line_qty_legacy)') as { name: string }[];
+  const has = (name: string) => cols.some((c) => c.name === name);
+  const location = has('location_id') ? 'location_id' : `'${DEFAULT_LOCATION_ID}'`;
+  const batch = has('batch_no') ? 'batch_no' : `'${DEFAULT_BATCH_NO}'`;
+  const expiry = has('batch_expiry_date') ? 'batch_expiry_date' : 'NULL';
+  const fulfilled = has('fulfilled_qty') ? 'fulfilled_qty' : 'NULL';
+  db.exec(`
+    INSERT INTO wms_order_line (
+      id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity, fulfilled_qty
+    )
+    SELECT id, workspace_id, order_id, sku_id, ${location}, ${batch}, ${expiry},
+           CAST(quantity AS REAL), ${fulfilled}
+    FROM wms_order_line_qty_legacy;
+    DROP TABLE wms_order_line_qty_legacy;
+  `);
 }

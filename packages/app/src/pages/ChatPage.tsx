@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import { SendOutlined } from '@ant-design/icons';
-import { Alert, Badge, Button, Card, Input, List, Segmented, Space, Spin, Typography } from 'antd';
+import { PaperClipOutlined, SendOutlined } from '@ant-design/icons';
+import { Alert, App as AntApp, Badge, Button, Card, Input, List, Segmented, Space, Spin, Tag, Typography } from 'antd';
 import { api } from '../api/client';
-import type { AgentDef } from '../api/client';
+import type { AgentDef, ChatAttachmentPayload, ChatInvocation } from '../api/client';
 import { useAiConfig, useProposals } from '../api/hooks';
 import { useChatSession } from '../chat/ChatProvider';
+import type { ChatTurn } from '../chat/ChatProvider';
+import { parseChatFile, MAX_CHAT_FILES } from '../chat/parse-attachment';
 import { useAppNav } from '../app-nav';
+import type { InitialFilter, Page } from '../app-nav';
 import ProposalDetail from '../components/ProposalDetail';
 import ToolInvocationCard from '../components/ToolInvocationCard';
+import ToolRun from '../components/ToolRun';
 import PageHeader from '../components/PageHeader';
 
 /**
@@ -19,17 +23,20 @@ import PageHeader from '../components/PageHeader';
  *  - 待确认提议面板：慢通道的人工拍板收敛在本页（配置确认页已并入）——
  *    AI 对话里的 profile.propose、助手管理/AI 记忆的保存提议都出现在顶部
  *    面板，展开详情即可直接确认/拒绝，不再单独设页跳转；
- *  - 流式渲染：工具卡先落「执行中」态、tool-result 回填，助手文本逐 delta 增长；
- *  - 工具调用过程可见（可审计）；成功的工具卡带后置动作按钮（步骤4）：
- *    库存/单据操作 → 去对应管理页（带过滤）、临期查询 → 去效期看板
- *    （单 SKU 结果带过滤预填，M15）。
+ *  - 流式渲染：一组工具调用先收成一句人话，展开才看明细；助手文本逐 delta 增长；
+ *  - 成功的操作展开后仍可去对应管理页；
+ *  - 输入区可以带上 Excel、CSV 或文本，用户说怎么处理，助手就怎么处理。
  */
 export default function ChatPage() {
+  const { message } = AntApp.useApp();
   const chat = useChatSession();
   const { navigate } = useAppNav();
   const [input, setInput] = useState('');
+  const [files, setFiles] = useState<ChatAttachmentPayload[]>([]);
+  const [readingFile, setReadingFile] = useState(false);
   const [agents, setAgents] = useState<AgentDef[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // 待确认提议（慢通道人工拍板面）：5s 轮询 + 新提议落地即刷（见下方 effect）
   const proposalsQuery = useProposals();
@@ -70,9 +77,37 @@ export default function ChatPage() {
 
   const send = () => {
     const text = input.trim();
-    if (!text || chat.isStreaming) return;
+    if ((!text && files.length === 0) || chat.isStreaming || readingFile) return;
     setInput('');
-    void chat.send(text);
+    const attached = files;
+    setFiles([]);
+    void chat.send(text, attached);
+  };
+
+  const onPickFiles = (list: FileList | null) => {
+    const picked = list ? [...list] : [];
+    if (fileRef.current) fileRef.current.value = '';
+    if (picked.length === 0) return;
+    const room = MAX_CHAT_FILES - files.length;
+    if (room <= 0) {
+      message.warning(`一次最多带 ${MAX_CHAT_FILES} 个文件`);
+      return;
+    }
+    const batch = picked.slice(0, room);
+    if (picked.length > room) message.warning(`一次最多带 ${MAX_CHAT_FILES} 个文件，多出来的没有加入`);
+    setReadingFile(true);
+    void (async () => {
+      const next: ChatAttachmentPayload[] = [];
+      for (const file of batch) {
+        try {
+          next.push(await parseChatFile(file));
+        } catch (err) {
+          message.error(err instanceof Error ? err.message : `${file.name} 读不了`);
+        }
+      }
+      if (next.length > 0) setFiles((prev) => [...prev, ...next].slice(0, MAX_CHAT_FILES));
+      setReadingFile(false);
+    })();
   };
 
   return (
@@ -150,27 +185,16 @@ export default function ChatPage() {
         <div ref={listRef} style={{ flex: 1, overflowY: 'auto', paddingRight: 8 }}>
           {chat.turns.length === 0 ? (
             <Typography.Paragraph type="secondary" style={{ padding: 24 }}>
-              试试说：「建一个 SKU：A-1001 轴承」「A-1001 入库 50 个」「帮我把规格字段隐藏」。
+              试试说：「建一个 SKU：A-1001 轴承」「A-1001 入库 50 个」。
+              也可以导入 Excel、CSV 或文本，再说怎么处理，比如「按这张表入库」或「这些是新商品，帮我建档」。
               改配置类请求会生成待确认提议，出现在本页顶部，由你直接拍板。
             </Typography.Paragraph>
           ) : null}
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
             {chat.turns.map((turn, idx) => (
               <div key={idx}>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-                  <Typography.Text style={{ background: '#e6f4ff', padding: '6px 12px', borderRadius: 8 }}>
-                    {turn.userText}
-                  </Typography.Text>
-                </div>
-                {turn.invocations.map((inv) => (
-                  <div key={inv.callId} style={{ marginBottom: 8 }}>
-                    <ToolInvocationCard
-                      invocation={inv}
-                      onAnswer={chat.answerAsk}
-                      onNavigate={navigate}
-                    />
-                  </div>
-                ))}
+                <UserBubble turn={turn} />
+                <TurnActivity turn={turn} onAnswer={chat.answerAsk} onNavigate={navigate} />
                 {turn.assistantText ? (
                   <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
                     {turn.assistantText}
@@ -191,6 +215,20 @@ export default function ChatPage() {
             {chat.isStreaming ? <Spin tip="思考中…" /> : null}
           </Space>
         </div>
+        {files.length > 0 ? (
+          <Space size={4} wrap style={{ marginTop: 12 }}>
+            {files.map((file) => (
+              <Tag
+                key={file.id}
+                closable={!chat.isStreaming}
+                onClose={() => setFiles((prev) => prev.filter((item) => item.id !== file.id))}
+              >
+                {file.name}
+                {file.kind === 'table' ? ` · ${file.rows.length} 行` : ''}
+              </Tag>
+            ))}
+          </Space>
+        ) : null}
         <Space.Compact style={{ marginTop: 12 }} block>
           <Input.TextArea
             value={input}
@@ -201,16 +239,34 @@ export default function ChatPage() {
                 send();
               }
             }}
-            placeholder="输入指令，Enter 发送（Shift+Enter 换行）"
+            placeholder="输入指令，Enter 发送（Shift+Enter 换行）。可以先导入文件再说怎么处理"
             autoSize={{ minRows: 1, maxRows: 4 }}
             disabled={chat.isStreaming}
           />
-          <Button type="primary" icon={<SendOutlined />} onClick={send} loading={chat.isStreaming}>
+          <Button type="primary" icon={<SendOutlined />} onClick={send} loading={chat.isStreaming || readingFile}>
             发送
           </Button>
         </Space.Compact>
         {/* 助手切换（M16）：流式中锁定；定义的管理入口在「助手管理」页（高权限分离） */}
         <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <Space size={8} wrap>
+            <input
+              ref={fileRef}
+              type="file"
+              aria-label="导入文件"
+              accept=".xlsx,.xlsm,.csv,.txt,.text,.md,text/csv,text/plain"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => onPickFiles(e.target.files)}
+            />
+            <Button
+              icon={<PaperClipOutlined />}
+              disabled={chat.isStreaming || readingFile}
+              onClick={() => fileRef.current?.click()}
+            >
+              导入文件
+            </Button>
+          </Space>
           <Segmented
             value={chat.agentId}
             onChange={(v) => chat.setAgentId(v as string)}
@@ -220,6 +276,80 @@ export default function ChatPage() {
           <Typography.Link onClick={() => navigate('agents')}>管理助手</Typography.Link>
         </div>
       </Card>
+    </div>
+  );
+}
+
+function UserBubble({ turn }: { turn: ChatTurn }) {
+  if (!turn.userText && !turn.attachments?.length) return null;
+  return (
+    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+      <div style={{ background: '#e6f4ff', padding: '6px 12px', borderRadius: 8, maxWidth: '80%' }}>
+        {turn.attachments?.map((file) => (
+          <div key={file.id}>
+            {file.name}
+            {file.kind === 'table' && file.rows !== undefined ? ` · ${file.rows} 行` : ''}
+          </div>
+        ))}
+        {turn.userText ? <div style={{ whiteSpace: 'pre-wrap' }}>{turn.userText}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+type Segment =
+  | { kind: 'tools'; items: ChatInvocation[] }
+  | { kind: 'ask'; item: ChatInvocation };
+
+function segmentsOf(invocations: ChatInvocation[]): Segment[] {
+  const out: Segment[] = [];
+  let buf: ChatInvocation[] = [];
+  const flush = () => {
+    if (buf.length === 0) return;
+    out.push({ kind: 'tools', items: buf });
+    buf = [];
+  };
+  for (const inv of invocations) {
+    if (inv.toolId === 'ui.ask') {
+      flush();
+      out.push({ kind: 'ask', item: inv });
+    } else {
+      buf.push(inv);
+    }
+  }
+  flush();
+  return out;
+}
+
+function TurnActivity({
+  turn,
+  onAnswer,
+  onNavigate,
+}: {
+  turn: ChatTurn;
+  onAnswer: (callId: string, answer: string | null) => void;
+  onNavigate: (page: Page, filter?: InitialFilter) => void;
+}) {
+  const segments = segmentsOf(turn.invocations);
+  if (segments.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
+      {segments.map((segment) =>
+        segment.kind === 'ask' ? (
+          <ToolInvocationCard
+            key={segment.item.callId}
+            invocation={segment.item}
+            onAnswer={onAnswer}
+            onNavigate={onNavigate}
+          />
+        ) : (
+          <ToolRun
+            key={segment.items[0]?.callId}
+            invocations={segment.items}
+            onNavigate={onNavigate}
+          />
+        ),
+      )}
     </div>
   );
 }

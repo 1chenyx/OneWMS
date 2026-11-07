@@ -17,7 +17,7 @@ import {
  *  - 库存分桶：adjust 按库位入账，query 三形态（分组 / 单组 / 按库位平铺）
  *  - 单据行库位：入库分桶上架、同单同 SKU 分库位多行、出库按行库位守卫
  *  - 移库：DEFAULT↔实体、余量守卫、同库位拒绝、transfer 流水对
- *  - replay 重建一致；老库收敛（M9 结构 → 整组 DROP 重建 → DEFAULT 桶）
+ *  - replay 重建一致；老库收敛（M9 结构 → 只重建库存流水和汇总 → DEFAULT 桶）
  */
 
 let core: OneCore;
@@ -355,7 +355,7 @@ describe('追账与老库收敛', () => {
     expect(ws.inventory.ledgerOf(ws.skus.byCode('A-1')!.id)).toHaveLength(4); // 期初 + 收货 + 移库两条
   });
 
-  it('老库收敛：M9 结构（库位/批次列皆无）直升 M11 → 整组 DROP 重建，老流水落 DEFAULT 桶', async () => {
+  it('老库收敛：M9 结构（库位/批次列皆无）直升 M11 → 只重建库存，老流水落 DEFAULT 桶', async () => {
     const file = join(tmpdir(), `onewms-m11-conv-loc-${randomUUID()}.db`);
     try {
       // ① 用当前代码在文件库跑出 M9 时代的业务事实（事件进 oplog）
@@ -380,12 +380,14 @@ describe('追账与老库收敛', () => {
           ALTER TABLE wms_inventory_ledger DROP COLUMN location_id;
           ALTER TABLE wms_inventory_ledger DROP COLUMN batch_no;
           ALTER TABLE wms_inventory_ledger DROP COLUMN batch_expiry_date;
+          INSERT INTO wms_location (id, workspace_id, location_code, name, created_at, updated_at)
+          SELECT 'sentinel-loc', workspace_id, 'SENTINEL', '哨兵库位', created_at, updated_at
+          FROM wms_sku LIMIT 1;
         `);
         db.close();
       }
-      // ③ 重开：migrateWms 检测 batch_no 缺失 → 六张投影整组 DROP → sync() 全量重建；
-      //    老事件无库位/批次 → 兜底 DEFAULT 桶；单据行同样重建（M9→M11 与 M10→M11
-      //    两条升级路径共用同一道检测——batch.test.ts 覆盖 M10 路径）
+      // ③ 重开：缺 batch_no → 只丢流水和汇总再重放。老事件无库位/批次 → DEFAULT 桶。
+      //    单据行是当前结构，不在这道检测里重建。没事件的库位必须还在。
       {
         const core2 = OneCore.open(file);
         const d2 = WmsDomain.attach(core2);
@@ -402,6 +404,8 @@ describe('追账与老库收敛', () => {
         expect(lines[0].locationId).toBe(DEFAULT_LOCATION_ID);
         expect(lines[0].batchNo).toBe(DEFAULT_BATCH_NO);
         expect(lines[0].quantity).toBe(5);
+        expect(w2.orders.listConflicts('open')).toHaveLength(0);
+        expect(w2.locations.byCode('SENTINEL')?.name).toBe('哨兵库位');
         // 新库位/批次工具在收敛后的库上照常可用
         await w2.tools.invoke('wms.location.create', { locationCode: 'A-01' });
         await w2.tools.invoke('wms.inventory.move', {

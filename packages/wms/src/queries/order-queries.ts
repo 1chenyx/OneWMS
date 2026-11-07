@@ -1,6 +1,7 @@
 import type { WmsWorkspace } from '../wms.js';
 import type { OrderDirection } from '../state/order-state-machine.js';
 import type { OrderRecord } from '../views/order-view.js';
+import { toListPage, type ListPage } from './page.js';
 
 /** 单据 + 明细行（联查 SKU 补编码/名称/单位 + 往来单位补编码/名称，组装不碰 SQL） */
 export interface OrderWithLines extends OrderRecord {
@@ -22,6 +23,8 @@ export interface OrderWithLines extends OrderRecord {
   /** 往来单位展示（M21）：null = 未关联 */
   partnerCode: string | null;
   partnerName: string | null;
+  /** 原单号（module.return）。null = 普通出入库 */
+  returnOfOrderNo: string | null;
 }
 
 /** 明细行联查：skuId → skuCode/name/unit + partnerId → 编码/名称（经视图 API，不碰 SQL） */
@@ -41,11 +44,13 @@ export function withOrderLines(ws: WmsWorkspace, order: OrderRecord): OrderWithL
     };
   });
   const partner = order.partnerId ? ws.partners.byId(order.partnerId) : undefined;
+  const source = order.returnOfOrderId ? ws.orders.byId(order.returnOfOrderId) : undefined;
   return {
     ...order,
     lines,
     partnerCode: partner?.partnerCode ?? null,
     partnerName: partner?.name ?? null,
+    returnOfOrderNo: source?.orderNo ?? null,
   };
 }
 
@@ -54,4 +59,18 @@ export function listOrdersWithLines(
   direction?: OrderDirection,
 ): OrderWithLines[] {
   return ws.orders.list(direction).map((order) => withOrderLines(ws, order));
+}
+
+/** 界面清单分页：排序与 list() 相同（order_no），q 只匹配单号。明细仍按页装配。 */
+export function listOrdersWithLinesPage(
+  ws: WmsWorkspace,
+  opts: { direction?: OrderDirection; q?: string; limit: number; offset: number },
+): ListPage<OrderWithLines> {
+  const { rows, total } = ws.orders.listPageByNo(opts);
+  return toListPage(
+    rows.map((order) => withOrderLines(ws, order)),
+    total,
+    opts.limit,
+    opts.offset,
+  );
 }

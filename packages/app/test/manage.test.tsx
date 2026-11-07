@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App as AntApp, ConfigProvider } from 'antd';
 import { useEffect, useState } from 'react';
 import type { ProfileSnapshot } from '@one/core';
@@ -34,6 +35,9 @@ const releaseHoldMock = vi.fn();
 
 /** 短收短发开关。默认关，避免其它流转用例出现数量框。 */
 let partialEnabled = false;
+
+/** 拣货占用开关。默认关，库存表不出现预占列。 */
+let reservationEnabled = false;
 
 /** 单据冲突队列。默认空，避免其它用例被警告条干扰。 */
 let conflictsFixture: {
@@ -151,12 +155,15 @@ const expiryFixture = {
 vi.mock('../src/api/hooks', () => ({
   useProfileSnapshot: () => ({
     isLoading: false,
-    data: partialEnabled
-      ? {
-          ...snapshotFixture,
-          modules: { 'module.partial': { enabled: true, version: '0.1.0', settings: {} } },
-        }
-      : snapshotFixture,
+    data: {
+      ...snapshotFixture,
+      modules: {
+        ...(partialEnabled ? { 'module.partial': { enabled: true, version: '0.1.0', settings: {} } } : {}),
+        ...(reservationEnabled
+          ? { 'module.reservation': { enabled: true, version: '0.1.0', settings: {} } }
+          : {}),
+      },
+    },
   }),
   useSkus: () => ({ isLoading: false, data: skusFixture }),
   usePartners: () => ({ isLoading: false, data: [] }),
@@ -172,7 +179,12 @@ vi.mock('../src/api/hooks', () => ({
   useAcceptConflict: () => ({ mutate: acceptConflictMock, mutateAsync: vi.fn(), isPending: false }),
   useDismissConflict: () => ({ mutate: dismissConflictMock, mutateAsync: vi.fn(), isPending: false }),
   useLocations: () => ({ isLoading: false, data: [] }),
-  useInventory: () => ({ isLoading: false, data: inventoryFixture }),
+  useInventory: () => ({
+    isLoading: false,
+    data: reservationEnabled
+      ? inventoryFixture.map((row, index) => (index === 0 ? { ...row, reserved: 6 } : row))
+      : inventoryFixture,
+  }),
   useAdjustInventory: () => ({ mutateAsync: adjustMock, isPending: false }),
   useHolds: (skuCode?: string) => ({
     isLoading: false,
@@ -185,11 +197,13 @@ vi.mock('../src/api/hooks', () => ({
 
 // 禁用两字按钮自动插空格 + AntApp 提供 message 上下文 + AppNavProvider 供页面消费导航
 const wrap = (ui: React.ReactNode) => (
-  <ConfigProvider button={{ autoInsertSpace: false }}>
-    <AntApp>
-      <AppNavProvider>{ui}</AppNavProvider>
-    </AntApp>
-  </ConfigProvider>
+  <QueryClientProvider client={new QueryClient()}>
+    <ConfigProvider button={{ autoInsertSpace: false }}>
+      <AntApp>
+        <AppNavProvider>{ui}</AppNavProvider>
+      </AntApp>
+    </ConfigProvider>
+  </QueryClientProvider>
 );
 
 /** 模拟 AI 后置动作跳转：navigate 后再挂载目标页（与 App.tsx 切页时序一致） */
@@ -217,6 +231,7 @@ afterEach(() => {
   document.body.innerHTML = '';
   conflictsFixture = [];
   partialEnabled = false;
+  reservationEnabled = false;
 });
 
 describe('SkusPage：动态列（Profile 消费闭环）', () => {
@@ -395,6 +410,7 @@ describe('InventoryPage：清单与调整', () => {
     expect(screen.getByText('A-1')).toBeInTheDocument();
     expect(screen.getByText('30 个')).toBeInTheDocument(); // 余量（A3：带单位）
     expect(screen.getByText('冻结量')).toBeInTheDocument(); // M19 列
+    expect(screen.queryByText('预占')).not.toBeInTheDocument();
     expect(screen.getByText('可用量')).toBeInTheDocument();
     expect(screen.getByText('25 个')).toBeInTheDocument(); // 可用 = 30 − 冻结 5（A3：带单位）
     expect(screen.getByText('安全库存')).toBeInTheDocument(); // M20 列（低库存 A-1 的可用量标红）
@@ -408,6 +424,13 @@ describe('InventoryPage：清单与调整', () => {
     await waitFor(() =>
       expect(adjustMock).toHaveBeenCalledWith({ skuCode: 'A-1', delta: 20, reason: '盘点' }),
     );
+  });
+
+  it('预占：模块开启时库存表显示占用数量', () => {
+    reservationEnabled = true;
+    render(wrap(<InventoryPage />));
+    expect(screen.getByText('预占')).toBeInTheDocument();
+    expect(screen.getByText('6 个')).toBeInTheDocument();
   });
 
   it('冻结弹窗（M19）：活动冻结可见、追加冻结提交、Popconfirm 释放', async () => {

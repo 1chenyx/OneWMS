@@ -25,6 +25,10 @@ export interface OrderRecord {
   readonly state: string;
   /** 往来单位 id（M21）：入库=供应商 / 出库=客户；null = 未关联 */
   readonly partnerId: string | null;
+  /** 原单 id（module.return）。null = 普通出入库 */
+  readonly returnOfOrderId: string | null;
+  /** 预计到货日（module.asn）。null = 没填，或不是预报单 */
+  readonly expectedAt: string | null;
   readonly note: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -61,6 +65,8 @@ interface OrderRow {
   direction: string;
   state: string;
   partner_id: string | null;
+  return_of_order_id: string | null;
+  expected_at: string | null;
   note: string | null;
   created_at: string;
   updated_at: string;
@@ -108,6 +114,8 @@ function rowToRecord(row: OrderRow): OrderRecord {
     direction: row.direction as OrderDirection,
     state: row.state,
     partnerId: row.partner_id,
+    returnOfOrderId: row.return_of_order_id,
+    expectedAt: row.expected_at,
     note: row.note,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -122,16 +130,39 @@ export class OrderView {
 
   /** 幂等应用一条 wms.order.* 事件（重放器/追账器调用，事务内） */
   applyEvent(env: EventEnvelope): void {
+    // 构造期从 cursor = -1 重放。已入账的单据事件跳过，否则 from 对不上当前态，
+    // 每次重开都会把正常转移再记成一条冲突。标记由迁移在「头没丢」时从 oplog 补上。
+    if (
+      (env.type === WMS_EVENT_TYPES.orderCreated ||
+        env.type === WMS_EVENT_TYPES.orderStateChanged ||
+        env.type === WMS_EVENT_TYPES.orderConflictDismissed ||
+        env.type === WMS_EVENT_TYPES.orderConflictAccepted) &&
+      this.#applied(env.eventId)
+    ) {
+      return;
+    }
     switch (env.type) {
       case WMS_EVENT_TYPES.orderCreated: {
         const p = env.payload as OrderCreatedPayload;
         if (this.#byIdRaw(p.orderId)) return; // 已应用过（幂等）
         this.db
           .prepare(
-            `INSERT INTO wms_order (id, workspace_id, order_no, direction, state, partner_id, note, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, 'created', ?, ?, '{}', ?, ?)`,
+            `INSERT INTO wms_order (id, workspace_id, order_no, direction, state, partner_id, return_of_order_id, expected_at, note, ext_data, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
           )
-          .run(p.orderId, this.workspaceId, p.orderNo, p.direction, p.partnerId ?? null, p.note ?? null, env.createdAt, env.createdAt);
+          .run(
+            p.orderId,
+            this.workspaceId,
+            p.orderNo,
+            p.direction,
+            p.asn != null ? 'announced' : 'created',
+            p.partnerId ?? null,
+            p.returnOfOrderId ?? null,
+            p.asn?.expectedAt ?? null,
+            p.note ?? null,
+            env.createdAt,
+            env.createdAt,
+          );
         const insertLine = this.db.prepare(
           `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -220,6 +251,16 @@ export class OrderView {
     return row ? rowToRecord(row) : undefined;
   }
 
+  /** 指向这张原单的退货单（含已取消） */
+  returnsOf(orderId: string): OrderRecord[] {
+    const rows = this.db
+      .prepare<unknown[], OrderRow>(
+        `SELECT * FROM wms_order WHERE workspace_id = ? AND return_of_order_id = ? ORDER BY order_no`,
+      )
+      .all(this.workspaceId, orderId) as unknown as OrderRow[];
+    return rows.map(rowToRecord);
+  }
+
   /** 按 id 查 */
   byId(id: string): OrderRecord | undefined {
     const row = this.#byIdRaw(id);
@@ -238,6 +279,40 @@ export class OrderView {
           .prepare<unknown[], OrderRow>(`SELECT * FROM wms_order WHERE workspace_id = ? ORDER BY order_no`)
           .all(this.workspaceId) as unknown as OrderRow[]);
     return rows.map(rowToRecord);
+  }
+
+  /**
+   * 界面清单分页。排序与 list() 相同（order_no），过滤只认单号包含。
+   * AI 工具的 listPage 仍按创建时间倒序，两套排序不要并成一个。
+   */
+  listPageByNo(opts: {
+    direction?: OrderDirection;
+    q?: string;
+    limit: number;
+    offset: number;
+  }): { rows: OrderRecord[]; total: number } {
+    const where = ['workspace_id = ?'];
+    const args: unknown[] = [this.workspaceId];
+    if (opts.direction) {
+      where.push('direction = ?');
+      args.push(opts.direction);
+    }
+    if (opts.q) {
+      where.push(`order_no LIKE ? ESCAPE '\\'`);
+      args.push(likeContains(opts.q));
+    }
+    const whereSql = where.join(' AND ');
+    const total = (
+      this.db.prepare(`SELECT COUNT(*) AS total FROM wms_order WHERE ${whereSql}`).get(...args) as {
+        total: number;
+      }
+    ).total;
+    const rows = this.db
+      .prepare<unknown[], OrderRow>(
+        `SELECT * FROM wms_order WHERE ${whereSql} ORDER BY order_no LIMIT ? OFFSET ?`,
+      )
+      .all(...args, opts.limit, opts.offset) as unknown as OrderRow[];
+    return { rows: rows.map(rowToRecord), total };
   }
 
   /**
@@ -327,4 +402,15 @@ export class OrderView {
       .prepare<unknown[], OrderRow>(`SELECT * FROM wms_order WHERE workspace_id = ? AND id = ?`)
       .get(this.workspaceId, id) as OrderRow | undefined;
   }
+
+  #applied(eventId: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 AS ok FROM wms_order_apply WHERE workspace_id = ? AND event_id = ?`)
+      .get(this.workspaceId, eventId);
+    return row !== undefined;
+  }
+}
+
+function likeContains(q: string): string {
+  return `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 }

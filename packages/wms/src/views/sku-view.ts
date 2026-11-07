@@ -158,6 +158,39 @@ export class SkuView {
    * includeArchived 缺省 false：不带条码时排除已停用。扫码（带 barcode）由调用方传 true。
    */
   listMatching(opts: { barcode?: string; q?: string; includeArchived?: boolean }): SkuRecord[] {
+    const { where, args } = this.#match(opts);
+    const rows = this.db
+      .prepare<unknown[], SkuRow>(`SELECT * FROM wms_sku WHERE ${where} ORDER BY sku_code`)
+      .all(...args) as unknown as SkuRow[];
+    return rows.map(rowToRecord);
+  }
+
+  /** 与 listMatching 同一套条件，SQL LIMIT/OFFSET。total 用同一 WHERE。 */
+  listMatchingPage(opts: {
+    barcode?: string;
+    q?: string;
+    includeArchived?: boolean;
+    limit: number;
+    offset: number;
+  }): { rows: SkuRecord[]; total: number } {
+    const { where, args } = this.#match(opts);
+    const total = (
+      this.db.prepare(`SELECT COUNT(*) AS total FROM wms_sku WHERE ${where}`).get(...args) as {
+        total: number;
+      }
+    ).total;
+    const rows = this.db
+      .prepare<unknown[], SkuRow>(
+        `SELECT * FROM wms_sku WHERE ${where} ORDER BY sku_code LIMIT ? OFFSET ?`,
+      )
+      .all(...args, opts.limit, opts.offset) as unknown as SkuRow[];
+    return { rows: rows.map(rowToRecord), total };
+  }
+
+  #match(opts: { barcode?: string; q?: string; includeArchived?: boolean }): {
+    where: string;
+    args: unknown[];
+  } {
     const where = ['workspace_id = ?'];
     const args: unknown[] = [this.workspaceId];
     if (opts.barcode) {
@@ -174,12 +207,7 @@ export class SkuView {
       const pat = likeContains(opts.q);
       args.push(pat, pat, pat);
     }
-    const rows = this.db
-      .prepare<unknown[], SkuRow>(
-        `SELECT * FROM wms_sku WHERE ${where.join(' AND ')} ORDER BY sku_code`,
-      )
-      .all(...args) as unknown as SkuRow[];
-    return rows.map(rowToRecord);
+    return { where: where.join(' AND '), args };
   }
 
   #byIdRaw(id: string): SkuRow | undefined {

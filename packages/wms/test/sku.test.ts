@@ -206,7 +206,7 @@ describe('条码管理（M18）', () => {
     expect(ws.skus.byBarcode('6902')!.skuCode).toBe('A-1');
   });
 
-  it('老库收敛：M17 结构（wms_sku 无 barcode 列）文件库重开 → 投影整组重建，老 SKU 条码为 NULL', async () => {
+  it('老库收敛：M17 结构（wms_sku 无 barcode 列）文件库重开 → 只重建 SKU，老 SKU 条码为 NULL', async () => {
     const file = join(tmpdir(), `onewms-m18-conv-${randomUUID()}.db`);
     try {
       // ① 用当前代码在文件库跑出 M17 时代的业务事实（事件进 oplog）
@@ -239,13 +239,17 @@ describe('条码管理（M18）', () => {
             INSERT INTO wms_sku (id, workspace_id, sku_code, name, ext_data, created_at, updated_at)
               SELECT id, workspace_id, sku_code, name, ext_data, created_at, updated_at FROM wms_sku_legacy;
             DROP TABLE wms_sku_legacy;
+            INSERT INTO wms_location (id, workspace_id, location_code, name, created_at, updated_at)
+            SELECT 'sentinel-loc', workspace_id, 'SENTINEL', '哨兵库位', created_at, updated_at FROM wms_sku LIMIT 1;
+            INSERT INTO wms_inventory (workspace_id, sku_id, location_id, batch_no, quantity)
+            SELECT workspace_id, id, 'SENTINEL-BUCKET', 'DEFAULT', 99 FROM wms_sku LIMIT 1;
           `);
         } finally {
           db.close();
         }
       }
-      // ③ 重开：migrateWms 检测列缺失 → 八张投影整组 DROP → sync() 全量重建；
-      //    老事件无条码 → 投影 barcode 收敛 NULL；条码工具在收敛后的库上照常可用
+      // ③ 重开：只丢 wms_sku 再重放。老事件无条码 → barcode 为 NULL。
+      //    没事件的库位和库存桶必须还在，说明没有整组 DROP。
       {
         const core2 = OneCore.open(file);
         const d2 = WmsDomain.attach(core2);
@@ -253,6 +257,8 @@ describe('条码管理（M18）', () => {
         const sku = w2.skus.byCode('A-1')!;
         expect(sku.barcode).toBeNull();
         expect(w2.inventory.quantityOf(sku.id, DEFAULT_LOCATION_ID, DEFAULT_BATCH_NO)).toBe(10);
+        expect(w2.locations.byCode('SENTINEL')?.name).toBe('哨兵库位');
+        expect(w2.inventory.quantityOf(sku.id, 'SENTINEL-BUCKET', 'DEFAULT')).toBe(99);
 
         await w2.tools.invoke('wms.sku.update', { skuCode: 'A-1', barcode: '6901234567892' });
         const r = await w2.tools.invoke('wms.sku.resolve', { barcode: '6901234567892' });
@@ -354,7 +360,7 @@ describe('安全库存与低库存预警（M20）', () => {
     expect(ws.skus.byCode('A-1')!.reorderPoint).toBe(40);
   });
 
-  it('老库收敛：M19 结构（有 barcode 无 reorder_point 列）文件库重开 → 第三道检测重建，事件携带值完整恢复', async () => {
+  it('老库收敛：M19 结构（有 barcode 无 reorder_point 列）文件库重开 → 只重建 SKU，事件携带值完整恢复', async () => {
     const file = join(tmpdir(), `onewms-m20-conv-${randomUUID()}.db`);
     try {
       // ① 用当前代码跑出业务事实
@@ -387,13 +393,15 @@ describe('安全库存与低库存预警（M20）', () => {
             INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, ext_data, created_at, updated_at)
               SELECT id, workspace_id, sku_code, barcode, name, ext_data, created_at, updated_at FROM wms_sku_legacy;
             DROP TABLE wms_sku_legacy;
+            INSERT INTO wms_inventory (workspace_id, sku_id, location_id, batch_no, quantity)
+            SELECT workspace_id, id, 'SENTINEL-BUCKET', 'DEFAULT', 99 FROM wms_sku LIMIT 1;
           `);
         } finally {
           db.close();
         }
       }
-      // ③ 重开：第三道检测（缺 reorder_point）→ 九张投影整组 DROP 重建；
-      //    事件里有 reorderPoint=50 → 重建后完整恢复（不是收敛 0——事件是真相）
+      // ③ 重开：只丢 wms_sku。事件里有 reorderPoint=50 → 重放恢复（不是 ALTER 的默认 0）。
+      //    没事件的库存桶还在。
       {
         const core2 = OneCore.open(file);
         const d2 = WmsDomain.attach(core2);
@@ -401,6 +409,7 @@ describe('安全库存与低库存预警（M20）', () => {
         const sku = w2.skus.byCode('A-1')!;
         expect(sku.reorderPoint).toBe(50);
         expect(w2.inventory.quantityOf(sku.id, DEFAULT_LOCATION_ID, DEFAULT_BATCH_NO)).toBe(10);
+        expect(w2.inventory.quantityOf(sku.id, 'SENTINEL-BUCKET', 'DEFAULT')).toBe(99);
         core2.close();
       }
     } finally {
@@ -472,6 +481,8 @@ describe('SKU 单位（A3）', () => {
             INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, reorder_point, ext_data, created_at, updated_at)
             SELECT id, workspace_id, sku_code, barcode, name, reorder_point, ext_data, created_at, updated_at FROM wms_sku_legacy;
             DROP TABLE wms_sku_legacy;
+            INSERT INTO wms_location (id, workspace_id, location_code, name, created_at, updated_at)
+            SELECT 'sentinel-loc', workspace_id, 'SENTINEL', '哨兵库位', created_at, updated_at FROM wms_sku LIMIT 1;
           `);
         } finally {
           db.close();
@@ -485,6 +496,7 @@ describe('SKU 单位（A3）', () => {
         expect(sku.status ?? 'active').toBe('active');
         expect(sku.unit).toBeNull();
         expect(w2.inventory.quantityOf(sku.id, DEFAULT_LOCATION_ID, DEFAULT_BATCH_NO)).toBe(3);
+        expect(w2.locations.byCode('SENTINEL')?.name).toBe('哨兵库位');
         core2.close();
       }
     } finally {

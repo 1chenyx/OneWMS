@@ -1,32 +1,30 @@
-import { Button, Card, Descriptions, Tag, Typography } from 'antd';
+import { Button, Card, Tag, Typography } from 'antd';
 import type { ChatInvocation } from '../api/client';
 import type { InitialFilter, Page } from '../app-nav';
+import { speakInvocation } from '../chat/tool-speak';
 import AskCard from './AskCard';
 import ToolResultView from './ToolResultView';
 
 /**
- * 工具调用过程卡片：让「AI 经工具总线操作」对用户可见可审计（§9.3 透明度）。
- * 成/败/执行中分色 + 参数与结果摘要（折叠态保持简洁，展开看细节）。
- * 流式推进：tool-call 事件先落卡（执行中，灰色），tool-result 事件回填终态。
- * 成功结果经 ToolResultView 按 toolId 渲染（查询工具出表格，其余 JSON 兜底）。
+ * 一次工具调用的说明。对话页把它放进可折叠的一组里；这里只说人话。
+ * 成/败/执行中仍可区分。查询结果在展开后出表格，不展示参数和返回值的 JSON。
  *
- * ui.ask 分流（M12 步骤3）：挂起态渲染 AskCard（问题 + 回答输入，onAnswer
- * 由 ChatPage 注入会话壳的 answerAsk）；终态渲染问答回显。
- * 后置动作按钮（M12 步骤4）：工具成功后「去对应管理页」（onNavigate 由
- * ChatPage 注入 useAppNav().navigate，如库存调整 → 库存页）。
- * profile.propose 不出后置动作：提议确认收敛在 ChatPage 顶部待确认面板，
- * 用户在对话页直接拍板（配置确认页已并入）。
+ * ui.ask：挂起时是回答卡；终态回显问答。
+ * 成功后可以跳到对应管理页。配置提议的确认在对话页顶部，不从这里跳走。
  */
 export default function ToolInvocationCard({
   invocation,
   onAnswer,
   onNavigate,
+  hideTitle = false,
 }: {
   invocation: ChatInvocation;
   /** ui.ask 挂起时提交回答的通道（ChatPage 注入 useChatSession().answerAsk） */
   onAnswer?: (callId: string, answer: string | null) => void;
   /** 后置动作跳转通道（ChatPage 注入 useAppNav().navigate） */
   onNavigate?: (page: Page, filter?: InitialFilter) => void;
+  /** 外层折叠条已经展示过这句话时，展开区不再重复 */
+  hideTitle?: boolean;
 }) {
   const followUp = followUpAction(invocation);
 
@@ -51,7 +49,7 @@ export default function ToolInvocationCard({
             >
               {pending ? '等待回答' : declined ? '未回答' : invocation.ok ? '已回答' : '被拒'}
             </Tag>
-            <Typography.Text code>ui.ask</Typography.Text>
+            <Typography.Text>需要你补充</Typography.Text>
           </>
         }
       >
@@ -71,43 +69,27 @@ export default function ToolInvocationCard({
     );
   }
 
-  const errorText =
-    invocation.ok === false && invocation.payload && typeof invocation.payload === 'object'
-      ? String((invocation.payload as { error?: unknown }).error ?? '')
-      : '';
+  const spoken = speakInvocation(invocation);
+  const tabular = invocation.ok === true && isTabular(invocation);
   return (
-    <Card
-      size="small"
-      style={{ maxWidth: 640 }}
-      title={
-        <>
-          <Tag
-            color={invocation.ok === undefined ? 'default' : invocation.ok ? 'green' : 'red'}
-            bordered={false}
-          >
-            {invocation.ok === undefined ? '执行中' : invocation.ok ? '成功' : '被拒'}
-          </Tag>
-          <Typography.Text code>{invocation.toolId}</Typography.Text>
-        </>
-      }
-    >
-      <Descriptions column={1} size="small">
-        <Descriptions.Item label="参数">
-          <Typography.Text code style={{ fontSize: 12 }}>
-            {JSON.stringify(invocation.args)}
-          </Typography.Text>
-        </Descriptions.Item>
-        {!invocation.ok && errorText ? (
-          <Descriptions.Item label="原因">
-            <Typography.Text type="danger" style={{ fontSize: 12 }}>
-              {errorText}
-            </Typography.Text>
-          </Descriptions.Item>
-        ) : null}
-      </Descriptions>
-      {invocation.ok === true && invocation.payload !== undefined && invocation.payload !== null ? (
-        <ToolResultView toolId={invocation.toolId} payload={invocation.payload} />
+    <div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <Tag
+          color={invocation.ok === undefined ? 'default' : invocation.ok ? 'green' : 'red'}
+          bordered={false}
+        >
+          {invocation.ok === undefined ? '执行中' : invocation.ok ? '成功' : '被拒'}
+        </Tag>
+        {hideTitle ? null : <Typography.Text>{spoken.title}</Typography.Text>}
+      </div>
+      {!tabular && spoken.details.length > 0 ? (
+        <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+          {spoken.details.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
       ) : null}
+      {tabular ? <ToolResultView toolId={invocation.toolId} payload={invocation.payload} /> : null}
       {followUp && onNavigate ? (
         <Button
           size="small"
@@ -118,8 +100,29 @@ export default function ToolInvocationCard({
           {followUp.label} →
         </Button>
       ) : null}
-    </Card>
+    </div>
   );
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** 查询结果用表格展示；写操作的小对象只用上面的一句话 */
+function isTabular(invocation: ChatInvocation): boolean {
+  if (
+    invocation.toolId === 'wms.inventory.query' ||
+    invocation.toolId === 'wms.inventory.expiring' ||
+    invocation.toolId === 'wms.location.list'
+  ) {
+    return true;
+  }
+  const payload = invocation.payload;
+  if (Array.isArray(payload)) return payload.length > 0 && isRecord(payload[0]);
+  if (isRecord(payload) && Array.isArray(payload.rows)) {
+    return payload.rows.length > 0 && isRecord(payload.rows[0]);
+  }
+  return false;
 }
 
 /** 后置动作：工具成功后的「去对应管理页」跳转（AI 操作与管理页的衔接） */

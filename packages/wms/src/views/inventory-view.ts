@@ -7,6 +7,8 @@ import {
   type InventoryAdjustedPayload,
   type InventoryHeldPayload,
   type InventoryReleasedPayload,
+  type InventoryReservationReleasedPayload,
+  type InventoryReservedPayload,
 } from '../events/catalog.js';
 
 /**
@@ -24,7 +26,11 @@ import {
  *
  * 冻结（M19）：wms_inventory_hold 只存活动冻结行（held 事件 INSERT /
  * released 事件 DELETE，幂等键 = holdId）——历史在事件里。冻结不改物理量、
- * 不落流水：可用量 = totalOf(sku) − heldOf(sku)（SKU 级，跨库位合计）。
+ * 不落流水：可用量 = totalOf(sku) − heldOf(sku) − reservedOfSku(sku)。
+ *
+ * 拣货占用（module.reservation）：wms_inventory_reservation 只存活动占用行
+ * （reserved INSERT OR IGNORE / reservation_released DELETE）。占用按桶，
+ * 不改物理量。其他出库单的可用量要减掉它；占用方自己发货时由调用方排除。
  */
 
 export interface InventoryRecord {
@@ -57,6 +63,17 @@ export interface HoldRecord {
   readonly createdAt: string;
 }
 
+/** 活动拣货占用：释放后从投影消失（历史在事件） */
+export interface ReservationRecord {
+  readonly id: string;
+  readonly orderId: string;
+  readonly orderNo: string;
+  readonly skuId: string;
+  readonly locationId: string;
+  readonly batchNo: string;
+  readonly quantity: number;
+}
+
 interface InventoryRow {
   sku_id: string;
   location_id: string;
@@ -83,8 +100,35 @@ export class InventoryView {
     private readonly workspaceId: string,
   ) {}
 
-  /** 幂等应用一条库存域事件（adjusted/held/released；重放器/追账器调用，事务内） */
+  /** 幂等应用一条库存域事件（adjusted/held/released/reserved；重放器/追账器调用，事务内） */
   applyEvent(env: EventEnvelope): void {
+    if (env.type === WMS_EVENT_TYPES.inventoryReserved) {
+      const p = env.payload as InventoryReservedPayload;
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO wms_inventory_reservation
+             (id, workspace_id, order_id, order_no, sku_id, location_id, batch_no, quantity)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          p.reservationId,
+          this.workspaceId,
+          p.orderId,
+          p.orderNo,
+          p.skuId,
+          p.locationId,
+          p.batchNo,
+          p.quantity,
+        );
+      return;
+    }
+    if (env.type === WMS_EVENT_TYPES.inventoryReservationReleased) {
+      const p = env.payload as InventoryReservationReleasedPayload;
+      this.db
+        .prepare(`DELETE FROM wms_inventory_reservation WHERE workspace_id = ? AND id = ?`)
+        .run(this.workspaceId, p.reservationId);
+      return;
+    }
     if (env.type === WMS_EVENT_TYPES.inventoryHeld) {
       // 幂等：主键 holdId 已在 = 已应用过（INSERT OR IGNORE）
       const p = env.payload as InventoryHeldPayload;
@@ -174,6 +218,72 @@ export class InventoryView {
     return row.total;
   }
 
+  /**
+   * 某桶上、不属于 exceptOrderIds 的占用合计。
+   * 占用方发货时把自己的单据 id 传进来，避免被自己的占用拦住。
+   */
+  reservedOf(
+    skuId: string,
+    locationId: string = DEFAULT_LOCATION_ID,
+    batchNo: string = DEFAULT_BATCH_NO,
+    exceptOrderIds: readonly string[] = [],
+  ): number {
+    const except = exceptClause(exceptOrderIds);
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(quantity), 0) AS reserved FROM wms_inventory_reservation
+         WHERE workspace_id = ? AND sku_id = ? AND location_id = ? AND batch_no = ?${except.sql}`,
+      )
+      .get(this.workspaceId, skuId, locationId, batchNo, ...except.params) as { reserved: number };
+    return row.reserved;
+  }
+
+  /** 某 SKU 跨桶占用合计（同样可排除指定单据） */
+  reservedOfSku(skuId: string, exceptOrderIds: readonly string[] = []): number {
+    const except = exceptClause(exceptOrderIds);
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(quantity), 0) AS reserved FROM wms_inventory_reservation
+         WHERE workspace_id = ? AND sku_id = ?${except.sql}`,
+      )
+      .get(this.workspaceId, skuId, ...except.params) as { reserved: number };
+    return row.reserved;
+  }
+
+  /** 活动占用。orderId 缺省 = 全部。 */
+  listReservations(orderId?: string): ReservationRecord[] {
+    const rows = (orderId
+      ? this.db
+          .prepare(
+            `SELECT id, order_id, order_no, sku_id, location_id, batch_no, quantity
+             FROM wms_inventory_reservation WHERE workspace_id = ? AND order_id = ? ORDER BY id`,
+          )
+          .all(this.workspaceId, orderId)
+      : this.db
+          .prepare(
+            `SELECT id, order_id, order_no, sku_id, location_id, batch_no, quantity
+             FROM wms_inventory_reservation WHERE workspace_id = ? ORDER BY id`,
+          )
+          .all(this.workspaceId)) as Array<{
+      id: string;
+      order_id: string;
+      order_no: string;
+      sku_id: string;
+      location_id: string;
+      batch_no: string;
+      quantity: number;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      orderId: r.order_id,
+      orderNo: r.order_no,
+      skuId: r.sku_id,
+      locationId: r.location_id,
+      batchNo: r.batch_no,
+      quantity: r.quantity,
+    }));
+  }
+
   /** 某 SKU 活动冻结合计（M19；出库拦截与可用量展示的数据源） */
   heldOf(skuId: string): number {
     const row = this.db
@@ -221,6 +331,123 @@ export class InventoryView {
       batchExpiryDate: r.batch_expiry_date,
       quantity: r.quantity,
     }));
+  }
+
+  /**
+   * 按 SKU 汇总的 SQL 分页。只含有库存行的 SKU。
+   * 冻结和占用按 SKU 预聚合后再 JOIN，避免被库存行乘进去。
+   */
+  summaryPage(opts: {
+    q?: string;
+    skuCode?: string;
+    lowOnly?: boolean;
+    limit: number;
+    offset: number;
+  }): {
+    rows: Array<{
+      skuId: string;
+      skuCode: string;
+      name: string;
+      quantity: number;
+      held: number;
+      reserved: number;
+      available: number;
+      reorderPoint: number;
+      unit: string | null;
+    }>;
+    total: number;
+    hasReserved: boolean;
+  } {
+    const pat = opts.q ? `%${opts.q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%` : null;
+    const where = `
+      FROM wms_inventory i
+      LEFT JOIN wms_sku s ON s.workspace_id = i.workspace_id AND s.id = i.sku_id
+      LEFT JOIN (
+        SELECT sku_id, SUM(quantity) AS held
+        FROM wms_inventory_hold
+        WHERE workspace_id = ?
+        GROUP BY sku_id
+      ) h ON h.sku_id = i.sku_id
+      LEFT JOIN (
+        SELECT sku_id, SUM(quantity) AS reserved
+        FROM wms_inventory_reservation
+        WHERE workspace_id = ?
+        GROUP BY sku_id
+      ) r ON r.sku_id = i.sku_id
+      WHERE i.workspace_id = ?
+        AND (? IS NULL OR s.sku_code = ?)
+        AND (
+          ? IS NULL
+          OR s.sku_code LIKE ? ESCAPE '\\'
+          OR IFNULL(s.name, '') LIKE ? ESCAPE '\\'
+        )
+      GROUP BY i.sku_id
+      HAVING (
+        ? = 0
+        OR (
+          COALESCE(s.reorder_point, 0) > 0
+          AND (SUM(i.quantity) - COALESCE(h.held, 0) - COALESCE(r.reserved, 0)) < COALESCE(s.reorder_point, 0)
+        )
+      )`;
+    const args: unknown[] = [
+      this.workspaceId,
+      this.workspaceId,
+      this.workspaceId,
+      opts.skuCode ?? null,
+      opts.skuCode ?? null,
+      pat,
+      pat,
+      pat,
+      opts.lowOnly ? 1 : 0,
+    ];
+    const total = (
+      this.db.prepare(`SELECT COUNT(*) AS total FROM (SELECT i.sku_id ${where})`).get(...args) as {
+        total: number;
+      }
+    ).total;
+    const raw = this.db
+      .prepare(
+        `SELECT
+           i.sku_id AS sku_id,
+           COALESCE(s.sku_code, '(未知)') AS sku_code,
+           COALESCE(s.name, '') AS name,
+           SUM(i.quantity) AS quantity,
+           COALESCE(h.held, 0) AS held,
+           COALESCE(r.reserved, 0) AS reserved,
+           COALESCE(s.reorder_point, 0) AS reorder_point,
+           s.unit AS unit
+         ${where}
+         ORDER BY sku_code
+         LIMIT ? OFFSET ?`,
+      )
+      .all(...args, opts.limit, opts.offset) as Array<{
+      sku_id: string;
+      sku_code: string;
+      name: string;
+      quantity: number;
+      held: number;
+      reserved: number;
+      reorder_point: number;
+      unit: string | null;
+    }>;
+    const reservedHit = this.db
+      .prepare(`SELECT 1 AS ok FROM wms_inventory_reservation WHERE workspace_id = ? LIMIT 1`)
+      .get(this.workspaceId) as { ok: number } | undefined;
+    return {
+      total,
+      hasReserved: reservedHit !== undefined,
+      rows: raw.map((r) => ({
+        skuId: r.sku_id,
+        skuCode: r.sku_code,
+        name: r.name,
+        quantity: r.quantity,
+        held: r.held,
+        reserved: r.reserved,
+        available: r.quantity - r.held - r.reserved,
+        reorderPoint: r.reorder_point,
+        unit: r.unit,
+      })),
+    };
   }
 
   /**
@@ -414,4 +641,12 @@ export class InventoryView {
       .all(this.workspaceId) as { location_id: string; quantity: number }[];
     return rows.map((r) => ({ locationId: r.location_id, quantity: r.quantity }));
   }
+}
+
+function exceptClause(exceptOrderIds: readonly string[]): { sql: string; params: string[] } {
+  if (exceptOrderIds.length === 0) return { sql: '', params: [] };
+  return {
+    sql: ` AND order_id NOT IN (${exceptOrderIds.map(() => '?').join(', ')})`,
+    params: [...exceptOrderIds],
+  };
 }

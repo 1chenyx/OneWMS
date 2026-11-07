@@ -16,8 +16,10 @@ import type { ColumnsType } from 'antd/es/table';
 import { useCreateLocation, useLocations, useUpdateLocation } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { Location } from '../api/client';
+import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell } from '../components/table-style';
+import { LocationSheetPort } from '../components/sheet-specs';
+import { serverPagination, monoCell } from '../components/table-style';
 
 /**
  * 库位管理页——档案大类下的物理存储位主数据。
@@ -28,7 +30,10 @@ import { TABLE_PAGINATION, monoCell } from '../components/table-style';
  */
 export default function LocationsPage() {
   const { message } = AntApp.useApp();
-  const { data: rows, isLoading } = useLocations();
+  const list = useListPage('locations');
+  const { data, isLoading } = useLocations({ limit: list.limit, offset: list.offset });
+  const payload = data as Location[] | ListPage<Location> | undefined;
+  const rows = rowsOf(payload);
   const create = useCreateLocation();
   const update = useUpdateLocation();
   const [open, setOpen] = useState(false);
@@ -111,9 +116,12 @@ export default function LocationsPage() {
         title="库位管理"
         subtitle="仓库内的物理存储位：建库位、改名称（编码是业务键不可改，库位不删除以保留历史账）"
         extra={
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新建库位
-          </Button>
+          <>
+            <LocationSheetPort />
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建库位
+            </Button>
+          </>
         }
       />
       <Card>
@@ -127,9 +135,13 @@ export default function LocationsPage() {
           <Table<Location>
             rowKey="id"
             columns={columns}
-            dataSource={rows ?? []}
+            dataSource={rows}
             loading={isLoading}
-            pagination={TABLE_PAGINATION}
+            pagination={serverPagination({
+              current: list.page,
+              total: totalOf(payload),
+              onChange: list.setPage,
+            })}
             locale={{ emptyText: '还没有库位，点右上角新建（不建也能用——库存全归 DEFAULT）' }}
           />
           <Typography.Text type="secondary">

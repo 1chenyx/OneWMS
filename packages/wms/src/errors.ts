@@ -139,6 +139,20 @@ export class StockHeldError extends CoreError {
   }
 }
 
+/**
+ * 其他出库单已占用（module.reservation）。只拦单据出库。
+ * 占用方自己的发货不撞这条；手工调整、移库、盘点也不看占用。
+ */
+export class StockReservedError extends CoreError {
+  constructor(label: string, requested: number, onHand: number, reserved: number, held = 0) {
+    const free = onHand - held - reserved;
+    super(
+      'WMS_STOCK_RESERVED',
+      `SKU ${label} 已被其他出库单占用：余量 ${onHand}，冻结 ${held}，占用 ${reserved}，可再出库 ${free}，需出库 ${requested}`,
+    );
+  }
+}
+
 /** 冻结量超过账面余量（M19：已冻结合计 + 本次 ≤ 全库位合计余量，fail-fast 挡荒谬冻结） */
 export class HoldExceedsStockError extends CoreError {
   constructor(skuCode: string, quantity: number, total: number, held: number) {
@@ -308,6 +322,91 @@ export class PartialUnwindError extends CoreError {
 export class PartialNotOnPostError extends CoreError {
   constructor() {
     super('WMS_PARTIAL_NOT_ON_POST', '这次转移不动库存，不能改实收/实发数量');
+  }
+}
+
+// ── 退货（module.return）────────────────────────────
+
+/** 模块关闭时拒绝带原单号建单。不带原单号的出入库不受影响。 */
+export class ReturnDisabledError extends CoreError {
+  constructor() {
+    super('WMS_RETURN_DISABLED', '退货已关闭（module.return）。请去掉原单号，或在设置里重新启用该模块。');
+  }
+}
+
+/** 退货方向必须和原单相反 */
+export class ReturnDirectionError extends CoreError {
+  constructor(orderNo: string, sourceDirection: string) {
+    const hint = sourceDirection === 'out' ? '入库单（客退）' : '出库单（退供）';
+    super('WMS_RETURN_DIRECTION', `原单 ${orderNo} 只能开${hint}`);
+  }
+}
+
+/** 原单还没入账，没有可退的数量 */
+export class ReturnNotPostedError extends CoreError {
+  constructor(orderNo: string, state: string) {
+    super('WMS_RETURN_NOT_POSTED', `原单 ${orderNo} 当前是 ${state}，还没有入账，不能退货`);
+  }
+}
+
+/** 退货单不能再当原单 */
+export class ReturnOfReturnError extends CoreError {
+  constructor(orderNo: string) {
+    super('WMS_RETURN_OF_RETURN', `${orderNo} 本身是退货单，不能再对它退货`);
+  }
+}
+
+/** 原单没有这个 SKU + 批次 */
+export class ReturnLineNotFoundError extends CoreError {
+  constructor(skuCode: string, batchNo: string) {
+    super('WMS_RETURN_LINE', `原单没有 SKU ${skuCode} 批次 ${batchNo}`);
+  }
+}
+
+/** 超过原单剩余可退数量 */
+export class ReturnQtyExceededError extends CoreError {
+  constructor(skuCode: string, batchNo: string, remaining: number, asked: number) {
+    super(
+      'WMS_RETURN_QTY',
+      `SKU ${skuCode} 批次 ${batchNo} 还可退 ${remaining}，这次要退 ${asked}`,
+    );
+  }
+}
+
+/** 退货行的批次必须是原单上的批次，不能再按策略拆 */
+export class ReturnAllocationError extends CoreError {
+  constructor() {
+    super('WMS_RETURN_ALLOCATION', '退货单不分配批次，请按原单批次填写，不要传 allocation');
+  }
+}
+
+// ── 到货预报（module.asn）──────────────────────────
+
+/** 模块关闭时拒绝开预报。不带预报参数的直接入库不受影响。 */
+export class AsnDisabledError extends CoreError {
+  constructor() {
+    super('WMS_ASN_DISABLED', '到货预报已关闭（module.asn）。请去掉预报参数，或在设置里重新启用该模块。');
+  }
+}
+
+/** 预报只适用于入库 */
+export class AsnDirectionError extends CoreError {
+  constructor() {
+    super('WMS_ASN_DIRECTION', '到货预报只能开入库单');
+  }
+}
+
+/** 预报和退货不能是同一张单 */
+export class AsnWithReturnError extends CoreError {
+  constructor() {
+    super('WMS_ASN_WITH_RETURN', '到货预报不能同时是退货单');
+  }
+}
+
+/** 预计到货日必须是 YYYY-MM-DD，且只能写在预报单上 */
+export class AsnExpectedAtError extends CoreError {
+  constructor(value: string) {
+    super('WMS_ASN_EXPECTED_AT', `预计到货日无效：${value}。请用 YYYY-MM-DD，并且要打开到货预报。`);
   }
 }
 

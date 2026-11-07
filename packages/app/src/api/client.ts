@@ -18,7 +18,7 @@ export const api = {
 
 export { ApiError } from './request';
 export { answerChatAsk, streamChatMessage } from './chat-api';
-export type { ChatInvocation, ChatStreamEvent } from './chat-api';
+export type { ChatAttachmentChip, ChatAttachmentPayload, ChatInvocation, ChatStreamEvent } from './chat-api';
 export type { ConfirmResponse } from './profile-api';
 export type {
   AddSyncPeerResult,
@@ -51,12 +51,15 @@ export type {
   FlowTrendPoint,
   Hold,
   InventoryBucketRow,
+  InventoryListPage,
   InventoryRow,
   LedgerRow,
   Location,
   LocationDistribution,
   Order,
   OrderLine,
+  ReturnableLine,
+  ReturnableView,
   OrderStateCount,
   Partner,
   Picking,

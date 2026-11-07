@@ -126,7 +126,7 @@ describe('出库联动：预检 + 自动扣减', () => {
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 100 });
     const no = await createOrder('out', [{ skuCode: 'A-1', quantity: 60 }]);
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'picking' });
-    // 拣货与发货之间，库存被手动挪用（v1 无真实预占的已知窗口）
+    // 拣货与发货之间，库存被手动调整调走。占用只拦住其他出库单，不拦调整。
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: -50 });
     const before = countEvents();
 

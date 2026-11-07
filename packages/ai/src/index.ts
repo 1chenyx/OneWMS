@@ -22,7 +22,7 @@ export type {
 } from './agent.js';
 
 export { createAgentFromDef } from './wms-agent.js';
-export type { CreateAgentFromDefOptions, WmsAgent } from './wms-agent.js';
+export type { CreateAgentFromDefOptions, SessionTool, WmsAgent } from './wms-agent.js';
 
 export {
   AI_MODULE_ID,

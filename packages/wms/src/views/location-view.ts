@@ -91,14 +91,40 @@ export class LocationView {
     return row ? rowToRecord(row) : undefined;
   }
 
-  /** 全部库位（v1 无分页；按编码排序） */
-  list(): LocationRecord[] {
+  /** 全部库位（按编码排序）。q 对编码和名称做包含匹配。 */
+  list(q?: string): LocationRecord[] {
+    const { where, args } = this.#match(q);
+    const rows = this.db
+      .prepare<unknown[], LocationRow>(`SELECT * FROM wms_location WHERE ${where} ORDER BY location_code`)
+      .all(...args) as unknown as LocationRow[];
+    return rows.map(rowToRecord);
+  }
+
+  /** 与 list 同一套条件，SQL LIMIT/OFFSET。 */
+  listPage(opts: { q?: string; limit: number; offset: number }): { rows: LocationRecord[]; total: number } {
+    const { where, args } = this.#match(opts.q);
+    const total = (
+      this.db.prepare(`SELECT COUNT(*) AS total FROM wms_location WHERE ${where}`).get(...args) as {
+        total: number;
+      }
+    ).total;
     const rows = this.db
       .prepare<unknown[], LocationRow>(
-        `SELECT * FROM wms_location WHERE workspace_id = ? ORDER BY location_code`,
+        `SELECT * FROM wms_location WHERE ${where} ORDER BY location_code LIMIT ? OFFSET ?`,
       )
-      .all(this.workspaceId) as unknown as LocationRow[];
-    return rows.map(rowToRecord);
+      .all(...args, opts.limit, opts.offset) as unknown as LocationRow[];
+    return { rows: rows.map(rowToRecord), total };
+  }
+
+  #match(q?: string): { where: string; args: unknown[] } {
+    const where = ['workspace_id = ?'];
+    const args: unknown[] = [this.workspaceId];
+    if (q) {
+      where.push(`(location_code LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\')`);
+      const pat = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+      args.push(pat, pat);
+    }
+    return { where: where.join(' AND '), args };
   }
 
   #byIdRaw(id: string): LocationRow | undefined {

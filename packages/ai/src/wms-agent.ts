@@ -53,6 +53,12 @@ export interface WmsAgent {
   ): AsyncGenerator<AgentStreamEvent, AgentTurnResult, AskReply>;
 }
 
+/** 会话专属工具（如本轮上传的附件）。只挂在 stream，不进工具总线，也不出现在 run()。 */
+export interface SessionTool {
+  meta: AgentToolMeta;
+  invoke(args: Record<string, unknown>, actor: string): Promise<unknown>;
+}
+
 export interface CreateAgentFromDefOptions {
   /** 节点 id（进审计 actor 后缀 @nodeId）——多节点同步时保持通道唯一（M5，§8.5） */
   nodeId?: string;
@@ -60,6 +66,8 @@ export interface CreateAgentFromDefOptions {
   maxSteps?: number;
   /** 长期记忆（注入 System Prompt 的「记忆」段；调用方从记忆投影现算快照） */
   memories?: readonly AgentMemoryRef[];
+  /** 本条消息额外可用的会话工具（附件读写）。run() 不装配。 */
+  sessionTools?: readonly SessionTool[];
 }
 
 /**
@@ -97,6 +105,7 @@ export function createAgentFromDef(
   const base = `ai:${def.id}`;
   const actor = options.nodeId ? `${base}@${options.nodeId}` : base;
   const system = `${def.systemPrompt.trim()}\n\n${buildSystemPrompt(ws, options.memories)}`;
+  const sessionTools = options.sessionTools ?? [];
 
   return {
     actor,
@@ -114,9 +123,13 @@ export function createAgentFromDef(
       streamAgent(userText, {
         provider,
         system,
-        // 会话通道附加 ui.ask（分流：编排层拦截挂起，不进工具总线）
-        tools: [...tools, UI_ASK_TOOL],
-        invoke: (toolId, args) => ws.tools.invoke(toolId, args, actor),
+        // 会话通道附加 ui.ask（分流：编排层拦截挂起，不进工具总线）和本轮附件工具
+        tools: [...tools, UI_ASK_TOOL, ...sessionTools.map((tool) => tool.meta)],
+        invoke: (toolId, args) => {
+          const extra = sessionTools.find((tool) => tool.meta.id === toolId);
+          if (extra) return extra.invoke(args, actor);
+          return ws.tools.invoke(toolId, args, actor);
+        },
         maxSteps: options.maxSteps,
         history,
       }),

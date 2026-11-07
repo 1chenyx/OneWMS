@@ -2,13 +2,16 @@ import { useState } from 'react';
 import { EditOutlined, LockOutlined } from '@ant-design/icons';
 import { App as AntApp, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useAdjustInventory, useCreateHold, useHolds, useInventory, useReleaseHold, useSkus } from '../api/hooks';
-import { ApiError } from '../api/client';
+import { useAdjustInventory, useCreateHold, useHolds, useInventory, useProfileSnapshot, useReleaseHold, useSkus } from '../api/hooks';
+import { ApiError, api } from '../api/client';
 import type { InventoryRow } from '../api/client';
+import { isListPage, rowsOf, useListPage } from '../api/page';
+import type { InventoryListPage } from '../api/wms-api';
 import { useAppNav } from '../app-nav';
 import ScanInput from '../components/ScanInput';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { InventorySheetPort } from '../components/sheet-specs';
+import { serverPagination, monoCell, numCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
 
 /**
@@ -23,24 +26,37 @@ import { fmtQty } from '../lib/format';
 export default function InventoryPage() {
   const { message } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
-  const { data: rows, isLoading } = useInventory();
+  const [keyword, setKeyword] = useState(() => takeInitialFilter()?.skuCode ?? '');
+  const [lowOnly, setLowOnly] = useState(false);
+  const kw = keyword.trim();
+  const list = useListPage(`${kw}|${lowOnly ? 1 : 0}`);
+  const { data, isLoading } = useInventory({
+    q: kw || undefined,
+    lowOnly,
+    limit: list.limit,
+    offset: list.offset,
+  });
+  const payload = data as InventoryRow[] | InventoryListPage | undefined;
+  const loaded = rowsOf(payload);
+  const snapshot = useProfileSnapshot();
   const { data: skus } = useSkus();
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [preset, setPreset] = useState<InventoryRow | null>(null);
   const [holdRow, setHoldRow] = useState<InventoryRow | null>(null);
-  const [keyword, setKeyword] = useState(() => takeInitialFilter()?.skuCode ?? '');
-  const [lowOnly, setLowOnly] = useState(false);
 
   /** 低库存判定（M20）：安全库存 > 0 且可用量 < 阈值（与 wms.inventory.lowstock 工具同一口径） */
   const isLow = (r: InventoryRow) => r.reorderPoint > 0 && r.available < r.reorderPoint;
 
-  const kw = keyword.trim().toLowerCase();
-  const visibleRows = (kw
-    ? (rows ?? []).filter(
-        (r) => r.skuCode.toLowerCase().includes(kw) || r.name.toLowerCase().includes(kw),
-      )
-    : (rows ?? [])
-  ).filter((r) => (lowOnly ? isLow(r) : true));
+  // 测试桩返回整表。服务端分页时 q / lowOnly 已经过滤过。
+  const visibleRows = isListPage(payload)
+    ? loaded
+    : loaded
+        .filter((r) =>
+          kw
+            ? r.skuCode.toLowerCase().includes(kw.toLowerCase()) || r.name.toLowerCase().includes(kw.toLowerCase())
+            : true,
+        )
+        .filter((r) => (lowOnly ? isLow(r) : true));
 
   const openAdjust = (row: InventoryRow | null) => {
     setPreset(row);
@@ -54,11 +70,25 @@ export default function InventoryPage() {
       message.warning(`没有条码/编码为 ${code} 的 SKU`);
       return;
     }
-    const row =
-      (rows ?? []).find((r) => r.skuCode === sku.skuCode) ??
-      ({ skuId: sku.id, skuCode: sku.skuCode, name: sku.name, quantity: 0 } as InventoryRow);
-    openAdjust(row);
+    const blank = { skuId: sku.id, skuCode: sku.skuCode, name: sku.name, quantity: 0 } as InventoryRow;
+    const found = loaded.find((r) => r.skuCode === sku.skuCode);
+    if (found || !isListPage(payload)) {
+      openAdjust(found ?? blank);
+      return;
+    }
+    // 当前页没有这行时按编码再要一页，避免把别的页上的余量看成 0。
+    void api
+      .inventory({ skuCode: sku.skuCode, limit: 1, offset: 0 })
+      .then((page) => {
+        openAdjust(page.rows[0] ?? blank);
+      })
+      .catch((e: unknown) => message.error(e instanceof Error ? e.message : String(e)));
   };
+
+  const reservationOn = snapshot.data?.modules['module.reservation']?.enabled === true;
+  const showReserved =
+    reservationOn ||
+    (isListPage(payload) ? payload.hasReserved : loaded.some((r) => (r.reserved ?? 0) > 0));
 
   const columns: ColumnsType<InventoryRow> = [
     { title: '编码', dataIndex: 'skuCode', key: 'skuCode', onCell: monoCell },
@@ -82,6 +112,24 @@ export default function InventoryPage() {
       render: (v: number, r) =>
         v > 0 ? <Typography.Text type="warning">{fmtQty(v, r.unit)}</Typography.Text> : <Typography.Text type="secondary">-</Typography.Text>,
     },
+    ...(showReserved
+      ? [
+          {
+            title: '预占',
+            dataIndex: 'reserved',
+            key: 'reserved',
+            align: 'right' as const,
+            onCell: numCell,
+            sorter: (a: InventoryRow, b: InventoryRow) => (a.reserved ?? 0) - (b.reserved ?? 0),
+            render: (v: number | undefined, r: InventoryRow) =>
+              (v ?? 0) > 0 ? (
+                <Typography.Text type="warning">{fmtQty(v ?? 0, r.unit)}</Typography.Text>
+              ) : (
+                <Typography.Text type="secondary">-</Typography.Text>
+              ),
+          },
+        ]
+      : []),
     {
       title: '可用量',
       dataIndex: 'available',
@@ -142,6 +190,7 @@ export default function InventoryPage() {
             <Checkbox checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)}>
               只看低库存
             </Checkbox>
+            <InventorySheetPort reservationOn={reservationOn} />
             <Button type="primary" icon={<EditOutlined />} onClick={() => openAdjust(null)}>
               库存调整
             </Button>
@@ -154,7 +203,11 @@ export default function InventoryPage() {
           columns={columns}
           dataSource={visibleRows}
           loading={isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={serverPagination({
+            current: list.page,
+            total: isListPage(payload) ? payload.total : visibleRows.length,
+            onChange: list.setPage,
+          })}
           locale={{ emptyText: '还没有库存流水（录入期初或调整后出现）' }}
         />
         <AdjustModal open={adjustOpen} preset={preset} onClose={() => setAdjustOpen(false)} />

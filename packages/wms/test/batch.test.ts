@@ -21,7 +21,7 @@ import {
  *  - 出库批次守卫：指定批次他桶不救；不指定只扣 DEFAULT（真批次不动）
  *  - 单据行批次：入库行声明批次/效期、四段行键多行、收货效期冲突 fail-fast
  *  - 移库按批次；query 批次下钻；临期查询（阈值/daysLeft/排除无效期桶）
- *  - replay 重建一致；老库收敛（M10 结构 → 整组 DROP 重建 → DEFAULT 批次）；
+ *  - replay 重建一致；老库收敛（M10 结构 → 只重建库存流水和汇总 → DEFAULT 批次）；
  *    混合版本（M10 形态事件 → 投影兜底）
  */
 
@@ -441,7 +441,7 @@ describe('追账与老库收敛', () => {
     expect(ws.inventory.ledgerOf(skuIdOf('A-1'))).toHaveLength(3); // adjust + move 两条
   });
 
-  it('老库收敛：M10 结构文件库重开 → 投影整组重建，老流水落 DEFAULT 批次', async () => {
+  it('老库收敛：M10 结构文件库重开 → 只重建库存，老流水落 DEFAULT 批次', async () => {
     const file = join(tmpdir(), `onewms-m11-conv-${randomUUID()}.db`);
     try {
       // ① 用当前代码在文件库跑出 M10 时代的业务事实（事件进 oplog）
@@ -458,11 +458,15 @@ describe('追账与老库收敛', () => {
       // ② 裸 SQL 模拟 M10 表结构：ledger 去掉批次列（= 迁移检测的特征列）
       {
         const db = new Database(file);
-        db.exec('ALTER TABLE wms_inventory_ledger DROP COLUMN batch_no');
+        db.exec(`
+          ALTER TABLE wms_inventory_ledger DROP COLUMN batch_no;
+          INSERT INTO wms_inventory_hold (id, workspace_id, sku_id, quantity, reason, created_at)
+          SELECT 'sentinel-hold', workspace_id, id, 1, '哨兵', created_at FROM wms_sku LIMIT 1;
+        `);
         db.close();
       }
-      // ③ 重开：migrateWms 检测列缺失 → 六张投影整组 DROP → sync() 全量重建；
-      //    老事件批次维度收敛 DEFAULT 批次；单据行/库位同样重建
+      // ③ 重开：缺 batch_no → 只丢流水和汇总。老事件批次收敛 DEFAULT。
+      //    库位来自事件，会留下来；没事件的冻结行也必须还在。
       {
         const core2 = OneCore.open(file);
         const d2 = WmsDomain.attach(core2);
@@ -472,6 +476,8 @@ describe('追账与老库收敛', () => {
         expect(w2.inventory.quantityOf(skuId, locId, 'DEFAULT')).toBe(10);
         expect(w2.inventory.quantityOf(skuId, DEFAULT_LOCATION_ID, 'DEFAULT')).toBe(5);
         expect(w2.inventory.ledgerOf(skuId).every((l) => l.batchNo === 'DEFAULT')).toBe(true);
+        expect(w2.locations.byCode('A-01')).toBeDefined();
+        expect(w2.inventory.listHolds().some((h) => h.id === 'sentinel-hold')).toBe(true);
         // 新批次工具在收敛后的库上照常可用
         await w2.tools.invoke('wms.inventory.adjust', {
           skuCode: 'A-1',

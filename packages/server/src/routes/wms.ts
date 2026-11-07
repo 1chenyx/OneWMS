@@ -9,8 +9,11 @@ import {
   getStocktakeDetail,
   listHoldRows,
   listInventorySummary,
+  listInventorySummaryPage,
   listLedger,
+  getReturnable,
   listOrdersWithLines,
+  listOrdersWithLinesPage,
   listPickingsWithLines,
   listStocktakes,
   PickingNotFoundError,
@@ -19,6 +22,26 @@ import {
 } from '@one/wms';
 import type { OrderDirection } from '@one/wms';
 import type { AppContext } from '../context.js';
+import { BadQueryError } from '../errors.js';
+
+/** 界面清单分页上限，与单据查询工具的 limit 上限一致。不传 limit 时仍返回整表数组。 */
+const LIST_PAGE_MAX = 200;
+
+function readListPage(
+  limitRaw: string | undefined,
+  offsetRaw: string | undefined,
+): { limit: number; offset: number } | undefined {
+  if (limitRaw === undefined || limitRaw === '') return undefined;
+  const limit = Number(limitRaw);
+  const offset = offsetRaw === undefined || offsetRaw === '' ? 0 : Number(offsetRaw);
+  if (!Number.isInteger(limit) || limit < 1 || limit > LIST_PAGE_MAX) {
+    throw new BadQueryError(`limit 须为 1 到 ${LIST_PAGE_MAX} 的整数`);
+  }
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new BadQueryError('offset 须为不小于 0 的整数');
+  }
+  return { limit, offset };
+}
 
 export type { ExpiryBatchRow, ExpiryLevel, OrderWithLines } from '@one/wms';
 
@@ -45,13 +68,15 @@ export function wmsRoutes(ctx: AppContext): Hono {
       const barcode = c.req.query('barcode');
       const q = c.req.query('q');
       const includeArchived = c.req.query('includeArchived') === '1';
-      return c.json(
-        ctx.ws.skus.listMatching({
-          barcode: barcode || undefined,
-          q: q || undefined,
-          includeArchived: includeArchived || Boolean(barcode),
-        }),
-      );
+      const matched = {
+        barcode: barcode || undefined,
+        q: q || undefined,
+        includeArchived: includeArchived || Boolean(barcode),
+      };
+      const page = readListPage(c.req.query('limit'), c.req.query('offset'));
+      if (!page) return c.json(ctx.ws.skus.listMatching(matched));
+      const { rows, total } = ctx.ws.skus.listMatchingPage({ ...matched, ...page });
+      return c.json({ total, ...page, hasMore: page.offset + rows.length < total, rows });
     })
     .post('/skus', async (c) => {
       const body = await c.req.json();
@@ -90,7 +115,11 @@ export function wmsRoutes(ctx: AppContext): Hono {
       const kind = c.req.query('kind');
       const q = c.req.query('q');
       const kindFilter = kind === 'supplier' || kind === 'customer' ? kind : undefined;
-      return c.json(ctx.ws.partners.listMatching({ kind: kindFilter, q: q || undefined }));
+      const matched = { kind: kindFilter, q: q || undefined };
+      const page = readListPage(c.req.query('limit'), c.req.query('offset'));
+      if (!page) return c.json(ctx.ws.partners.listMatching(matched));
+      const { rows, total } = ctx.ws.partners.listMatchingPage({ ...matched, ...page });
+      return c.json({ total, ...page, hasMore: page.offset + rows.length < total, rows });
     })
     .post('/partners', async (c) => {
       const body = await c.req.json();
@@ -161,8 +190,17 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/orders', (c) => {
       const q = c.req.query('direction');
       const direction = q === 'in' || q === 'out' ? (q as OrderDirection) : undefined;
-      return c.json(listOrdersWithLines(ctx.ws, direction));
+      const page = readListPage(c.req.query('limit'), c.req.query('offset'));
+      if (!page) return c.json(listOrdersWithLines(ctx.ws, direction));
+      return c.json(
+        listOrdersWithLinesPage(ctx.ws, {
+          direction,
+          q: c.req.query('q') || undefined,
+          ...page,
+        }),
+      );
     })
+    .get('/orders/:orderNo/returnable', (c) => c.json(getReturnable(ctx.ws, c.req.param('orderNo'))))
     .post('/orders', async (c) => {
       const body = await c.req.json();
       return c.json(await ctx.ws.tools.invoke('wms.order.create', body, actorOf(ctx)), 201);
@@ -214,9 +252,20 @@ export function wmsRoutes(ctx: AppContext): Hono {
       return c.json(result);
     })
     // ── 库存 ────────────────────────────────────────────
-    .get('/inventory', (c) => c.json(listInventorySummary(ctx.ws)))
+    .get('/inventory', (c) => {
+      const page = readListPage(c.req.query('limit'), c.req.query('offset'));
+      if (!page) return c.json(listInventorySummary(ctx.ws));
+      return c.json(
+        listInventorySummaryPage(ctx.ws, {
+          ...page,
+          q: c.req.query('q') || undefined,
+          skuCode: c.req.query('skuCode') || undefined,
+          lowOnly: c.req.query('lowOnly') === '1',
+        }),
+      );
+    })
     /**
-     * 库存分桶明细（SKU×库位×批次）——CSV 导出用：汇总行看不出东西放在哪、
+     * 库存分桶明细（SKU×库位×批次）——Excel 导出用：汇总行看不出东西放在哪、
      * 哪一批快过期，导账必须到桶粒度。零余量的桶滤掉（已清空的桶没有导出价值）。
      */
     .get('/inventory/buckets', (c) => {
@@ -229,7 +278,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
           return {
             skuCode: sku?.skuCode ?? '(未知)',
             name: sku?.name ?? '',
-            unit: sku?.unit ?? null, // A3：CSV 导出带单位
+            unit: sku?.unit ?? null, // A3：导出带单位
             locationCode: loc?.locationCode ?? r.locationId,
             batchNo: r.batchNo,
             batchExpiryDate: r.batchExpiryDate,
@@ -272,15 +321,11 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/inventory/expiry', (c) => c.json(getExpiryBoard(ctx.ws)))
     // ── 库位（M10 实体；GET 是 M17 盘点范围勾选的数据源）──
     .get('/locations', (c) => {
-      const q = c.req.query('q');
-      let rows = ctx.ws.locations.list();
-      if (q) {
-        const kw = q.toLowerCase();
-        rows = rows.filter(
-          (l) => l.locationCode.toLowerCase().includes(kw) || l.name.toLowerCase().includes(kw),
-        );
-      }
-      return c.json(rows);
+      const q = c.req.query('q') || undefined;
+      const page = readListPage(c.req.query('limit'), c.req.query('offset'));
+      if (!page) return c.json(ctx.ws.locations.list(q));
+      const { rows, total } = ctx.ws.locations.listPage({ q, ...page });
+      return c.json({ total, ...page, hasMore: page.offset + rows.length < total, rows });
     })
     .post('/locations', async (c) => {
       const body = await c.req.json();

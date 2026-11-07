@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState } fro
 import type { ReactNode } from 'react';
 import { App as AntApp } from 'antd';
 import { ApiError, answerChatAsk, streamChatMessage } from '../api/client';
-import type { ChatInvocation, ChatStreamEvent } from '../api/client';
+import type { ChatAttachmentChip, ChatAttachmentPayload, ChatInvocation, ChatStreamEvent } from '../api/client';
 
 /**
  * AI 会话壳（M12：SSE 流式 + 会话化；M16：多助手切换）：
@@ -20,6 +20,8 @@ import type { ChatInvocation, ChatStreamEvent } from '../api/client';
 /** 一轮对话的展示单元：用户消息 → 工具卡片们（流式落卡/回填）→ 助手回复 */
 export interface ChatTurn {
   userText: string;
+  /** 这一轮带上的文件摘要（整表在服务端会话里，气泡只留文件名和行数） */
+  attachments?: ChatAttachmentChip[];
   invocations: ChatInvocation[];
   assistantText: string;
   failed?: string;
@@ -35,7 +37,7 @@ interface ChatSessionValue {
   agentId: string;
   /** 切换助手：换新会话 + 清空历史（每条消息由 server 按定义现场装配） */
   setAgentId(agentId: string): void;
-  send(text: string): Promise<void>;
+  send(text: string, attachments?: ChatAttachmentPayload[]): Promise<void>;
   /** 回答挂起中的 ui.ask（answer 传 null 表示跳过） */
   answerAsk(callId: string, answer: string | null): Promise<void>;
 }
@@ -104,20 +106,38 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachments?: ChatAttachmentPayload[]) => {
       const trimmed = text.trim();
-      if (!trimmed || streamingRef.current) return;
+      const files = attachments && attachments.length > 0 ? attachments : undefined;
+      if ((!trimmed && !files) || streamingRef.current) return;
       streamingRef.current = true;
       setIsStreaming(true);
       setTurns((prev) => [
         ...prev,
-        { userText: trimmed, invocations: [], assistantText: '', done: false },
+        {
+          userText: trimmed,
+          attachments: files?.map((file) => ({
+            id: file.id,
+            name: file.name,
+            kind: file.kind,
+            rows: file.kind === 'table' ? file.rows.length : undefined,
+          })),
+          invocations: [],
+          assistantText: '',
+          done: false,
+        },
       ]);
 
       try {
-        await streamChatMessage(sessionIdRef.current, trimmed, agentIdRef.current, (ev) => {
-          setTurns((prev) => applyEvent(prev, ev));
-        });
+        await streamChatMessage(
+          sessionIdRef.current,
+          trimmed,
+          agentIdRef.current,
+          (ev) => {
+            setTurns((prev) => applyEvent(prev, ev));
+          },
+          files,
+        );
       } catch (e) {
         const errMsg =
           e instanceof ApiError && e.code === 'AI_NOT_CONFIGURED'
