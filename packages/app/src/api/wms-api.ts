@@ -48,12 +48,28 @@ export interface Order {
   returnOfOrderNo?: string | null;
   /** 预计到货日。有值表示这张入库单是到货预报 */
   expectedAt?: string | null;
+  /** 补货单。true = 按安全库存缺口开出的入库单 */
+  replenishment?: boolean;
   createdAt: string;
   updatedAt: string;
   lines: OrderLine[];
 }
 
 /** GET /api/orders/:orderNo/returnable */
+/** GET /api/replenishment */
+export interface ReplenishmentSuggestion {
+  skuCode: string;
+  name: string;
+  unit: string | null;
+  total: number;
+  held: number;
+  reserved: number;
+  available: number;
+  reorderPoint: number;
+  inboundOpen: number;
+  suggestedQty: number;
+}
+
 export interface ReturnableLine {
   skuCode: string;
   name: string;
@@ -552,6 +568,13 @@ export const wmsApi = {
   dashboardLocations: () => request<LocationDistribution[]>('/api/dashboard/locations'),
   dashboardOrders: () => request<OrderStateCount[]>('/api/dashboard/orders'),
   dashboardAlerts: () => request<AlertSummary>('/api/dashboard/alerts'),
+  /** 补货建议。模块关闭时 400。空数组表示现在没有缺口。 */
+  replenishment: () => request<ReplenishmentSuggestion[]>('/api/replenishment'),
+  createReplenishment: (body: { skuCodes?: string[]; partnerCode?: string; note?: string; orderNo?: string }) =>
+    request<{ orderId: string; orderNo: string; state: string; lines: { skuCode: string; quantity: number }[] }>(
+      '/api/replenishment',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
   /** 原单还能退多少。模块关闭、原单未入账、或原单本身是退货单时 400。 */
   orderReturnable: (orderNo: string) =>
     request<ReturnableView>(`/api/orders/${encodeURIComponent(orderNo)}/returnable`),

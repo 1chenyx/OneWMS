@@ -961,3 +961,37 @@ describe('到货预报端点（module.asn）', () => {
     expect(((await rejected.json()) as { code: string }).code).toBe('WMS_ASN_DIRECTION');
   });
 });
+
+describe('补货端点（module.replenish）', () => {
+  it('按缺口开入库单；再建议不再包含该 SKU；再开是空的', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝', reorderPoint: 10 });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 4 });
+    const created = await post(app, '/api/replenishment', {});
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as {
+      state: string;
+      orderNo: string;
+      lines: { skuCode: string; quantity: number }[];
+    };
+    expect(body.state).toBe('created');
+    expect(body.lines).toEqual([{ skuCode: 'A-1', quantity: 6 }]);
+
+    const orders = (await (await app.request('/api/orders')).json()) as {
+      orderNo: string;
+      state: string;
+      replenishment: boolean;
+    }[];
+    expect(orders.find((order) => order.orderNo === body.orderNo)).toMatchObject({
+      state: 'created',
+      replenishment: true,
+    });
+
+    const suggestions = (await (await app.request('/api/replenishment')).json()) as { skuCode: string }[];
+    expect(suggestions.find((row) => row.skuCode === 'A-1')).toBeUndefined();
+
+    const again = await post(app, '/api/replenishment', {});
+    expect(again.status).toBe(400);
+    expect(((await again.json()) as { code: string }).code).toBe('WMS_REPLENISH_EMPTY');
+  });
+});

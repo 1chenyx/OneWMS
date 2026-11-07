@@ -58,6 +58,7 @@ export type {
   LocationDistribution,
   Order,
   OrderLine,
+  ReplenishmentSuggestion,
   ReturnableLine,
   ReturnableView,
   OrderStateCount,

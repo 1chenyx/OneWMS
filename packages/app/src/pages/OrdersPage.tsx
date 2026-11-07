@@ -160,7 +160,12 @@ export default function OrdersPage() {
         if (r.returnOfOrderNo) {
           return v === 'in' ? <Tag color="cyan">客退</Tag> : <Tag color="gold">退供</Tag>;
         }
-        return v === 'in' ? <Tag color="blue">入库</Tag> : <Tag color="orange">出库</Tag>;
+        return (
+          <span>
+            {v === 'in' ? <Tag color="blue">入库</Tag> : <Tag color="orange">出库</Tag>}
+            {r.replenishment ? <Tag color="purple">补货</Tag> : null}
+          </span>
+        );
       },
     },
     {
