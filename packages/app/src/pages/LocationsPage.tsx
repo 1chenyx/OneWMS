@@ -28,7 +28,7 @@ import { monoCell, serverPagination } from '../components/table-style';
 const fmtTime = (v: string) => v.slice(0, 19).replace('T', ' ');
 
 const SPLIT_STYLE = `
-.loc-split { display: flex; flex: 1; min-height: 520px; align-items: stretch; }
+.loc-split { display: flex; flex: 1; min-height: 0; align-items: stretch; }
 .loc-parents {
   width: 280px;
   flex: none;
@@ -436,7 +436,19 @@ export default function LocationsPage() {
   } as CSSProperties;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div
+      className="app-fill"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 16,
+        flex: 1,
+        height: '100%',
+        maxHeight: '100%',
+        minHeight: 0,
+        overflow: 'hidden',
+      }}
+    >
       <PageHeader
         title="库位管理"
         subtitle={
@@ -476,8 +488,8 @@ export default function LocationsPage() {
         </Card>
       ) : warehouseOn && parent ? (
         <Card
-          style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-          styles={{ body: { flex: 1, minHeight: 0, padding: 0, display: 'flex', flexDirection: 'column' } }}
+          style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+          styles={{ body: { flex: 1, minHeight: 0, overflow: 'hidden', padding: 0, display: 'flex', flexDirection: 'column' } }}
         >
           <style>{SPLIT_STYLE}</style>
           <div className="loc-split" style={splitVars}>
@@ -576,7 +588,7 @@ export default function LocationsPage() {
           {locationModals}
         </Card>
       ) : (
-        <Card>
+        <Card style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             {locationTable}
             <Typography.Text type="secondary">

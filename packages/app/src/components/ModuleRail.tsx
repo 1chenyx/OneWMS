@@ -34,6 +34,8 @@ export default function ModuleRail() {
       style={{
         flex: '0 0 84px',
         width: 84,
+        minHeight: 0,
+        overflowY: 'auto',
         background: '#fff',
         borderRight: `1px solid ${token.colorBorderSecondary}`,
         display: 'flex',

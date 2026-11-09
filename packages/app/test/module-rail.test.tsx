@@ -56,9 +56,14 @@ describe('应用壳：导航在左，主区在右', () => {
       </ConfigProvider>,
     );
 
-    const shell = document.querySelector('.ant-layout') as HTMLElement;
+    const shell = document.querySelector('.app-shell') as HTMLElement;
     expect(shell.style.flexDirection).toBe('row');
+    expect(shell.style.height).toBe('100%');
+    expect(shell.style.overflow).toBe('hidden');
     expect(shell.querySelector('nav')?.nextElementSibling?.classList.contains('ant-layout')).toBe(true);
+    const page = shell.querySelector('.app-page') as HTMLElement;
+    expect(page.style.overflow).toBe('auto');
+    expect((page.parentElement as HTMLElement).style.overflow).toBe('hidden');
   });
 });
 

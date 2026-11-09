@@ -48,8 +48,11 @@ const PAGE_STYLE = `
   flex-direction: column;
   gap: 16px;
   flex: 1;
-  min-height: 0;
   width: 100%;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 .ai-config-split {
   display: grid;
@@ -149,9 +152,15 @@ const PAGE_STYLE = `
   margin-top: 8px;
 }
 @media (max-width: 1100px) {
+  .app-page > .ai-config-page.app-fill,
+  .ai-config-page {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
   .ai-config-split {
     grid-template-columns: 1fr;
-    overflow: auto;
+    overflow: visible;
   }
   .ai-config-pane.ant-card,
   .ai-config-pane > .ant-card-body,
@@ -341,7 +350,7 @@ export default function AiConfigPage() {
   const envOnly = status?.source === 'env' && profiles.length === 0 && status.config !== undefined;
 
   return (
-    <div className="ai-config-page">
+    <div className="ai-config-page app-fill">
       <style>{PAGE_STYLE}</style>
       <PageHeader
         title="AI 模型"

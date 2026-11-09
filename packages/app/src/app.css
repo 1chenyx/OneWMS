@@ -1,0 +1,41 @@
+/* 窗口本身不滚动。侧栏和顶栏固定，滚动发生在主区或页内分区。 */
+html,
+body,
+#root,
+.ant-app {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+}
+
+.app-page {
+  overscroll-behavior: contain;
+}
+
+/* 对话、助手、模型配置、库位：铺满主区，滚动交给页内列表 */
+.app-page > .app-fill {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media print {
+  html,
+  body,
+  #root,
+  .ant-app,
+  .ant-layout,
+  .ant-layout-content,
+  .app-content,
+  .app-page,
+  .app-page > .app-fill {
+    height: auto !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+}

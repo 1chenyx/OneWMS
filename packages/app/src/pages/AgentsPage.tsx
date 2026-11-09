@@ -62,7 +62,8 @@ const PAGE_STYLE = `
   flex-direction: column;
   gap: 12px;
   width: 100%;
-  height: calc(100vh - 96px);
+  height: 100%;
+  max-height: 100%;
   min-height: 0;
   overflow: hidden;
 }
@@ -617,7 +618,7 @@ export default function AgentsPage() {
 
   if (loadError) {
     return (
-      <div className="agents-page">
+      <div className="agents-page app-fill">
         <style>{PAGE_STYLE}</style>
         {header(
           <>
@@ -636,7 +637,7 @@ export default function AgentsPage() {
 
   if (drafts === null) {
     return (
-      <div className="agents-page">
+      <div className="agents-page app-fill">
         <style>{PAGE_STYLE}</style>
         {header()}
         <Card loading />
@@ -655,7 +656,7 @@ export default function AgentsPage() {
   const area = areaId ? (buckets.find((bucket) => bucket.id === areaId) ?? null) : null;
 
   return (
-    <div className="agents-page">
+    <div className="agents-page app-fill">
       <style>{PAGE_STYLE}</style>
       {header(
         <>

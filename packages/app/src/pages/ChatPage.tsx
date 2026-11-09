@@ -216,6 +216,7 @@ export default function ChatPage() {
 
   return (
     <div
+      className="app-fill"
       style={{
         width: '100%',
         maxWidth: 860,
@@ -224,7 +225,10 @@ export default function ChatPage() {
         flexDirection: 'column',
         gap: 16,
         flex: 1,
+        height: '100%',
+        maxHeight: '100%',
         minHeight: 0,
+        overflow: 'hidden',
       }}
     >
       <PageHeader title="AI 对话" subtitle="自然语言出入库 / 改配置" />
@@ -256,10 +260,10 @@ export default function ChatPage() {
         ) : null}
       </Modal>
       <Card
-        style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
-        styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 } }}
+        style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}
+        styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } }}
       >
-        <div ref={listRef} style={{ flex: 1, overflowY: 'auto', paddingRight: 8 }}>
+        <div ref={listRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 8 }}>
           {chat.turns.length === 0 ? (
             <Typography.Paragraph type="secondary" style={{ padding: 24 }}>
               试试说：「建一个 SKU：A-1001 轴承」「A-1001 入库 50 个」。

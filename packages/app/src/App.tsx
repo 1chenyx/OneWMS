@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react';
 import { Layout } from 'antd';
+import './app.css';
 import SkusPage from './pages/SkusPage';
 import LocationsPage from './pages/LocationsPage';
 import PartnersPage from './pages/PartnersPage';
@@ -81,14 +82,27 @@ function AppShell() {
   return (
     // antd Layout 只有内部有 Sider 时才横向排。左侧是自定义 rail，
     // 不写 row 的话导航会叠在主区上面。
-    <Layout style={{ minHeight: '100vh', flexDirection: 'row' }}>
+    // 高度锁在视口里：列表、详情、对话都在主区里滚，不能把整个窗口撑开。
+    <Layout className="app-shell" style={{ height: '100%', overflow: 'hidden', flexDirection: 'row' }}>
       <ModuleRail />
-      <Layout style={{ flex: 1, minWidth: 0 }}>
+      <Layout style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
         <Topbar />
-        <Layout.Content style={{ padding: 16, display: 'flex', flexDirection: 'column' }}>
+        <Layout.Content
+          className="app-content"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: 'hidden',
+            padding: 16,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
           {/* ChatProvider 在页面壳级：AI 对话状态跨页存活（切页不丢） */}
           <ChatProvider>
-            <ActivePage />
+            <div className="app-page" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              <ActivePage />
+            </div>
           </ChatProvider>
         </Layout.Content>
       </Layout>
