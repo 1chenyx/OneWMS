@@ -32,6 +32,7 @@ export type Page =
   | 'memory'
   | 'ai-config'
   | 'flows'
+  | 'rules'
   | 'modules'
   | 'settings';
 

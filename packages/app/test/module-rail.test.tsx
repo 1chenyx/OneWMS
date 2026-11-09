@@ -128,6 +128,7 @@ describe('ModuleRail：悬停浮出功能网格', () => {
     renderRail();
     await user.click(screen.getByRole('button', { name: '系统' }));
     expect(screen.getByText('流程')).toBeInTheDocument();
+    expect(screen.getByText('规则')).toBeInTheDocument();
     expect(screen.getByText('模块')).toBeInTheDocument();
     expect(screen.getByText('设置')).toBeInTheDocument();
     await user.click(screen.getByText('流程'));
@@ -135,5 +136,8 @@ describe('ModuleRail：悬停浮出功能网格', () => {
     await user.click(screen.getByRole('button', { name: '系统' }));
     await user.click(screen.getByText('模块'));
     expect(screen.getByTestId('page').textContent).toBe('modules');
+    await user.click(screen.getByRole('button', { name: '系统' }));
+    await user.click(screen.getByText('规则'));
+    expect(screen.getByTestId('page').textContent).toBe('rules');
   });
 });

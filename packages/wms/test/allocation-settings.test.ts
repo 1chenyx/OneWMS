@@ -12,7 +12,7 @@ import {
  * 分配策略设置配置化 + 过期出库拦截（M13）：
  *  - 种子：settings 两键（defaultAllocation / blockExpiredOutbound）从 manifest
  *    default 落进 modules 段；老库（无种子）/ 脏值 → 工具层兜底代码缺省；
- *  - 优先级：order.create 单参数 allocation > settings.defaultAllocation >
+ *  - 出库怎么扣只看 settings.defaultAllocation，单据上传 allocation 会被拒绝；
  *    代码缺省 strict；全局策略对入库单无感（不分配不报错）；
  *  - 拦截语义：blockExpiredOutbound 开启后单据出库（picking 预检 + shipped
  *    扣减）拒效期早于今日的批次（今天到期 = 临期可出）、fifo/fefo 分配跳过
@@ -63,12 +63,10 @@ async function seed(batchNo: string, quantity: number, expiry?: string): Promise
 /** 建出库单，返回单号 */
 async function createOut(
   lines: { skuCode: string; quantity: number; batchNo?: string }[],
-  allocation?: 'strict' | 'fifo' | 'fefo',
 ): Promise<string> {
   const r = (await ws.tools.invoke('wms.order.create', {
     direction: 'out',
     lines,
-    ...(allocation ? { allocation } : {}),
   })) as { orderNo: string };
   return r.orderNo;
 }
@@ -138,23 +136,38 @@ describe('全局缺省分配策略（M13）', () => {
     expect(orderLines(orderNo)).toEqual([['B-2', 20], ['B-1', 5]]);
   });
 
-  it('参数 strict 覆盖全局 fefo：严格桶不分配（未指定行 = DEFAULT）', async () => {
+  it('单据上的 allocation、batchConstraint、locationConstraint 不能压过仓库规则', async () => {
     setSettings([
       { op: 'replace', path: '/modules/core.wms/settings/defaultAllocation', value: 'fefo' },
     ]);
     await seed('B-1', 30, dateOffset(60));
-    const orderNo = await createOut([{ skuCode: 'A-1', quantity: 5 }], 'strict');
-    expect(orderLines(orderNo)).toEqual([['DEFAULT', 5]]);
-  });
-
-  it('参数 fifo 覆盖全局 fefo：按 fifo 序拆行（首笔时间优先，不看效期）', async () => {
-    setSettings([
-      { op: 'replace', path: '/modules/core.wms/settings/defaultAllocation', value: 'fefo' },
-    ]);
-    await seed('B-1', 30, dateOffset(60)); // fifo 首桶（首笔时间在前）
     await seed('B-2', 20, dateOffset(30));
-    const orderNo = await createOut([{ skuCode: 'A-1', quantity: 25 }], 'fifo');
-    expect(orderLines(orderNo)).toEqual([['B-1', 25]]);
+    await expect(
+      ws.tools.invoke('wms.order.create', {
+        direction: 'out',
+        lines: [{ skuCode: 'A-1', quantity: 5 }],
+        allocation: 'strict',
+      }),
+    ).rejects.toThrow(/仓库统一规则/);
+    await expect(
+      ws.tools.invoke('wms.order.create', {
+        direction: 'out',
+        lines: [{ skuCode: 'A-1', quantity: 5 }],
+        batchConstraint: 'lock',
+      }),
+    ).rejects.toThrow(/仓库统一规则/);
+    await expect(
+      ws.tools.invoke('wms.order.create', {
+        direction: 'out',
+        lines: [{ skuCode: 'A-1', quantity: 5 }],
+        locationConstraint: 'lock',
+      }),
+    ).rejects.toThrow(/仓库统一规则/);
+    const orderNo = await createOut([{ skuCode: 'A-1', quantity: 25 }]);
+    expect(orderLines(orderNo)).toEqual([
+      ['B-2', 20],
+      ['B-1', 5],
+    ]);
   });
 
   it('全局策略对入库单无感：全局 fifo 时建入库单成功且行原样（不分配不报错）', async () => {
@@ -175,7 +188,7 @@ describe('全局缺省分配策略（M13）', () => {
         lines: [{ skuCode: 'A-1', quantity: 5 }],
         allocation: 'strict',
       }),
-    ).rejects.toThrow(/allocation 只适用于出库单/);
+    ).rejects.toThrow(/仓库统一规则/);
   });
 
   it('慢通道改值即时生效：种子 strict 建单不分配 → 改 fifo 后下一单即按 fifo 拆行', async () => {
@@ -224,10 +237,11 @@ describe('过期出库拦截（M13）', () => {
   it('分配跳过过期桶：fefo 序里更早到期的过期货被跳过，未过期桶扣满', async () => {
     setSettings([
       { op: 'replace', path: '/modules/core.wms/settings/blockExpiredOutbound', value: true },
+      { op: 'replace', path: '/modules/core.wms/settings/defaultAllocation', value: 'fefo' },
     ]);
     await seed('B-OLD', 10, dateOffset(-1)); // fefo 序首位，但已过期
     await seed('B-OK', 8, dateOffset(10));
-    const orderNo = await createOut([{ skuCode: 'A-1', quantity: 6 }], 'fefo');
+    const orderNo = await createOut([{ skuCode: 'A-1', quantity: 6 }]);
     expect(orderLines(orderNo)).toEqual([['B-OK', 6]]); // 全从 B-OK 扣
     await ws.tools.invoke('wms.order.transition', { orderNo, to: 'picking' });
     await ws.tools.invoke('wms.order.transition', { orderNo, to: 'shipped' });
@@ -238,6 +252,7 @@ describe('过期出库拦截（M13）', () => {
   it('可用桶全被过滤后凑不齐 → AllocationInsufficientError（不是 ExpiredBatchError）', async () => {
     setSettings([
       { op: 'replace', path: '/modules/core.wms/settings/blockExpiredOutbound', value: true },
+      { op: 'replace', path: '/modules/core.wms/settings/defaultAllocation', value: 'fefo' },
     ]);
     await seed('B-OLD', 10, dateOffset(-1));
     const before = countEvents();
@@ -245,7 +260,6 @@ describe('过期出库拦截（M13）', () => {
       ws.tools.invoke('wms.order.create', {
         direction: 'out',
         lines: [{ skuCode: 'A-1', quantity: 5 }],
-        allocation: 'fefo',
       }),
     ).rejects.toThrow(AllocationInsufficientError);
     expect(countEvents()).toBe(before);

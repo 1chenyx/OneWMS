@@ -22,6 +22,7 @@ import {
   ReconciliationOutlined,
   RobotOutlined,
   SettingOutlined,
+  SlidersOutlined,
   TagsOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
@@ -56,7 +57,7 @@ export interface NavCategory {
  * 两级导航配置（左侧 rail 只放大类，悬停后浮窗列出该类下的功能）。
  * 分组原则：看板 = 只读分析视图（运营/效期，后续报表往这里挂）；作业 = 高频
  * 日常运营（出入库/库存/盘点）；档案 = 基础主数据（SKU，后续供应商/客户/库位
- * 等往这里挂）；智能助手 = AI 的使用与配置（对话/助手/记忆/模型）；系统 = 流程、模块、
+ * 等往这里挂）；智能助手 = AI 的使用与配置（对话/助手/记忆/模型）；系统 = 流程、规则、模块、
  * 应用设置。
  * 新增功能：页面 key 加进 Page 联合类型 → 往对应大类 items 里加一项 →
  * App.tsx 的 PAGE_COMPONENTS 登记组件。
@@ -114,10 +115,11 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
   {
     key: 'sys',
     label: '系统',
-    description: '收发流程、仓库能力与应用设置',
+    description: '收发流程、出库规则、仓库能力与应用设置',
     icon: ControlOutlined,
     items: [
       { page: 'flows', label: '流程', icon: ApartmentOutlined },
+      { page: 'rules', label: '规则', icon: SlidersOutlined },
       { page: 'modules', label: '模块', icon: ClusterOutlined },
       { page: 'settings', label: '设置', icon: SettingOutlined },
     ],

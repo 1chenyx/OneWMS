@@ -674,12 +674,6 @@ export const wmsApi = {
     asn?: boolean;
     /** 预计到货日 YYYY-MM-DD，仅和 asn 一起用 */
     expectedAt?: string;
-    /** 这张出库单怎么扣。不传则用仓库缺省 */
-    allocation?: 'strict' | 'fifo' | 'fefo';
-    /** 写了的批次能不能换。建议不传，锁定才传 */
-    batchConstraint?: 'prefer' | 'lock';
-    /** 写了的库位能不能换。建议不传，锁定才传 */
-    locationConstraint?: 'prefer' | 'lock';
     note?: string;
   }) =>
     request<{ orderId: string; orderNo: string; state: string }>('/api/orders', {

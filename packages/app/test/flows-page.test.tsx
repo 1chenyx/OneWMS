@@ -115,11 +115,7 @@ describe('流程页', () => {
     expect(screen.queryByRole('switch', { name: '序列号' })).not.toBeInTheDocument();
     expect(screen.queryByText('仓储基础')).not.toBeInTheDocument();
     expect(screen.queryByText('退货')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '出库规则' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /严格桶/ })).toBeChecked();
-    expect(screen.getByRole('switch', { name: '过期批次不能出' })).not.toBeChecked();
-    expect(screen.getByRole('radio', { name: /指定批次可以换/ })).toBeChecked();
-    expect(screen.getByRole('radio', { name: /指定库位可以换/ })).toBeChecked();
+    expect(screen.queryByRole('heading', { name: '出库规则' })).not.toBeInTheDocument();
   });
 
   it('关掉预报后箭头从建单绕到收货，生效后才提交', async () => {
@@ -204,70 +200,5 @@ describe('流程页', () => {
     expect(chartNodes('inbound').find((node) => node.label === '预报')?.active).toBe('true');
     expect(document.querySelector('[data-from="建单"][data-to="收货"]')).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: '确认这次修改' })).not.toBeInTheDocument();
-  });
-
-  it('出库规则改的是仓库设置，确认后才提交', async () => {
-    harness.proposeMock.mockResolvedValue({
-      proposalId: 'p-rule',
-      pendingConfirm: true,
-      hint: '',
-      report: { summary: '共 1 项变更', items: [] },
-    });
-    harness.confirmMock.mockResolvedValue({ newVersion: 15, appliedOps: 1 });
-    const user = userEvent.setup();
-    render(wrap(<FlowsPage />));
-
-    await user.click(screen.getByRole('radio', { name: /先进先出/ }));
-    expect(harness.proposeMock).toHaveBeenCalledWith({
-      patch: [{ op: 'replace', path: '/modules/core.wms/settings/defaultAllocation', value: 'fifo' }],
-      note: '流程：出库改为先进先出',
-    });
-    const bar = await screen.findByRole('region', { name: '确认这次修改' });
-    expect(bar).toHaveTextContent('批次怎么扣改为先进先出');
-    expect(bar).toHaveTextContent('已经开出的单还是原来的批次');
-    expect(screen.getByRole('radio', { name: /先进先出/ })).toBeChecked();
-    expect(screen.getByRole('switch', { name: /^拣货$/ })).toBeDisabled();
-
-    await applyReady();
-    await user.click(screen.getByRole('button', { name: '生效' }));
-    expect(harness.confirmMock).toHaveBeenCalledWith({ id: 'p-rule' });
-    expect(await screen.findByText(/已生效（v15）/)).toBeInTheDocument();
-  });
-
-  it('过期批次开关提议 blockExpiredOutbound', async () => {
-    harness.proposeMock.mockResolvedValue({
-      proposalId: 'p-exp',
-      pendingConfirm: true,
-      hint: '',
-      report: { summary: '共 1 项变更', items: [] },
-    });
-    const user = userEvent.setup();
-    render(wrap(<FlowsPage />));
-
-    await user.click(screen.getByRole('switch', { name: '过期批次不能出' }));
-    expect(harness.proposeMock).toHaveBeenCalledWith({
-      patch: [{ op: 'replace', path: '/modules/core.wms/settings/blockExpiredOutbound', value: true }],
-      note: '流程：打开过期批次拦截',
-    });
-    expect(await screen.findByRole('region', { name: '确认这次修改' })).toHaveTextContent('打开过期拦截');
-    expect(screen.getByRole('switch', { name: '过期批次不能出' })).toBeChecked();
-  });
-
-  it('指定批次能不能换也是仓库设置', async () => {
-    harness.proposeMock.mockResolvedValue({
-      proposalId: 'p-lock',
-      pendingConfirm: true,
-      hint: '',
-      report: { summary: '共 1 项变更', items: [] },
-    });
-    const user = userEvent.setup();
-    render(wrap(<FlowsPage />));
-
-    await user.click(screen.getByRole('radio', { name: /指定批次不能换/ }));
-    expect(harness.proposeMock).toHaveBeenCalledWith({
-      patch: [{ op: 'replace', path: '/modules/core.wms/settings/specifiedBatchConstraint', value: 'lock' }],
-      note: '流程：指定批次改为不能换',
-    });
-    expect(await screen.findByRole('region', { name: '确认这次修改' })).toHaveTextContent('写了批次的行改为不能换');
   });
 });

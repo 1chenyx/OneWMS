@@ -108,9 +108,9 @@ export function buildSystemPrompt(ws: WmsWorkspace, memory?: AgentMemoryContext)
       `- 库位：${locations.length} 个（${locations.map((l) => l.locationCode).join('、')}）；另有默认库位 DEFAULT 收容未指定库位的库存。分库位余量用库存查询工具获取`,
     );
   }
-  // 批次上下文：仓库设置是缺省。出库单上的 allocation、batchConstraint、locationConstraint 优先，并写在单据上。
+  // 批次上下文：怎么扣、能不能换都是整仓规则。用户在规则页改，助手用 profile.propose。不要写在出库单上。
   lines.push(
-    `- 批次：库存按 SKU×库位×批次分桶，未指定批次的库存归虚拟批次 DEFAULT。入库可声明批次与效期（YYYY-MM-DD）。出库行写了批次就只扣该批次；没写批次的行按 allocation 或仓库规则扣。临期/过期批次用临期查询工具（wms.inventory.expiring）获取。批次怎么扣的仓库缺省是 core.wms 设置 defaultAllocation（strict 严格桶 / fifo 先进先出 / fefo 先到期先出）。出库单可以传 allocation，本参数优先。过期批次能不能出是 blockExpiredOutbound。写了批次或库位之后能不能换，仓库缺省是 specifiedBatchConstraint、specifiedLocationConstraint（prefer 可以换 / lock 不能换）。出库单可以传 batchConstraint、locationConstraint 覆盖，并写在这张单上。没填的批次和库位不受这两项限制。退货单批次锁定，不要传 allocation，也不要传 batchConstraint=prefer。入库单不要传 allocation 和这两个约束。改仓库缺省用 profile.propose，确认后生效`,
+    `- 批次：库存按 SKU×库位×批次分桶，未指定批次的库存归虚拟批次 DEFAULT。入库可声明批次与效期（YYYY-MM-DD）。出库行写了批次就只扣该批次；没写批次的行按仓库规则扣。临期/过期批次用临期查询工具（wms.inventory.expiring）获取。批次怎么扣（defaultAllocation：strict 严格桶 / fifo 先进先出 / fefo 先到期先出）和过期批次能不能出（blockExpiredOutbound）是整仓规则，在 core.wms 设置里，用户在系统的规则页配置。要改就用 profile.propose 改 /modules/core.wms/settings/defaultAllocation 或 /modules/core.wms/settings/blockExpiredOutbound，确认后生效。写了批次或库位之后能不能换（specifiedBatchConstraint、specifiedLocationConstraint，prefer 可以换 / lock 不能换）也是整仓规则，同样用 profile.propose 改对应设置。不要在 wms.order.create 上传 allocation、batchConstraint 或 locationConstraint`,
   );
 
   if (rows.length > 0) {

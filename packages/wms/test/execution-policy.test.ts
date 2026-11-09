@@ -17,7 +17,7 @@ import {
 
 /**
  * 承诺、建议、实绩。
- * 没填的批次和库位是不限。写了的缺省建议，单据可以改成锁定。
+ * 没填的批次和库位是不限。写了的能不能换是仓库规则，不写在单据上。
  * 退货和序列号锁定批次。上架只搬库位。没点过的行不能靠关单短发。
  */
 
@@ -71,16 +71,12 @@ async function outbound(input: {
   quantity: number;
   locationCode?: string;
   batchNo?: string;
-  batchConstraint?: 'prefer' | 'lock';
-  locationConstraint?: 'prefer' | 'lock';
   returnOf?: string;
 }): Promise<void> {
   await ws.tools.invoke('wms.order.create', {
     direction: 'out',
     orderNo: input.orderNo,
     ...(input.returnOf ? { returnOf: input.returnOf } : {}),
-    ...(input.batchConstraint ? { batchConstraint: input.batchConstraint } : {}),
-    ...(input.locationConstraint ? { locationConstraint: input.locationConstraint } : {}),
     lines: [
       {
         skuCode: 'A-1',
@@ -103,7 +99,7 @@ describe('拣货改桶', () => {
     await putStock('A-01', 'B-PLAN', 4);
     await putStock('A-01', 'B-ACT', 4);
     await outbound({ orderNo: 'OUT-1', quantity: 4, locationCode: 'A-01', batchNo: 'B-PLAN' });
-    expect(ws.orders.byNo('OUT-1')!.batchConstraint).toBe('prefer');
+    expect(ws.orders.byNo('OUT-1')!.batchConstraint).toBeNull();
     const pickingNo = await openPicking('OUT-1');
     await ws.tools.invoke('wms.picking.pick', {
       pickingNo,
@@ -136,14 +132,14 @@ describe('拣货改桶', () => {
   it('批次锁定拒绝改拣，事件数不变', async () => {
     await putStock('A-01', 'B-1', 4);
     await putStock('A-01', 'B-2', 4);
+    setPath('/modules/core.wms/settings/specifiedBatchConstraint', 'lock');
     await outbound({
       orderNo: 'OUT-1',
       quantity: 4,
       locationCode: 'A-01',
       batchNo: 'B-1',
-      batchConstraint: 'lock',
     });
-    expect(ws.orders.byNo('OUT-1')!.batchConstraint).toBe('lock');
+    expect(ws.orders.byNo('OUT-1')!.batchConstraint).toBeNull();
     const pickingNo = await openPicking('OUT-1');
     const before = countEvents();
     await expect(
@@ -162,7 +158,8 @@ describe('拣货改桶', () => {
   it('没填批次时，即使单据锁定，改拣仍然允许', async () => {
     await putStock('A-01', 'DEFAULT', 4);
     await putStock('A-01', 'B-2', 4);
-    await outbound({ orderNo: 'OUT-1', quantity: 4, locationCode: 'A-01', batchConstraint: 'lock' });
+    setPath('/modules/core.wms/settings/specifiedBatchConstraint', 'lock');
+    await outbound({ orderNo: 'OUT-1', quantity: 4, locationCode: 'A-01' });
     const pickingNo = await openPicking('OUT-1');
     await ws.tools.invoke('wms.picking.pick', {
       pickingNo,
@@ -178,12 +175,12 @@ describe('拣货改桶', () => {
     await putStock('A-01', 'B-1', 4);
     await putStock('DEFAULT', 'B-1', 4);
     await putStock('B-02', 'B-1', 4);
+    setPath('/modules/core.wms/settings/specifiedLocationConstraint', 'lock');
     await outbound({
       orderNo: 'OUT-LOCK',
       quantity: 4,
       locationCode: 'A-01',
       batchNo: 'B-1',
-      locationConstraint: 'lock',
     });
     const locked = await openPicking('OUT-LOCK');
     const before = countEvents();
@@ -199,7 +196,7 @@ describe('拣货改桶', () => {
     ).rejects.toThrow(PickingSubstitutionError);
     expect(countEvents()).toBe(before);
 
-    await outbound({ orderNo: 'OUT-OPEN', quantity: 4, batchNo: 'B-1', locationConstraint: 'lock' });
+    await outbound({ orderNo: 'OUT-OPEN', quantity: 4, batchNo: 'B-1' });
     const open = await openPicking('OUT-OPEN');
     await ws.tools.invoke('wms.picking.pick', {
       pickingNo: open,

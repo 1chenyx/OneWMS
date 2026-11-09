@@ -7,7 +7,7 @@ import OrdersPage from '../src/pages/OrdersPage';
 import { AppNavProvider } from '../src/app-nav';
 
 /**
- * 新建出入库单是整页，不是弹窗。扫码写入明细。出库可以另选怎么扣。
+ * 新建出入库单是整页，不是弹窗。扫码写入明细。出库规则只提示，不在这张单上选。
  */
 
 const createMock = vi.fn();
@@ -162,12 +162,20 @@ describe('新建出入库单', () => {
     expect(screen.getByRole('heading', { name: '入库单' })).toBeInTheDocument();
   });
 
-  it('出库选商品就能看到每一桶，用这桶后再按先进先出保存', async () => {
+  it('出库选商品就能看到每一桶，只提示仓库规则，保存时不带怎么扣', async () => {
     const user = userEvent.setup();
     render(wrap(<OrdersPage direction="out" />));
     await user.click(screen.getByRole('button', { name: /新建单据/ }));
 
     expect(screen.getByRole('heading', { name: '新建出库单' })).toBeInTheDocument();
+    expect(screen.getByText(/在系统的规则页配置/)).toBeInTheDocument();
+    expect(screen.getByText(/当前是严格桶/)).toBeInTheDocument();
+    expect(screen.getByText(/写了批次的行可以换/)).toBeInTheDocument();
+    expect(screen.getByText(/写了库位的行可以换/)).toBeInTheDocument();
+    expect(screen.getByText(/过期批次不能出/)).toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: /先进先出/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('指定过的批次')).not.toBeInTheDocument();
+    expect(screen.queryByText('指定过的库位')).not.toBeInTheDocument();
     await user.type(screen.getByPlaceholderText(/扫条码或编码/), '6901234567892{Enter}');
     expect(await screen.findByText('螺丝')).toBeInTheDocument();
     expect(screen.getAllByText(/可用 25 个/).length).toBeGreaterThan(0);
@@ -178,13 +186,11 @@ describe('新建出入库单', () => {
     const bucketRow = screen.getByText('A-01').closest('tr');
     expect(bucketRow).not.toBeNull();
     await user.click(within(bucketRow as HTMLElement).getByRole('button', { name: '用这桶' }));
-    await user.click(screen.getByRole('radio', { name: /先进先出/ }));
     await user.click(screen.getByRole('button', { name: '保存单据' }));
 
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
     expect(createMock).toHaveBeenCalledWith({
       direction: 'out',
-      allocation: 'fifo',
       lines: [{ skuCode: 'A-1', quantity: 1, locationCode: 'A-01', batchNo: 'B-9' }],
     });
   });

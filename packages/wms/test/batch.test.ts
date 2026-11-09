@@ -65,6 +65,15 @@ function dateOffset(days: number): string {
   return new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
 }
 
+function setAllocation(value: 'strict' | 'fifo' | 'fefo'): void {
+  const { proposalId } = ws.profile.propose(
+    'user:tester',
+    [{ op: 'replace', path: '/modules/core.wms/settings/defaultAllocation', value }],
+    '测试分配策略',
+  );
+  ws.profile.confirm(proposalId, 'user:tester');
+}
+
 async function createOrder(
   direction: 'in' | 'out',
   lines: { skuCode: string; quantity: number; locationCode?: string; batchNo?: string; batchExpiryDate?: string }[],
@@ -534,10 +543,10 @@ describe('批次分配策略（M12）', () => {
 
   it('fifo：按批次首笔时间序拆行扣减（跨桶凑数，事件行已是具体批次）', async () => {
     await seedThreeBatches();
+    setAllocation('fifo');
     const r = (await ws.tools.invoke('wms.order.create', {
       direction: 'out',
       lines: [{ skuCode: 'A-1', quantity: 40 }],
-      allocation: 'fifo',
     })) as { orderNo: string };
 
     // 建单即拆行：B-1 全扣 30 + B-2 补 10；事件 payload 行带具体批次（M11 形态同构）
@@ -554,10 +563,10 @@ describe('批次分配策略（M12）', () => {
 
   it('fefo：按效期升序扣减（近效期先出）', async () => {
     await seedThreeBatches();
+    setAllocation('fefo');
     const r = (await ws.tools.invoke('wms.order.create', {
       direction: 'out',
       lines: [{ skuCode: 'A-1', quantity: 35 }],
-      allocation: 'fefo',
     })) as { orderNo: string };
 
     // fefo 序：B-2（30 天）→ B-1（60 天）；B-2 全扣 20 + B-1 补 15
@@ -569,10 +578,10 @@ describe('批次分配策略（M12）', () => {
     // 两个纯无期桶：B-3 先入、DEFAULT 后入（同毫秒并列按字典序 B-3 < DEFAULT，恰与造数序一致）
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 10, batchNo: 'B-3' });
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 7 });
+    setAllocation('fefo');
     const r = (await ws.tools.invoke('wms.order.create', {
       direction: 'out',
       lines: [{ skuCode: 'A-1', quantity: 12 }],
-      allocation: 'fefo',
     })) as { orderNo: string };
 
     const lines = ws.orders.lines(ws.orders.byNo(r.orderNo)!.id);
@@ -599,13 +608,13 @@ describe('批次分配策略（M12）', () => {
 
   it('显式指定批次的行不参与分配（显式优先）', async () => {
     await seedThreeBatches();
+    setAllocation('fifo');
     const r = (await ws.tools.invoke('wms.order.create', {
       direction: 'out',
       lines: [
         { skuCode: 'A-1', quantity: 5, batchNo: 'B-3' }, // 显式：原样保留
         { skuCode: 'A-1', quantity: 8 }, // 未指定：fifo 分配到首桶 B-1
       ],
-      allocation: 'fifo',
     })) as { orderNo: string };
     const lines = ws.orders.lines(ws.orders.byNo(r.orderNo)!.id);
     expect(lines.map((l) => [l.batchNo, l.quantity])).toEqual([['B-3', 5], ['B-1', 8]]);
@@ -613,12 +622,12 @@ describe('批次分配策略（M12）', () => {
 
   it('各批次合计不足 → AllocationInsufficientError，零事件零单', async () => {
     await seedThreeBatches(); // 合计 60
+    setAllocation('fifo');
     const before = countEvents();
     await expect(
       ws.tools.invoke('wms.order.create', {
         direction: 'out',
         lines: [{ skuCode: 'A-1', quantity: 100 }],
-        allocation: 'fifo',
       }),
     ).rejects.toThrow(AllocationInsufficientError);
     expect(countEvents()).toBe(before);
@@ -627,6 +636,7 @@ describe('批次分配策略（M12）', () => {
 
   it('分配行与手动行同键 → 四段查重拒绝（请合并数量）', async () => {
     await seedThreeBatches();
+    setAllocation('fifo');
     await expect(
       ws.tools.invoke('wms.order.create', {
         direction: 'out',
@@ -634,22 +644,21 @@ describe('批次分配策略（M12）', () => {
           { skuCode: 'A-1', quantity: 5, batchNo: 'B-1' }, // 手动 B-1
           { skuCode: 'A-1', quantity: 8 }, // 分配也选中 B-1（fifo 首桶）
         ],
-        allocation: 'fifo',
       }),
     ).rejects.toThrow(/重复/);
   });
 
-  it('入库单 + allocation → 拒（入库批次是声明不是分配）', async () => {
+  it('单据上带 allocation 会被拒绝，入库出库一样', async () => {
     await expect(
       ws.tools.invoke('wms.order.create', {
         direction: 'in',
         lines: [{ skuCode: 'A-1', quantity: 5, batchNo: 'B-9' }],
         allocation: 'fifo',
       }),
-    ).rejects.toThrow(/allocation 只适用于出库单/);
+    ).rejects.toThrow(/仓库统一规则/);
   });
 
-  it('非法策略值 → schema 校验拒绝（enum 白名单）', async () => {
+  it('单据上的非法策略值同样拒绝', async () => {
     await expect(
       ws.tools.invoke('wms.order.create', {
         direction: 'out',
@@ -661,10 +670,10 @@ describe('批次分配策略（M12）', () => {
 
   it('分配单全流程：picking 预检 → shipped 逐批次扣减 → replay 重建一致', async () => {
     await seedThreeBatches();
+    setAllocation('fifo');
     const r = (await ws.tools.invoke('wms.order.create', {
       direction: 'out',
       lines: [{ skuCode: 'A-1', quantity: 45 }],
-      allocation: 'fifo', // B-1:30 + B-2:15
     })) as { orderNo: string };
     await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'picking' });
     expect(qty('A-1', DEFAULT_LOCATION_ID, 'B-1')).toBe(30); // 预检不动账

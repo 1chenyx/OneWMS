@@ -5,7 +5,7 @@ import type { ProposeResponse } from '../api/profile-api';
 import { useConfirmProposal, useProposeProfile, useRejectProposal } from '../api/hooks';
 
 /**
- * 流程页上的出库规则。和模块开关一样先提议，确认后才写入。
+ * 规则页上的出库规则。和模块开关一样先提议，确认后才写入。
  * 改的是 core.wms 设置，和助手走同一条慢通道。
  */
 
@@ -92,7 +92,7 @@ export function useOutboundRules() {
     try {
       const result = await propose.mutateAsync({
         patch: [{ op: 'replace', path, value }],
-        note: `流程：${note}`,
+        note: `规则：${note}`,
       });
       if (reviewGen.current !== gen) {
         rejectRef.current(result.proposalId);

@@ -90,7 +90,7 @@ export function wmsManifest(toolDefs: ToolDefinition[]): ModuleManifest {
             type: 'string',
             enum: ['strict', 'fifo', 'fefo'],
             description:
-              '全局缺省批次分配策略（仅出库单）：strict=严格桶（不分配，未指定批次只扣 DEFAULT），fifo=先进先出，fefo=先到期先出。order.create 的 allocation 参数优先于本键',
+              '出库批次怎么扣，整仓同一条规则，不在出库单上单独指定。strict=严格桶（不分配，没写批次只扣 DEFAULT），fifo=先进先出，fefo=先到期先出。改这一项走 profile.propose，路径 /modules/core.wms/settings/defaultAllocation，确认后新的出库单才按新规则扣',
             default: 'strict',
           },
           blockExpiredOutbound: {
@@ -135,14 +135,14 @@ export function wmsManifest(toolDefs: ToolDefinition[]): ModuleManifest {
             type: 'string',
             enum: ['prefer', 'lock'],
             description:
-              '出库行写了批次之后的缺省约束。prefer=建议，拣货可以换，库存和退货认换之后的批次；lock=锁定，只能拣这一批。没填批次的行始终不限。出库单可以传 batchConstraint 覆盖本键，并写在单据上。退货单和序列号商品始终锁定',
+              '出库行写了批次之后能不能换，整仓同一条规则，不在出库单上单独指定。prefer=建议，拣货可以换，库存和退货认换之后的批次；lock=锁定，只能拣这一批。没填批次的行始终不限。退货单和序列号商品始终锁定。改这一项走 profile.propose，路径 /modules/core.wms/settings/specifiedBatchConstraint',
             default: 'prefer',
           },
           specifiedLocationConstraint: {
             type: 'string',
             enum: ['prefer', 'lock'],
             description:
-              '出库行写了库位之后的缺省约束。prefer=建议，拣货可以换库位；lock=锁定，只能从这一库位出。没填库位的行始终不限。出库单可以传 locationConstraint 覆盖本键。序列号商品始终锁定库位。退货不锁定库位',
+              '出库行写了库位之后能不能换，整仓同一条规则，不在出库单上单独指定。prefer=建议，拣货可以换库位；lock=锁定，只能从这一库位出。没填库位的行始终不限。序列号商品始终锁定库位。改这一项走 profile.propose，路径 /modules/core.wms/settings/specifiedLocationConstraint',
             default: 'prefer',
           },
           putawayCapacity: {
