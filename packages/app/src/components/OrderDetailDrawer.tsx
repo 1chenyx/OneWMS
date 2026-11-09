@@ -225,7 +225,10 @@ export default function OrderDetailDrawer({
 
           {editing && draft && policy.lines ? (
             <div>
-              {draft.lines.map((line, index) => (
+              {draft.lines.map((line, index) => {
+                const sku = (skus ?? []).find((item) => item.skuCode === line.skuCode);
+                const pinBatch = inbound || Boolean(order.returnOfOrderNo) || (serialOn && sku?.serialTracked === true);
+                return (
                 <div key={index} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
                   <Select
                     showSearch
@@ -233,10 +236,15 @@ export default function OrderDetailDrawer({
                     placeholder="SKU"
                     style={{ width: 220 }}
                     value={line.skuCode || undefined}
-                    onChange={(value) => updateLine(setDraft, index, { skuCode: value })}
-                    options={(skus ?? []).map((sku) => ({
-                      value: sku.skuCode,
-                      label: `${sku.skuCode} · ${sku.name}`,
+                    onChange={(value) =>
+                      updateLine(setDraft, index, {
+                        skuCode: value,
+                        ...(!inbound && !order.returnOfOrderNo ? { batchNo: '' } : {}),
+                      })
+                    }
+                    options={(skus ?? []).map((item) => ({
+                      value: item.skuCode,
+                      label: `${item.skuCode} · ${item.name}`,
                     }))}
                   />
                   <InputNumber
@@ -253,12 +261,18 @@ export default function OrderDetailDrawer({
                     onChange={(value) => updateLine(setDraft, index, { locationCode: value })}
                     options={locationOptions}
                   />
-                  <Input
-                    placeholder="批次，空 = 默认"
-                    style={{ width: 140 }}
-                    value={line.batchNo}
-                    onChange={(e) => updateLine(setDraft, index, { batchNo: e.target.value })}
-                  />
+                  {pinBatch ? (
+                    <Input
+                      placeholder={inbound ? '批次，空 = 默认' : '批次'}
+                      style={{ width: 140 }}
+                      value={line.batchNo}
+                      onChange={(e) => updateLine(setDraft, index, { batchNo: e.target.value })}
+                    />
+                  ) : (
+                    <Typography.Text type="secondary" style={{ width: 140 }}>
+                      {line.batchNo || '默认批次'}
+                    </Typography.Text>
+                  )}
                   {inbound ? (
                     <Input
                       placeholder="效期 YYYY-MM-DD"
@@ -287,7 +301,8 @@ export default function OrderDetailDrawer({
                     />
                   ) : null}
                 </div>
-              ))}
+                );
+              })}
               <Button
                 type="dashed"
                 icon={<PlusOutlined />}

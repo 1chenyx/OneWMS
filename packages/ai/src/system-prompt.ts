@@ -108,11 +108,9 @@ export function buildSystemPrompt(ws: WmsWorkspace, memory?: AgentMemoryContext)
       `- 库位：${locations.length} 个（${locations.map((l) => l.locationCode).join('、')}）；另有默认库位 DEFAULT 收容未指定库位的库存。分库位余量用库存查询工具获取`,
     );
   }
-  // 批次上下文（M11）：效期管理引导——临期可见性用临期查询工具；
-  // M12 补充：出库单可用 allocation 批次分配策略；M13 补充：全局缺省策略与
-  // 过期出库拦截是 core.wms 模块设置（settings），改值走慢通道提案
+  // 批次上下文：仓库设置是缺省。出库单上的 allocation、batchConstraint、locationConstraint 优先，并写在单据上。
   lines.push(
-    `- 批次：库存按 SKU×库位×批次分桶，未指定批次的库存归虚拟批次 DEFAULT。入库可声明批次与效期（YYYY-MM-DD），出库可指定批次扣减（不指定只扣 DEFAULT 批次）。临期/过期批次用临期查询工具（wms.inventory.expiring）获取。出库单创建时可传 allocation 策略（strict 严格桶 / fifo 先进先出 / fefo 先到期先出），未指定批次的行按策略在行库位内自动分配批次；全局缺省策略（defaultAllocation）与过期批次出库拦截（blockExpiredOutbound）是 core.wms 模块设置，修改走配置慢通道（propose → confirm）`,
+    `- 批次：库存按 SKU×库位×批次分桶，未指定批次的库存归虚拟批次 DEFAULT。入库可声明批次与效期（YYYY-MM-DD）。出库行写了批次就只扣该批次；没写批次的行按 allocation 或仓库规则扣。临期/过期批次用临期查询工具（wms.inventory.expiring）获取。批次怎么扣的仓库缺省是 core.wms 设置 defaultAllocation（strict 严格桶 / fifo 先进先出 / fefo 先到期先出）。出库单可以传 allocation，本参数优先。过期批次能不能出是 blockExpiredOutbound。写了批次或库位之后能不能换，仓库缺省是 specifiedBatchConstraint、specifiedLocationConstraint（prefer 可以换 / lock 不能换）。出库单可以传 batchConstraint、locationConstraint 覆盖，并写在这张单上。没填的批次和库位不受这两项限制。退货单批次锁定，不要传 allocation，也不要传 batchConstraint=prefer。入库单不要传 allocation 和这两个约束。改仓库缺省用 profile.propose，确认后生效`,
   );
 
   if (rows.length > 0) {

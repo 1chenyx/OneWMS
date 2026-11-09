@@ -19,6 +19,7 @@ import {
   resolveLocation,
 } from '../state/inventory-policy.js';
 import { assertLooseEnough } from '../state/lpn-policy.js';
+import { bucketReservationNotice } from '../state/reservation.js';
 import { appendSerialPlans, planQuantitySerials, rejectSerialKeyWhenOff } from '../state/serial-policy.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
@@ -124,12 +125,15 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
       if (serialPlans.length > 0) ws.runAtomic(writeAdjust);
       else writeAdjust();
       ws.sync();
+      const warning =
+        delta < 0 ? bucketReservationNotice(ws, sku.id, loc.locationId, batch.batchNo) : undefined;
       return {
         skuId: sku.id,
         skuCode: sku.skuCode,
         locationCode: loc.locationCode,
         batchNo: batch.batchNo,
         quantity: ws.inventory.quantityOf(sku.id, loc.locationId, batch.batchNo),
+        ...(warning ? { warning } : {}),
       };
     },
   };
@@ -230,6 +234,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         appendSerialPlans(ctx, serialPlans);
       });
       ws.sync();
+      const warning = bucketReservationNotice(ws, sku.id, from.locationId, batch.batchNo);
       return {
         skuCode: sku.skuCode,
         from: from.locationCode,
@@ -238,6 +243,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         quantity,
         fromBalance: ws.inventory.quantityOf(sku.id, from.locationId, batch.batchNo),
         toBalance: ws.inventory.quantityOf(sku.id, to.locationId, batch.batchNo),
+        ...(warning ? { warning } : {}),
       };
     },
   };

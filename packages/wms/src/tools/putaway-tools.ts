@@ -2,13 +2,15 @@ import { evalWhenCondition, type ToolDefinition } from '@one/core';
 import { WMS_EVENT_TYPES } from '../events/catalog.js';
 import {
   OrderNotFoundError,
+  PutawayCapacityError,
   PutawayLineNotFoundError,
   PutawayOnlyInboundError,
   PutawaySourceShortError,
   SkuNotFoundError,
   WorkflowNotFoundError,
 } from '../errors.js';
-import { codeOfLocation, resolveBatch, resolveLocation } from '../state/inventory-policy.js';
+import { readWmsSettings } from '../config/wms-settings.js';
+import { codeOfLocation, QTY_EPS, resolveBatch, resolveLocation } from '../state/inventory-policy.js';
 import { assertLooseEnough } from '../state/lpn-policy.js';
 import { appendSerialPlans, planPutawaySerials } from '../state/serial-policy.js';
 import {
@@ -127,6 +129,26 @@ export function createPutawayTools(resolveWorkspace: WorkspaceResolver): ToolDef
           batchExpiryDate: line.batchExpiryDate ?? ws.inventory.expiryOfBatch(sku.id, batch.batchNo) ?? undefined,
         });
       }
+      const settings = readWmsSettings(ws);
+      const warnings: string[] = [];
+      if (settings.putawayCapacity !== 'off') {
+        const planned = new Map<string, { code: string; qty: number }>();
+        for (const move of moves) {
+          const prev = planned.get(move.toLocationId);
+          if (prev) prev.qty += move.line.quantity;
+          else planned.set(move.toLocationId, { code: move.toLocationCode, qty: move.line.quantity });
+        }
+        for (const [locationId, plan] of planned) {
+          const capacity = ws.locations.byId(locationId)?.capacity;
+          if (capacity == null || capacity <= 0) continue;
+          const onHand = ws.inventory.quantityAtLocation(locationId);
+          if (onHand + plan.qty <= capacity + QTY_EPS) continue;
+          if (settings.putawayCapacity === 'block') {
+            throw new PutawayCapacityError(plan.code, capacity, onHand, plan.qty);
+          }
+          warnings.push(`库位 ${plan.code} 容量 ${capacity}，现在 ${onHand}，再放 ${plan.qty} 放不下`);
+        }
+      }
       const serialPlans = planPutawaySerials(
         ws,
         moves.map((move) => ({
@@ -192,6 +214,7 @@ export function createPutawayTools(resolveWorkspace: WorkspaceResolver): ToolDef
                 quantity: m.line.quantity,
               }))
             : undefined,
+        ...(warnings.length > 0 ? { warning: warnings.join(' ') } : {}),
       };
     },
   };

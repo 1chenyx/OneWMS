@@ -9,6 +9,7 @@ export interface PickingLineWithMeta extends PickingLineRecord {
   unit: string | null;
   suggestedLocationCode: string;
   pickedLocationCode: string | null;
+  allocations: { locationCode: string; batchNo: string; quantity: number }[];
 }
 
 export interface PickingWithLines extends PickingRecord {
@@ -29,6 +30,11 @@ export function withPickingLines(ws: WmsWorkspace, picking: PickingRecord): Pick
       unit: sku?.unit ?? null,
       suggestedLocationCode: locCode(ws, line.suggestedLocationId),
       pickedLocationCode: line.pickedLocationId ? locCode(ws, line.pickedLocationId) : null,
+      allocations: ws.pickings.allocations(line.id).map((row) => ({
+        locationCode: locCode(ws, row.locationId),
+        batchNo: row.batchNo,
+        quantity: row.quantity,
+      })),
     };
   });
   return { ...picking, lines };

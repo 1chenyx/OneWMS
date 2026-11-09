@@ -71,11 +71,6 @@ export function stateLabel(workflow: WorkflowDef, id: string): string {
   return workflow.states.find((state) => state.id === id)?.label || id;
 }
 
-export function storyChanged(change: StoryChange): boolean {
-  if (change.gained.length > 0 || change.lost.length > 0) return true;
-  return change.pathBefore.join('\0') !== change.pathAfter.join('\0');
-}
-
 export function activeEdges(workflow: WorkflowDef, modules: Record<string, ModuleConfig>): ActiveEdge[] {
   return workflow.transitions
     .filter((edge) => evalWhenCondition(edge.when, modules))

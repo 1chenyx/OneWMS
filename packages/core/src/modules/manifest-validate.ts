@@ -10,11 +10,9 @@ import type {
   ManifestFieldProvide,
   ManifestFieldRequire,
   ManifestRecord,
-  ManifestTool,
   ModuleManifest,
 } from './manifest-types.js';
 import { MODULE_CAPABILITIES } from './manifest-types.js';
-import type { FieldSharing } from '../registry/key-naming.js';
 import type { ValidationIssue } from '../profile/validate.js';
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'date', 'json'] as const;

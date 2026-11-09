@@ -244,17 +244,16 @@ describe('module.serial', () => {
     });
     await ws.tools.invoke('wms.order.transition', { orderNo: 'OUT-1', to: 'picking' });
     const picking = (await ws.tools.invoke('wms.picking.create', { orderNos: ['OUT-1'] })) as { pickingNo: string };
-    await ws.tools.invoke('wms.picking.pick', {
-      pickingNo: picking.pickingNo,
-      orderNo: 'OUT-1',
-      skuCode: 'A-1',
-      pickedQty: 2,
-      locationCode: 'B-02',
-    });
     const mismatch = watermark();
-    await expect(ws.tools.invoke('wms.picking.close', { pickingNo: picking.pickingNo })).rejects.toThrow(
-      SerialStockError,
-    );
+    await expect(
+      ws.tools.invoke('wms.picking.pick', {
+        pickingNo: picking.pickingNo,
+        orderNo: 'OUT-1',
+        skuCode: 'A-1',
+        pickedQty: 2,
+        locationCode: 'B-02',
+      }),
+    ).rejects.toThrow(/序列号必须从单据指定的库位批次拣出: A-1/);
     expect(typesAfter(mismatch)).toEqual([]);
 
     await ws.tools.invoke('wms.picking.pick', {

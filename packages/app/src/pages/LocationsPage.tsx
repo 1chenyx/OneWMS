@@ -7,6 +7,7 @@ import {
   Card,
   Form,
   Input,
+  InputNumber,
   Modal,
   Select,
   Space,
@@ -183,7 +184,7 @@ export default function LocationsPage() {
   const update = useUpdateLocation();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Location | null>(null);
-  const [form] = Form.useForm<{ locationCode: string; name?: string; warehouseCode?: string }>();
+  const [form] = Form.useForm<{ locationCode: string; name?: string; warehouseCode?: string; capacity?: number | null }>();
   const [warehouseOpen, setWarehouseOpen] = useState(false);
   const [editingWarehouse, setEditingWarehouse] = useState<Warehouse | null>(null);
   const [warehouseSaving, setWarehouseSaving] = useState(false);
@@ -202,13 +203,15 @@ export default function LocationsPage() {
       locationCode: row.locationCode,
       name: row.name,
       warehouseCode: row.warehouseCode ?? undefined,
+      capacity: typeof row.capacity === 'number' ? row.capacity : undefined,
     });
     setOpen(true);
   };
 
-  const submit = async (values: { locationCode: string; name?: string; warehouseCode?: string }) => {
+  const submit = async (values: { locationCode: string; name?: string; warehouseCode?: string; capacity?: number | null }) => {
     const name = values.name?.trim();
     const warehouseCode = values.warehouseCode?.trim() ?? '';
+    const capacity = typeof values.capacity === 'number' ? values.capacity : null;
     try {
       if (editing) {
         if (!name) {
@@ -217,7 +220,7 @@ export default function LocationsPage() {
         }
         const r = await update.mutateAsync({
           locationCode: editing.locationCode,
-          body: warehouseOn ? { name, warehouseCode } : { name },
+          body: warehouseOn ? { name, warehouseCode, capacity } : { name, capacity },
         });
         message.success(
           warehouseOn ? `库位 ${r.locationCode} 已保存` : `库位 ${r.locationCode} 已更名为「${r.name}」`,
@@ -232,6 +235,7 @@ export default function LocationsPage() {
           locationCode: code,
           name: name || undefined,
           ...(warehouseOn && warehouseCode ? { warehouseCode } : {}),
+          ...(capacity != null ? { capacity } : {}),
         });
         message.success(`库位 ${r.locationCode} 已创建`);
       }
@@ -287,6 +291,12 @@ export default function LocationsPage() {
   const columns: ColumnsType<Location> = [
     { title: '库位编码', dataIndex: 'locationCode', onCell: monoCell },
     { title: '名称', dataIndex: 'name' },
+    {
+      title: '容量',
+      dataIndex: 'capacity',
+      width: 90,
+      render: (value: number | null | undefined) => (typeof value === 'number' ? value : '不限'),
+    },
     {
       title: '创建时间',
       dataIndex: 'createdAt',
@@ -365,6 +375,9 @@ export default function LocationsPage() {
           </Form.Item>
           <Form.Item name="name" label="库位名称" rules={editing ? [{ required: true, message: '请输入名称' }] : []}>
             <Input placeholder={editing ? '如 A 区 01 货架' : '可选，缺省同编码，如 A 区 01 货架'} />
+          </Form.Item>
+          <Form.Item name="capacity" label="容量" extra="不填表示不限。上架是否拦截由仓库的上架库容决定。">
+            <InputNumber min={0.001} style={{ width: '100%' }} placeholder="不填表示不限" />
           </Form.Item>
           {warehouseOn && (
             <Form.Item name="warehouseCode" label="所属仓库" extra="不选就是未分仓。库存仍记在这个库位上。">

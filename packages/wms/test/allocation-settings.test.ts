@@ -94,6 +94,9 @@ describe('设置种子与兜底（M13）', () => {
       inboundIncreaseState: 'received',
       outboundDecreaseState: 'shipped',
       outboundCheckState: 'picking',
+      specifiedBatchConstraint: 'prefer',
+      specifiedLocationConstraint: 'prefer',
+      putawayCapacity: 'off',
     });
   });
 

@@ -15,8 +15,6 @@ export interface SheetTable {
   rows: unknown[][];
 }
 
-const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-
 /** Excel 工作表名：最长 31，且不能含 \ / ? * [ ] : */
 function safeSheetName(name: string): string {
   const cleaned = name.replace(/[\\/?*[\]:]/g, ' ').trim();
@@ -118,5 +116,3 @@ export async function readTableFile(file: File): Promise<string[][]> {
     throw new Error('这个 Excel 打不开，请确认是 .xlsx 工作簿');
   }
 }
-
-export { XLSX_MIME };

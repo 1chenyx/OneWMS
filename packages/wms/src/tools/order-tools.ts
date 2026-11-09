@@ -11,6 +11,7 @@ import {
   OrderAlreadyExistsError,
   OrderNotFoundError,
   OrderReviseRejectedError,
+  PickingStillOpenError,
   PartialNotOnPostError,
   PartnerKindMismatchError,
   PartnerNotFoundError,
@@ -22,7 +23,7 @@ import { expandAllocatedLines } from '../state/batch-allocation.js';
 import { resolveTransitionEffect } from '../state/inventory-effect.js';
 import { assertOnHand, assertOutboundBuckets } from '../state/outbound-guards.js';
 import { resolvePostingMoves, type PostingRequest } from '../state/partial-qty.js';
-import { assertReturnLines } from '../state/return-qty.js';
+import { assertReturnLines, postedBucketsForReturn } from '../state/return-qty.js';
 import { planReservationReleases, planReservations } from '../state/reservation.js';
 import {
   assertExpiryConsistent,
@@ -81,6 +82,11 @@ export function applyOrderTransition(
   const edge = activeTransitions.find((t) => t.from === order.state && t.to === params.to);
   const settings = readWmsSettings(ws);
   const resolved = resolveTransitionEffect(order.direction, params.to, edge?.effect, settings);
+  // 未关拣货单占着这张出库单时，不能再走直接发货。取消和拣货关单不经过这里。
+  if (order.direction === 'out' && resolved.post === 'decrease') {
+    const openPickingNo = ws.pickings.openPickingNoForOrder(order.id);
+    if (openPickingNo) throw new PickingStillOpenError(order.orderNo, openPickingNo);
+  }
   const requests = resolvePartialRequests(ws, params.lines);
   if (!resolved.post && requests.length > 0) throw new PartialNotOnPostError();
 
@@ -246,13 +252,17 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     asn?: boolean;
     /** 预计到货日 YYYY-MM-DD，仅预报单 */
     expectedAt?: string;
-    /** 批次分配策略（M12 起，M13 扩加 strict，仅出库单）：strict=严格桶不分配，fifo=先进先出，fefo=先到期先出 */
+    /** 批次分配策略（仅出库单）。本参数优先于仓库设置 defaultAllocation */
     allocation?: 'strict' | 'fifo' | 'fefo';
+    /** 写了批次的行能不能换。本参数优先于仓库设置，并写在单据上 */
+    batchConstraint?: 'prefer' | 'lock';
+    /** 写了库位的行能不能换。本参数优先于仓库设置，并写在单据上 */
+    locationConstraint?: 'prefer' | 'lock';
   }> = {
     id: 'wms.order.create',
     label: '创建出入库单',
     description:
-      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正数，支持 3 位小数——散装/称重场景，如 0.5 表示半斤）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致），出库行指定批次则只扣该批次（不指定只扣 DEFAULT 批次，其他批次有货不救）。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。出库单可选 allocation 批次分配策略（strict=严格桶不分配 / fifo=先进先出 / fefo=先到期先出）：fifo/fefo 启用后未指定批次的行按策略在行库位内自动拆分为具体批次行（一行可拆多批次），显式指定批次的行不受影响；不传时用全局缺省策略（core.wms 设置 defaultAllocation，缺省 strict），本参数优先。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传则自动生成。module.return 启用时可传 returnOf 原单号：入库单退已发货的出库单（客退，收货时加库存），出库单退已收货的入库单（退供，发货时扣库存）。数量按 SKU 和批次不能超过原单已入账再减去未取消的退货，批次必须是原单上的批次，不走 allocation。不传 returnOf 就是普通出入库。停用后退货参数会被拒绝，已开出的退货单仍可继续流转。module.asn 启用时可传 asn=true 把入库单开成到货预报（状态已预报，可选 expectedAt 预计到货日 YYYY-MM-DD）：收货前不加库存，收到货再转入 received 才加库存，取消预报不动库存。不传 asn 就是直接入库。停用后预报参数会被拒绝，已经预报的单仍可收货或取消。预报不能同时是退货，也不能开出库单。',
+      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正数，支持 3 位小数——散装/称重场景，如 0.5 表示半斤）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致）。出库行写了批次就只扣该批次；没写批次的行按 allocation 或仓库设置扣。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。出库单也可以传 allocation（strict / fifo / fefo），本参数优先于仓库设置 defaultAllocation（strict=严格桶不分配，没写批次只扣 DEFAULT / fifo=先进先出 / fefo=先到期先出，缺省 strict）。不传时用仓库设置。fifo 或 fefo 时，没写批次的行在该行库位内拆成具体批次，一行可拆多批；写了批次的行不参与拆分。退货单不要传 allocation。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传则自动生成。module.return 启用时可传 returnOf 原单号：入库单退已发货的出库单（客退，收货时加库存），出库单退已收货的入库单（退供，发货时扣库存）。数量按 SKU 和批次不能超过原单已入账再减去未取消的退货，批次必须是原单上的批次，不按分配策略拆行。不传 returnOf 就是普通出入库。停用后退货参数会被拒绝，已开出的退货单仍可继续流转。module.asn 启用时可传 asn=true 把入库单开成到货预报（状态已预报，可选 expectedAt 预计到货日 YYYY-MM-DD）：收货前不加库存，收到货再转入 received 才加库存，取消预报不动库存。不传 asn 就是直接入库。停用后预报参数会被拒绝，已经预报的单仍可收货或取消。预报不能同时是退货，也不能开出库单。出库单可以传 batchConstraint 和 locationConstraint（prefer 或 lock），本参数优先于仓库设置，并写在单据上。不传时用仓库设置，缺省 prefer。没填的批次和库位不受这两项限制。退货单批次锁定，传 prefer 会被拒绝。入库单不能传这两个参数。序列号商品的库位和批次始终锁定。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -287,7 +297,20 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         allocation: {
           type: 'string',
           enum: ['strict', 'fifo', 'fefo'],
-          description: '批次分配策略（可选，仅出库单）：strict=严格桶（不分配，未指定批次只扣 DEFAULT），fifo=先进先出（按批次首笔入库时间），fefo=先到期先出（按效期，无期批次最后）；未传时用全局设置 settings.defaultAllocation（缺省 strict），本参数优先',
+          description:
+            '批次分配策略（可选，仅出库单）：strict=严格桶，fifo=先进先出，fefo=先到期先出。未传时用仓库设置 defaultAllocation，本参数优先。退货单不要传。',
+        },
+        batchConstraint: {
+          type: 'string',
+          enum: ['prefer', 'lock'],
+          description:
+            '写了批次的行能不能换（可选，仅出库单）。prefer=建议，lock=锁定。未传时用仓库设置，本参数优先并写在单据上。没填批次的行不受限。退货单不要传 prefer。',
+        },
+        locationConstraint: {
+          type: 'string',
+          enum: ['prefer', 'lock'],
+          description:
+            '写了库位的行能不能换（可选，仅出库单）。prefer=建议，lock=锁定。未传时用仓库设置，本参数优先并写在单据上。没填库位的行不受限。',
         },
       },
       required: ['direction', 'lines'],
@@ -297,10 +320,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
       ws.sync();
       rejectSerialLinesWhenOff(ws, params.lines);
 
-      // 批次分配（M12 起，M13 优先级扩展）：单参数 allocation > 全局设置
-      // settings.defaultAllocation > 代码缺省 strict（readWmsSettings 兜底后恒有值）。
-      // 显式传参 + 入库单 → 拒（批次是声明不是分配）；全局策略对入库单无感
-      // （不分配、不报错）。strict = 不分配（M11 严格桶：未指定批次只扣 DEFAULT）。
+      // 出库单参数优先于仓库设置。退货不分配，批次锁定。入库不接受这两类参数。
       const returnOf = typeof params.returnOf === 'string' ? params.returnOf.trim() : '';
       const expectedAt = typeof params.expectedAt === 'string' ? params.expectedAt.trim() : '';
       const wantsAsn = params.asn === true || expectedAt.length > 0;
@@ -311,13 +331,19 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         if (params.asn !== true) throw new AsnExpectedAtError(expectedAt);
         if (expectedAt) assertExpectedAt(expectedAt);
       }
-      // 退货批次必须是原单上的批次。先于「入库不能 allocation」拦住，两边都是同一错误。
       if (returnOf && params.allocation) throw new ReturnAllocationError();
       if (params.allocation && params.direction !== 'out') {
         throw new Error('TOOL_REJECTED: allocation 只适用于出库单（入库行的批次是声明，不是分配）');
       }
+      const batchConstraint = constraintChoice(params.batchConstraint, 'batchConstraint');
+      const locationConstraint = constraintChoice(params.locationConstraint, 'locationConstraint');
+      if (params.direction !== 'out' && (batchConstraint !== undefined || locationConstraint !== undefined)) {
+        throw new Error('TOOL_REJECTED: 批次和库位约束只适用于出库单');
+      }
+      if (returnOf && batchConstraint === 'prefer') {
+        throw new Error('TOOL_REJECTED: 退货单批次锁定');
+      }
       const settings = readWmsSettings(ws);
-      // 退货按原单批次退，不按策略拆行。
       const effective = returnOf
         ? 'strict'
         : (params.allocation ?? (params.direction === 'out' ? settings.defaultAllocation : 'strict'));
@@ -402,6 +428,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
             batchNo: resolveBatch(line.batchNo, line.batchExpiryDate).batchNo,
             quantity: quantizeQty(line.quantity),
           })),
+          posted: source ? postedOf(ws, source) : undefined,
         });
         returnOfOrderId = source!.id;
       }
@@ -427,6 +454,12 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
           };
         }),
         note: params.note,
+        ...(params.direction === 'out'
+          ? {
+              batchConstraint: returnOf ? ('lock' as const) : (batchConstraint ?? settings.specifiedBatchConstraint),
+              locationConstraint: locationConstraint ?? settings.specifiedLocationConstraint,
+            }
+          : {}),
       });
       ws.sync();
       return { orderId, orderNo, state: wantsAsn ? ('announced' as const) : ('created' as const) };
@@ -441,7 +474,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     id: 'wms.order.transition',
     label: '单据状态转移',
     description:
-      '推进单据状态，并按该转移的库存效应联动库存（按行的库位 + 批次）。未在转移上声明 effect 时：入库进入 received（可用 settings.inboundIncreaseState 改名）按行增加库存；出库进入 picking（outboundCheckState）只预检余量；出库进入 shipped（outboundDecreaseState）按行扣减。转移上的 effect（increase/decrease/check/none）优先于这三键。module.reversal 启用时，已收货可取消并扣回，已发货可取消并加回；停用后这两条转移不可用。module.partial 启用时，会改库存的转移可以带 lines 声明实收/实发（不大于该行订单数量，0 表示这行没到/没发）；不带 lines 按订单数量整单入账。停用 module.partial 后不能改少。已经入账的行，冲销按已入账数量，不能再改。合法目标由当前流程决定。过期批次拦截只作用于出库履约，不拦截入库冲销。拣货关单不走本工具的短发。module.reservation 启用时，出库进入只预检的状态会按行占用可用量，其他出库单不能再拿走；发货或取消时释放。停用后新的拣货不再占用，已有占用仍会在发货或取消时释放。module.picking 启用时，出库从已创建先进入拣货中（只预检）；停用后已创建直接发货（预检并扣减）。已经在拣货中的单仍可发货或取消。',
+      '推进单据状态，并按该转移的库存效应联动库存（按行的库位 + 批次）。未在转移上声明 effect 时：入库进入 received（可用 settings.inboundIncreaseState 改名）按行增加库存；出库进入 picking（outboundCheckState）只预检余量；出库进入 shipped（outboundDecreaseState）按行扣减。转移上的 effect（increase/decrease/check/none）优先于这三键。module.reversal 启用时，已收货可取消并扣回，已发货可取消并加回；停用后这两条转移不可用。module.partial 启用时，会改库存的转移可以带 lines 声明实收/实发（不大于该行订单数量，0 表示这行没到/没发）；不带 lines 按订单数量整单入账。停用 module.partial 后不能改少。已经入账的行，冲销按已入账数量，不能再改。合法目标由当前流程决定。过期批次拦截只作用于出库履约，不拦截入库冲销。拣货关单不走本工具的短发。module.reservation 启用时，出库进入只预检的状态会按行占用可用量，其他出库单不能再拿走；发货或取消时释放。停用后新的拣货不再占用，已有占用仍会在发货或取消时释放。module.picking 启用时，出库从已创建先进入拣货中（只预检）；停用后已创建直接发货（预检并扣减）。已经在拣货中、但还没有拣货单的出库单仍可直接发货或取消。有未关拣货单时，直接发货会被拒绝，要先取消拣货单。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -718,6 +751,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
               batchNo: line.batchNo,
               quantity: line.quantity,
             })),
+            posted: source ? postedOf(ws, source) : undefined,
           });
         }
         payload.lines = resolved;
@@ -730,6 +764,20 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
   };
 
   return [def(orderCreate), def(orderTransition), def(orderRevise), def(orderQuery)];
+}
+
+function constraintChoice(raw: unknown, name: string): 'prefer' | 'lock' | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === 'prefer' || raw === 'lock') return raw;
+  throw new Error(`TOOL_REJECTED: ${name} 只能是 prefer 或 lock`);
+}
+
+/** 原单的实绩额度。没有流水时回退到单据行。 */
+function postedOf(
+  ws: WmsWorkspace,
+  source: { id: string; direction: OrderDirection },
+): Map<string, number> {
+  return postedBucketsForReturn(source.direction, ws.orders.lines(source.id), ws.inventory.movementsByOrder(source.id));
 }
 
 /** 自动单号：IN-20261030-a1b2c3d4（方向 + 日期 + uuid 片段） */

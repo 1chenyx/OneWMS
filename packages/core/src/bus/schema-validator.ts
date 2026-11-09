@@ -14,6 +14,8 @@ export interface ParameterSchema {
 export interface ParameterProperty {
   type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object';
   description?: string;
+  /** true 时允许 JSON null，用来清空可选字段 */
+  nullable?: boolean;
   enum?: (string | number)[];
   minimum?: number;
   maximum?: number;
@@ -46,6 +48,7 @@ export function validateParameters(schema: ParameterSchema, params: unknown): vo
 }
 
 function validateProperty(path: string, prop: ParameterProperty, value: unknown): void {
+  if (value === null && prop.nullable) return;
   const fail = (reason: string) => new ToolValidationError(`参数 ${path} ${reason}`) as never;
 
   switch (prop.type) {

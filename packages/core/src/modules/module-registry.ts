@@ -9,7 +9,7 @@ import {
   ModuleNotFoundError,
   ModuleValidationError,
 } from '../errors.js';
-import type { PatchOp, ProfileSnapshot } from '../profile/profile-types.js';
+import type { PatchOp } from '../profile/profile-types.js';
 import { compareSemver, validateManifest } from './manifest-validate.js';
 import { CORE_VERSION, type InstalledModule, type ModuleLifecyclePayload, type ModuleManifest } from './manifest-types.js';
 

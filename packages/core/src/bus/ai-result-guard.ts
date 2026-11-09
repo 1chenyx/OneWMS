@@ -16,10 +16,6 @@ export const AI_RESULT_MAX_BYTES = 32_768;
 const TRUNCATION_HINT =
   '结果超出 AI 上下文预算已截断，请缩小查询范围（加过滤条件）或使用分页参数翻页查看';
 
-interface FitOutcome {
-  value: unknown;
-}
-
 /** 序列化字节数；不可序列化（BigInt/循环引用等）返回 -1 */
 function byteSize(value: unknown): number {
   try {

@@ -136,6 +136,8 @@ export interface PickingLine {
   /** 实拣桶（null = 未拣 / 用建议桶） */
   pickedLocationCode: string | null;
   pickedBatchNo: string | null;
+  /** 一行拆成多桶时的实绩。没有拆桶时可以不带 */
+  allocations?: { locationCode: string; batchNo: string; quantity: number }[];
 }
 
 // ── 运营看板（M21）：五维度独立类型/端点/queryKey，便于后续扩展新维度 ──
@@ -238,6 +240,8 @@ export interface Location {
   warehouseId?: string | null;
   warehouseCode?: string | null;
   warehouseName?: string | null;
+  /** 库位最多放多少。不填表示不限 */
+  capacity?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -611,6 +615,8 @@ export const wmsApi = {
       pickedQty: number;
       locationCode?: string;
       pickedBatchNo?: string;
+      /** 一行拆成多桶。在场时覆盖这一行，pickedQty 要等于各桶之和 */
+      allocations?: { locationCode?: string; batchNo?: string; quantity: number }[];
     },
   ) =>
     request<{ pickingNo: string; lineId: string; pickedQty: number; remainingToPick: number }>(
@@ -668,8 +674,12 @@ export const wmsApi = {
     asn?: boolean;
     /** 预计到货日 YYYY-MM-DD，仅和 asn 一起用 */
     expectedAt?: string;
-    /** 出库批次分配。不传则用仓库缺省 */
+    /** 这张出库单怎么扣。不传则用仓库缺省 */
     allocation?: 'strict' | 'fifo' | 'fefo';
+    /** 写了的批次能不能换。建议不传，锁定才传 */
+    batchConstraint?: 'prefer' | 'lock';
+    /** 写了的库位能不能换。建议不传，锁定才传 */
+    locationConstraint?: 'prefer' | 'lock';
     note?: string;
   }) =>
     request<{ orderId: string; orderNo: string; state: string }>('/api/orders', {
@@ -758,13 +768,13 @@ export const wmsApi = {
       { method: 'POST' },
     ),
   locations,
-  createLocation: (body: { locationCode: string; name?: string; warehouseCode?: string }) =>
-    request<{ locationId: string; locationCode: string; name: string }>('/api/locations', {
+  createLocation: (body: { locationCode: string; name?: string; warehouseCode?: string; capacity?: number }) =>
+    request<{ locationId: string; locationCode: string; name: string; capacity?: number }>('/api/locations', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  /** 编辑库位：改名；多仓开启时还可以用 warehouseCode 划仓（空字符串表示划出） */
-  updateLocation: (locationCode: string, body: { name?: string; warehouseCode?: string }) =>
+  /** 编辑库位：改名；多仓开启时还可以用 warehouseCode 划仓（空字符串表示划出）。capacity 传 null 清空 */
+  updateLocation: (locationCode: string, body: { name?: string; warehouseCode?: string; capacity?: number | null }) =>
     request<{ locationId: string; locationCode: string; name: string }>(
       `/api/locations/${encodeURIComponent(locationCode)}`,
       { method: 'PUT', body: JSON.stringify(body) },

@@ -88,12 +88,6 @@ export const agentApi = {
     }),
   /** 状态卡：configured/source + 脱敏配置（apiKey 不回传明文） */
   aiConfig: () => request<AiConfigStatus>('/api/ai-config'),
-  /** 保存并热生效（写配置文件 + 重建 provider；响应即新状态） */
-  saveAiConfig: (body: AiConfigInput) =>
-    request<AiConfigStatus>('/api/ai-config', {
-      method: 'PUT',
-      body: JSON.stringify(body),
-    }),
   /** 关闭 AI（删页面配置；启动 env 配置仍在则回落 env） */
   clearAiConfig: () =>
     request<AiConfigStatus>('/api/ai-config', {

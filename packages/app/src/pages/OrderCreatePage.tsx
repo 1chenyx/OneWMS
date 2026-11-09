@@ -20,12 +20,12 @@ import { monoCell, numCell } from '../components/table-style';
 
 /**
  * 新建入库单或出库单。方向由所在页面定死，这一页不再切换。
- * 出库选商品时摊开每一桶的库位、批次、效期和数量。
+ * 出库选商品时摊开每一桶的库位、批次、效期和数量。点「用这桶」填上库位和批次。
+ * 怎么扣、写了的批次和库位能不能换，缺省跟仓库。这张单可以另选。建议不传，锁定才传。
  * 提交走 wms.order.create。单号由服务端生成。这一步不改库存。
  */
 
 type Direction = 'in' | 'out';
-type AllocationChoice = 'default' | 'strict' | 'fifo' | 'fefo';
 
 interface LineDraft {
   key: string;
@@ -90,6 +90,13 @@ function readAllocation(settings: Record<string, unknown> | undefined): 'strict'
   return value === 'fifo' || value === 'fefo' ? value : 'strict';
 }
 
+/** 入库批次是收货事实。出库只有按序列号的商品要自己写批次，其余按仓库规则扣。 */
+function linePinsBatch(line: LineDraft, direction: Direction, serialOn: boolean, skus: Sku[]): boolean {
+  if (direction === 'in') return true;
+  if (!serialOn) return false;
+  return skus.find((sku) => sku.skuCode === line.skuCode)?.serialTracked === true;
+}
+
 export default function OrderCreatePage({
   direction,
   onClose,
@@ -109,9 +116,11 @@ export default function OrderCreatePage({
   const [partnerCode, setPartnerCode] = useState('');
   const [note, setNote] = useState('');
   const [expectedAt, setExpectedAt] = useState('');
-  const [allocation, setAllocation] = useState<AllocationChoice>('default');
   const [lines, setLines] = useState<LineDraft[]>(() => [blankLine()]);
   const [focusKey, setFocusKey] = useState<string | null>(null);
+  const [allocation, setAllocation] = useState<'warehouse' | 'strict' | 'fifo' | 'fefo'>('warehouse');
+  const [batchConstraint, setBatchConstraint] = useState<'prefer' | 'lock'>('prefer');
+  const [locationConstraint, setLocationConstraint] = useState<'prefer' | 'lock'>('prefer');
 
   const modules = snapshot.data?.modules;
   const asnOn = modules?.['module.asn']?.enabled === true;
@@ -140,8 +149,7 @@ export default function OrderCreatePage({
     asn: inbound && asn,
     expectedAt,
     serialOn,
-    allocation,
-    warehouseAllocation,
+    allocation: inbound ? 'strict' : allocation === 'warehouse' ? warehouseAllocation : allocation,
   });
   const focused = lines.find((line) => line.key === focusKey && line.skuCode) ?? kept[0] ?? null;
 
@@ -171,7 +179,9 @@ export default function OrderCreatePage({
       ...(partnerCode ? { partnerCode } : {}),
       ...(note.trim() ? { note: note.trim() } : {}),
       ...(inbound && asn ? { asn: true as const, ...(expectedAt.trim() ? { expectedAt: expectedAt.trim() } : {}) } : {}),
-      ...(direction === 'out' && allocation !== 'default' ? { allocation } : {}),
+      ...(!inbound && allocation !== 'warehouse' ? { allocation } : {}),
+      ...(!inbound && batchConstraint === 'lock' ? { batchConstraint: 'lock' as const } : {}),
+      ...(!inbound && locationConstraint === 'lock' ? { locationConstraint: 'lock' as const } : {}),
     };
     try {
       const created = await create.mutateAsync(body);
@@ -270,7 +280,9 @@ export default function OrderCreatePage({
       onCell: monoCell,
       render: (_value, line) => (
         <Input
-          placeholder="空 = 默认批次"
+          placeholder={
+            !inbound && linePinsBatch(line, direction, serialOn, skuRows) ? '按序列号，要写批次' : '空 = 默认批次'
+          }
           value={line.batchNo}
           onChange={(e) => patchLine(setLines, line.key, { batchNo: e.target.value })}
         />
@@ -436,10 +448,52 @@ export default function OrderCreatePage({
             添加明细行
           </Button>
         </div>
+        {!inbound ? (
+          <div style={{ marginBottom: 12 }}>
+            <Typography.Text strong>批次怎么扣</Typography.Text>
+            <Radio.Group
+              style={{ display: 'flex', flexWrap: 'wrap', marginTop: 8 }}
+              value={allocation}
+              onChange={(event) => setAllocation(event.target.value)}
+            >
+              <Radio value="warehouse">按仓库（当前是{ALLOCATION_LABEL[warehouseAllocation]}）</Radio>
+              <Radio value="strict">严格桶</Radio>
+              <Radio value="fifo">先进先出</Radio>
+              <Radio value="fefo">先到期先出</Radio>
+            </Radio.Group>
+            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 12 }}>
+              <div>
+                <Typography.Text strong>指定过的批次</Typography.Text>
+                <Radio.Group
+                  style={{ display: 'block', marginTop: 8 }}
+                  value={batchConstraint}
+                  onChange={(event) => setBatchConstraint(event.target.value)}
+                >
+                  <Radio value="prefer">建议</Radio>
+                  <Radio value="lock">锁定</Radio>
+                </Radio.Group>
+              </div>
+              <div>
+                <Typography.Text strong>指定过的库位</Typography.Text>
+                <Radio.Group
+                  style={{ display: 'block', marginTop: 8 }}
+                  value={locationConstraint}
+                  onChange={(event) => setLocationConstraint(event.target.value)}
+                >
+                  <Radio value="prefer">建议</Radio>
+                  <Radio value="lock">锁定</Radio>
+                </Radio.Group>
+              </div>
+            </div>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0, marginTop: 8 }}>
+              没填的批次和库位不受这两项限制。建议可以改拣，锁定就不能换。
+            </Typography.Paragraph>
+          </div>
+        ) : null}
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
           {inbound
             ? '库位是这行货收进来放的位置，空着就是默认库位。批次空着就是默认批次。写了效期以后，同一种货的同一批次要保持同一个日期。同一商品可以分多行，只要库位或批次不同。'
-            : '下拉里能看到可用量。选中之后，下面列出每一桶的库位、批次和效期。点「用这桶」就把库位和批次填进这一行。不点的话，空着的库位和批次按后面的分配方式扣。'}
+            : `下拉里能看到可用量。库位是这行从哪出。下面列出每一桶，点「用这桶」填上库位和批次。${serialOn ? '按序列号的商品要自己写批次，这种商品不能按规则拆开。' : ''}${blockExpired ? '仓库开了过期拦截，过期批次不会被拿来扣。' : ''}`}
         </Typography.Paragraph>
         <Table<LineDraft>
           size="middle"
@@ -459,33 +513,15 @@ export default function OrderCreatePage({
             demand={kept
               .filter((row) => row.skuCode === focused.skuCode)
               .reduce((sum, row) => sum + (row.quantity || 0), 0)}
-            onUse={(bucket) =>
+            onUse={(bucket) => {
               patchLine(setLines, focused.key, {
                 locationCode: bucket.locationCode,
-                batchNo: !bucket.batchNo || bucket.batchNo === 'DEFAULT' ? '' : bucket.batchNo,
-              })
-            }
+                batchNo: bucket.batchNo && bucket.batchNo !== 'DEFAULT' ? bucket.batchNo : '',
+              });
+            }}
           />
         ) : null}
       </Card>
-
-      {!inbound ? (
-        <Card title="批次怎么扣">
-          <Radio.Group value={allocation} onChange={(e) => setAllocation(e.target.value as AllocationChoice)}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <Radio value="default">跟随仓库缺省（当前是{ALLOCATION_LABEL[warehouseAllocation]}）</Radio>
-              <Radio value="strict">严格桶。没填批次只扣默认批次，别的批次有货也不拿。</Radio>
-              <Radio value="fifo">先进先出。没填批次的行，按先入库的批次拆开。</Radio>
-              <Radio value="fefo">先到期先出。没填批次的行，先扣快过期的；没有效期的放在最后。</Radio>
-            </div>
-          </Radio.Group>
-          {blockExpired ? (
-            <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-              仓库开了过期拦截。按策略分配时会跳过已经过期的批次。拣货和发货也会拒绝过期批次。今天到期的还可以出。
-            </Typography.Paragraph>
-          ) : null}
-        </Card>
-      ) : null}
     </div>
   );
 }
@@ -689,17 +725,11 @@ function collectProblems(input: {
   asn: boolean;
   expectedAt: string;
   serialOn: boolean;
-  allocation: AllocationChoice;
-  warehouseAllocation: 'strict' | 'fifo' | 'fefo';
+  allocation: 'strict' | 'fifo' | 'fefo';
 }): string[] {
   const problems: string[] = [];
   if (input.lines.length === 0) problems.push('至少留一行商品');
-  const effective =
-    input.direction === 'out'
-      ? input.allocation === 'default'
-        ? input.warehouseAllocation
-        : input.allocation
-      : 'strict';
+  const effective = input.allocation;
   const seen = new Set<string>();
   input.lines.forEach((line, index) => {
     const n = index + 1;
@@ -720,7 +750,8 @@ function collectProblems(input: {
     if (input.direction === 'in' && line.batchExpiryDate.trim() && !/^\d{4}-\d{2}-\d{2}$/.test(line.batchExpiryDate.trim())) {
       problems.push(`第 ${n} 行效期请用 YYYY-MM-DD`);
     }
-    const key = `${line.skuCode}@${line.locationCode || 'DEFAULT'}@${line.batchNo.trim() || 'DEFAULT'}`;
+    const batchKey = line.batchNo.trim() || 'DEFAULT';
+    const key = `${line.skuCode}@${line.locationCode || 'DEFAULT'}@${batchKey}`;
     if (seen.has(key)) problems.push(`第 ${n} 行与前面的商品、库位、批次重复，请合并数量`);
     seen.add(key);
   });

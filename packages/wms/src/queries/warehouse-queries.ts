@@ -26,11 +26,13 @@ export interface WarehouseStock {
   readonly rows: WarehouseStockRow[];
 }
 
-/** 库位清单附上仓库编码。未分仓两边都是 null。 */
+/** 库位清单附上仓库编码。未分仓两边都是 null。没填容量时不带这个键。 */
 export function presentLocation(ws: WmsWorkspace, location: LocationRecord) {
   const warehouse = location.warehouseId ? ws.warehouses.byId(location.warehouseId) : undefined;
+  const { capacity, ...rest } = location;
   return {
-    ...location,
+    ...rest,
+    ...(capacity != null ? { capacity } : {}),
     warehouseCode: warehouse?.warehouseCode ?? null,
     warehouseName: warehouse?.name ?? null,
   };

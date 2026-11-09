@@ -178,20 +178,9 @@ export function readAiCatalog(path: string): AiConfigCatalog | undefined {
   return catalogFromProvider(legacy.config);
 }
 
-/** 读当前生效的那一条（备份与启动用）。无文件 → undefined */
-export function readAiConfigFile(path: string): AiProviderConfig | undefined {
-  const catalog = readAiCatalog(path);
-  return catalog ? activeProvider(catalog) : undefined;
-}
-
 /** 写整份目录（覆盖式） */
 export function writeAiCatalog(path: string, catalog: AiConfigCatalog): void {
   writeFileSync(path, JSON.stringify(catalog, null, 2), 'utf-8');
-}
-
-/** 把单条配置写成只有它的目录（旧备份恢复） */
-export function writeAiConfigFile(path: string, config: AiProviderConfig): void {
-  writeAiCatalog(path, catalogFromProvider(config));
 }
 
 /** 删配置文件（关闭 AI：回到 env 兜底或彻底关闭）；不存在 = 幂等成功 */

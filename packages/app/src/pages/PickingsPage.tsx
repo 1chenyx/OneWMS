@@ -5,6 +5,7 @@ import {
   App as AntApp,
   Button,
   Card,
+  Input,
   InputNumber,
   Modal,
   Progress,
@@ -19,6 +20,7 @@ import {
   useClosePicking,
   useCreatePicking,
   useOrders,
+  useLocations,
   usePickPickingLine,
   usePickings,
   useProfileSnapshot,
@@ -35,8 +37,8 @@ import { fmtQty } from '../lib/format';
 /**
  * 拣货单管理页（M21）——聚合「拣货中」出库单的作业单。
  *  - 新建：多选出库单（state=picking）聚合；
- *  - 作业：展开行逐条「录入实拣」（可改实拣库位/批次——记实不扣账）；
- *  - 关单：全部行拣满后统一扣减（订单 → shipped；流水 reason: picking:单号）；
+ *  - 作业：展开行逐条「录入实拣」。锁定的批次和库位不能换，一行可以拆到两桶。
+ *  - 关单：没点过的行不能当成短发。扣减按实拣桶（订单 → shipped）。
  *  - 取消：留审计，订单留待人工。
  *  - 打印：行上预览弹窗；勾选后一次打出多页。版式和弹窗是同一份。
  * 行为权威在服务端工具（wms.picking.*）：未拣满/余量不足/流程配置
@@ -82,7 +84,7 @@ export default function PickingsPage() {
   const doClose = (pickingNo: string) =>
     modal.confirm({
       title: `确认关单 ${pickingNo}？`,
-      content: '全部行实拣即扣减：关联出库单流转到「已发货」，库存按实拣桶扣减。',
+      content: '已经录入过的行按实拣扣减，出库单转到已发货。没点过的行不能靠关单当成短发。',
       onOk: async () => {
         try {
           const r = await close.mutateAsync(pickingNo);
@@ -206,7 +208,7 @@ export default function PickingsPage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
         title="拣货单"
-        subtitle="聚合「拣货中」出库单：逐行实拣（可改拣其他库位/批次），关单统一扣减发货"
+        subtitle="锁定的批次和库位不能换，一行可以拆到两桶，没点过的行不能靠关单当成短发"
         extra={
           <>
             <Select
@@ -326,24 +328,57 @@ function PickLinesTable({
   onPick: ReturnType<typeof usePickPickingLine>;
 }) {
   const { message } = AntApp.useApp();
-  // 行 id → 实拣量 / 实拣库位 / 实拣批次
+  const { data: locationRows } = useLocations();
+  const locationOptions = [
+    { value: 'DEFAULT', label: '默认库位' },
+    ...(locationRows ?? [])
+      .filter((row) => row.locationCode !== 'DEFAULT')
+      .map((row) => ({ value: row.locationCode, label: row.locationCode })),
+  ];
+  // 行 id → 实拣量 / 实拣库位 / 实拣批次。第二套是拆成两桶时的另一桶。
   const [qty, setQty] = useState<Record<string, number>>({});
   const [loc, setLoc] = useState<Record<string, string>>({});
   const [batch, setBatch] = useState<Record<string, string>>({});
+  const [splitOn, setSplitOn] = useState<Record<string, boolean>>({});
+  const [qty2, setQty2] = useState<Record<string, number>>({});
+  const [loc2, setLoc2] = useState<Record<string, string>>({});
+  const [batch2, setBatch2] = useState<Record<string, string>>({});
 
   const submitPick = async (line: PickingLine) => {
-    const pickedQty = qty[line.id] ?? line.qtyToPick;
+    const firstQty = qty[line.id] ?? line.qtyToPick;
+    const secondQty = splitOn[line.id] ? (qty2[line.id] ?? 0) : 0;
+    const body =
+      secondQty > 0
+        ? {
+            orderNo: line.orderNo,
+            skuCode: line.skuCode,
+            suggestedBatchNo: line.suggestedBatchNo,
+            pickedQty: firstQty + secondQty,
+            allocations: [
+              {
+                quantity: firstQty,
+                locationCode: loc[line.id] || line.suggestedLocationCode,
+                batchNo: batch[line.id] || line.suggestedBatchNo,
+              },
+              {
+                quantity: secondQty,
+                locationCode: loc2[line.id] || line.suggestedLocationCode,
+                batchNo: batch2[line.id] || line.suggestedBatchNo,
+              },
+            ],
+          }
+        : {
+            orderNo: line.orderNo,
+            skuCode: line.skuCode,
+            suggestedBatchNo: line.suggestedBatchNo,
+            pickedQty: firstQty,
+            ...(loc[line.id] ? { locationCode: loc[line.id] } : {}),
+            ...(batch[line.id] ? { pickedBatchNo: batch[line.id] } : {}),
+          };
     try {
       const r = await onPick.mutateAsync({
         pickingNo: picking.pickingNo,
-        body: {
-          orderNo: line.orderNo,
-          skuCode: line.skuCode,
-          suggestedBatchNo: line.suggestedBatchNo,
-          pickedQty,
-          ...(loc[line.id] ? { locationCode: loc[line.id] } : {}),
-          ...(batch[line.id] ? { pickedBatchNo: batch[line.id] } : {}),
-        },
+        body,
       });
       message.success(
         r.remainingToPick > 0
@@ -404,6 +439,7 @@ function PickLinesTable({
                 placeholder={r.pickedLocationCode ?? r.suggestedLocationCode}
                 style={{ width: '100%' }}
                 value={loc[r.id]}
+                options={locationOptions}
                 onChange={(v) => setLoc((p) => ({ ...p, [r.id]: v }))}
               />
             ) : (
@@ -416,14 +452,11 @@ function PickLinesTable({
           width: 130,
           render: (_, r) =>
             picking.state === 'created' ? (
-              <Select
-                allowClear
+              <Input
                 size="small"
-                showSearch
                 placeholder={r.pickedBatchNo ?? r.suggestedBatchNo}
-                style={{ width: '100%' }}
                 value={batch[r.id]}
-                onChange={(v) => setBatch((p) => ({ ...p, [r.id]: v }))}
+                onChange={(event) => setBatch((p) => ({ ...p, [r.id]: event.target.value }))}
               />
             ) : (
               <span style={{ fontFamily: 'monospace' }}>{r.pickedBatchNo ?? r.suggestedBatchNo}</span>
@@ -434,28 +467,69 @@ function PickLinesTable({
               {
                 title: '录入实拣',
                 key: 'pick',
-                width: 200,
+                width: 280,
                 render: (_: unknown, r: PickingLine) => (
-                  <span>
-                    <InputNumber
-                      size="small"
-                      min={0}
-                      precision={3}
-                      max={r.qtyToPick}
-                      value={qty[r.id] ?? r.pickedQty}
-                      onChange={(v) => setQty((p) => ({ ...p, [r.id]: v ?? 0 }))}
-                      style={{ marginRight: 8, width: 80 }}
-                    />
-                    <Button
-                      size="small"
-                      type="primary"
-                      ghost
-                      loading={onPick.isPending}
-                      onClick={() => void submitPick(r)}
-                    >
-                      拣
-                    </Button>
-                  </span>
+                  <div>
+                    <span>
+                      <InputNumber
+                        size="small"
+                        min={0}
+                        precision={3}
+                        max={r.qtyToPick}
+                        value={qty[r.id] ?? r.pickedQty}
+                        onChange={(v) => setQty((p) => ({ ...p, [r.id]: v ?? 0 }))}
+                        style={{ marginRight: 8, width: 80 }}
+                      />
+                      <Button
+                        size="small"
+                        type="primary"
+                        ghost
+                        loading={onPick.isPending}
+                        onClick={() => void submitPick(r)}
+                      >
+                        拣
+                      </Button>
+                      <Button
+                        size="small"
+                        type="link"
+                        onClick={() => setSplitOn((p) => ({ ...p, [r.id]: !p[r.id] }))}
+                      >
+                        分成两桶
+                      </Button>
+                    </span>
+                    {splitOn[r.id] ? (
+                      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                        <InputNumber
+                          size="small"
+                          min={0}
+                          precision={3}
+                          aria-label="第二桶数量"
+                          value={qty2[r.id]}
+                          onChange={(v) => setQty2((p) => ({ ...p, [r.id]: v ?? 0 }))}
+                          style={{ width: 72 }}
+                        />
+                        <Select
+                          size="small"
+                          showSearch
+                          optionFilterProp="label"
+                          aria-label="第二桶库位"
+                          placeholder={r.suggestedLocationCode}
+                          style={{ width: 96 }}
+                          value={loc2[r.id]}
+                          options={locationOptions}
+                          onChange={(v) => setLoc2((p) => ({ ...p, [r.id]: v }))}
+                        />
+                        <Input
+                          size="small"
+                          aria-label="第二桶批次"
+                          placeholder={r.suggestedBatchNo}
+                          value={batch2[r.id]}
+                          onChange={(event) => setBatch2((p) => ({ ...p, [r.id]: event.target.value }))}
+                          style={{ width: 88 }}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
                 ),
               } as ColumnsType<PickingLine>[number],
             ]

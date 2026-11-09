@@ -21,6 +21,7 @@ import {
   resolveBatch,
   resolveLocation,
 } from '../state/inventory-policy.js';
+import { bucketReservationNotice } from '../state/reservation.js';
 import { assertStocktakeLines } from '../state/serial-policy.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
@@ -208,11 +209,17 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
         }
       });
       ws.sync();
+      const warnings = diffs.flatMap((d) => {
+        if (d.delta >= 0) return [];
+        const notice = bucketReservationNotice(ws, d.line.skuId, d.line.locationId, d.line.batchNo);
+        return notice ? [notice] : [];
+      });
       return {
         stocktakeNo: st.stocktakeNo,
         state: 'closed' as const,
         totalLines: stats.lineCount,
         adjustedLines: diffs.length,
+        ...(warnings.length > 0 ? { warning: [...new Set(warnings)].join(' ') } : {}),
         adjustments: diffs.map((d) => ({
           skuCode: d.skuCode,
           locationCode: d.locationCode,

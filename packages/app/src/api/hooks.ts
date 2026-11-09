@@ -485,8 +485,10 @@ export function useCreateLocation() {
 export function useUpdateLocation() {
   const invalidate = useInvalidateLocations();
   return useMutation({
-    mutationFn: (params: { locationCode: string; body: { name?: string; warehouseCode?: string } }) =>
-      api.updateLocation(params.locationCode, params.body),
+    mutationFn: (params: {
+      locationCode: string;
+      body: { name?: string; warehouseCode?: string; capacity?: number | null };
+    }) => api.updateLocation(params.locationCode, params.body),
     onSuccess: invalidate,
   });
 }
@@ -684,11 +686,6 @@ export function useAiConfig() {
 function useInvalidateAiConfig() {
   const qc = useQueryClient();
   return () => qc.invalidateQueries({ queryKey: ['ai-config'] });
-}
-
-export function useSaveAiConfig() {
-  const invalidate = useInvalidateAiConfig();
-  return useMutation({ mutationFn: api.saveAiConfig, onSuccess: invalidate });
 }
 
 export function useClearAiConfig() {

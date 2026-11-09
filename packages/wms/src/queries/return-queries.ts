@@ -1,10 +1,10 @@
 import type { WmsWorkspace } from '../wms.js';
 import { OrderNotFoundError, ReturnDisabledError, ReturnOfReturnError, ReturnNotPostedError } from '../errors.js';
 import type { OrderDirection } from '../state/order-state-machine.js';
-import { quantizeQty } from '../state/inventory-policy.js';
-import { accountedQty, remainingBySkuBatch, sourceIsPosted } from '../state/return-qty.js';
+import { QTY_EPS, quantizeQty } from '../state/inventory-policy.js';
+import { accountedQty, postedBucketsForReturn, remainingBySkuBatch, sourceIsPosted } from '../state/return-qty.js';
 
-/** 一张原单还能退多少。按 SKU + 批次一行，库位是建议值（原单上该批次入账最多的库位）。 */
+/** 一张原单还能退多少。按 SKU + 批次一行。有流水时库位取实绩里入账最多的那个；没有流水时用单据行。 */
 export interface ReturnableLine {
   skuCode: string;
   name: string;
@@ -35,11 +35,13 @@ export function getReturnable(ws: WmsWorkspace, orderNo: string): ReturnableView
     throw new ReturnNotPostedError(source.orderNo, source.state);
   }
   const sourceLines = ws.orders.lines(source.id);
+  const movements = ws.inventory.movementsByOrder(source.id);
+  const posted = postedBucketsForReturn(source.direction, sourceLines, movements);
   const prior = ws.orders.returnsOf(source.id).map((order) => ({
     state: order.state,
     lines: ws.orders.lines(order.id),
   }));
-  const left = remainingBySkuBatch(sourceLines, prior);
+  const left = remainingBySkuBatch(sourceLines, prior, posted);
   const grouped = new Map<
     string,
     {
@@ -51,35 +53,64 @@ export function getReturnable(ws: WmsWorkspace, orderNo: string): ReturnableView
       expiry: string | null;
     }
   >();
-  for (const line of sourceLines) {
-    const key = `${line.skuId}\u0000${line.batchNo}`;
-    const posted = accountedQty(line.quantity, line.fulfilledQty);
-    const prev = grouped.get(key);
-    if (!prev) {
-      grouped.set(key, {
-        skuId: line.skuId,
-        batchNo: line.batchNo,
-        posted,
-        best: posted,
-        locationId: line.locationId,
-        expiry: line.batchExpiryDate,
-      });
-      continue;
+  if (movements.length === 0) {
+    for (const line of sourceLines) {
+      const key = `${line.skuId}\u0000${line.batchNo}`;
+      const qty = accountedQty(line.quantity, line.fulfilledQty);
+      const prev = grouped.get(key);
+      if (!prev) {
+        grouped.set(key, {
+          skuId: line.skuId,
+          batchNo: line.batchNo,
+          posted: qty,
+          best: qty,
+          locationId: line.locationId,
+          expiry: line.batchExpiryDate,
+        });
+        continue;
+      }
+      prev.posted += qty;
+      if (qty > prev.best) {
+        prev.best = qty;
+        prev.locationId = line.locationId;
+      }
+      if (!prev.expiry && line.batchExpiryDate) prev.expiry = line.batchExpiryDate;
     }
-    prev.posted += posted;
-    if (posted > prev.best) {
-      prev.best = posted;
-      prev.locationId = line.locationId;
+  } else {
+    for (const row of movements) {
+      const qty = source.direction === 'out' ? -row.net : row.net;
+      if (qty <= QTY_EPS) continue;
+      const key = `${row.skuId}\u0000${row.batchNo}`;
+      const prev = grouped.get(key);
+      if (!prev) {
+        grouped.set(key, {
+          skuId: row.skuId,
+          batchNo: row.batchNo,
+          posted: qty,
+          best: qty,
+          locationId: row.locationId,
+          expiry: null,
+        });
+        continue;
+      }
+      prev.posted += qty;
+      if (qty > prev.best) {
+        prev.best = qty;
+        prev.locationId = row.locationId;
+      }
     }
-    if (!prev.expiry && line.batchExpiryDate) prev.expiry = line.batchExpiryDate;
   }
   const lines: ReturnableLine[] = [];
   for (const [key, row] of grouped) {
     const sku = ws.skus.byId(row.skuId);
     const location = ws.locations.byId(row.locationId);
     const remain = left.get(key) ?? 0;
-    // 出库单行不带效期。客退要沿用入库时登记的效期，从流水里补。
-    const expiry = row.expiry ?? ws.inventory.expiryOfBatch(row.skuId, row.batchNo);
+    const lineExpiry = sourceLines.find((line) => line.skuId === row.skuId && line.batchNo === row.batchNo)
+      ?.batchExpiryDate;
+    const expiry =
+      movements.length === 0
+        ? (row.expiry ?? ws.inventory.expiryOfBatch(row.skuId, row.batchNo))
+        : (ws.inventory.expiryOfBatch(row.skuId, row.batchNo) ?? lineExpiry ?? null);
     lines.push({
       skuCode: sku?.skuCode ?? '(未知)',
       name: sku?.name ?? '',

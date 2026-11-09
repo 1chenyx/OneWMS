@@ -17,9 +17,6 @@ export interface AgentToolInfo {
 
 export type PermissionFilter = 'all' | 'read' | 'write';
 
-/** 分组导航里的「全部」 */
-export const ALL_TOOLS = '__all__';
-
 /** 已授权、但当前工具目录里没有的 id */
 export const MISSING_TOOLS = '__missing__';
 
@@ -315,17 +312,6 @@ export function groupHint(bucket: ToolBucket): string {
     lines.push(reads.length > 0 ? `${writeName}：再包含 ${writes.join('、')}` : `${writeName}：${writes.join('、')}`);
   }
   return lines.join('\n');
-}
-
-/** 搜索业务名或其中任何一个工具。 */
-export function groupsMatching(buckets: readonly ToolBucket[], query: string): ToolBucket[] {
-  const q = query.trim().toLowerCase();
-  return buckets.filter((bucket) => {
-    if (bucket.id === MISSING_TOOLS) return false;
-    if (!q) return true;
-    if (bucket.label.toLowerCase().includes(q)) return true;
-    return bucket.tools.some((tool) => matchesTool(tool, q, 'all'));
-  });
 }
 
 /** 勾选或取消一批。保留原有顺序，新勾上的按这次的顺序接在后面。 */

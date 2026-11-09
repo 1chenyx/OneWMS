@@ -1,5 +1,4 @@
 import type {
-  ConfigState,
   PatchOp,
   ProfileSnapshot,
   WorkflowDef,
@@ -311,9 +310,4 @@ function negate(when: string): string {
 
 function issue(code: string, message: string, path?: string, severity: 'error' | 'warning' = 'error'): ValidationIssue {
   return { code, severity, message, path };
-}
-
-/** 从快照提取 config 部分（applyPatch 的操作对象，供热应用轨道 B 使用） */
-export function configOf(snapshot: ProfileSnapshot): ConfigState {
-  return { workflows: snapshot.workflows, modules: snapshot.modules, roles: snapshot.roles };
 }

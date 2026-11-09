@@ -7,7 +7,7 @@ import OrdersPage from '../src/pages/OrdersPage';
 import { AppNavProvider } from '../src/app-nav';
 
 /**
- * 新建出入库单是整页，不是弹窗。扫码写入明细，出库可以改批次分配。
+ * 新建出入库单是整页，不是弹窗。扫码写入明细。出库可以另选怎么扣。
  */
 
 const createMock = vi.fn();
