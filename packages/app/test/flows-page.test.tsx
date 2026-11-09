@@ -40,6 +40,7 @@ function snapshot(): ProfileSnapshot {
       'core.wms': { enabled: true, version: '0.1.0' },
       'module.asn': { enabled: true, version: '0.1.0' },
       'module.putaway': { enabled: true, version: '0.1.0' },
+      'module.picking': { enabled: true, version: '0.1.0' },
       'module.reservation': { enabled: true, version: '0.1.0' },
       'module.partial': { enabled: true, version: '0.1.0' },
       'module.reversal': { enabled: true, version: '0.1.0' },
@@ -107,6 +108,7 @@ describe('流程页', () => {
     expect(chartNodes('inbound').every((node) => node.active === 'true')).toBe(true);
     expect(chartNodes('outbound').map((node) => node.label)).toEqual(['建单', '拣货', '发货', '完成']);
     expect(screen.getByRole('switch', { name: '预报' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: /^拣货$/ })).toBeChecked();
     expect(screen.getByRole('switch', { name: '拣货：占库存' })).toBeChecked();
     expect(screen.getByRole('switch', { name: '收货：按实数' })).toBeChecked();
     expect(screen.getByRole('switch', { name: '发货：可冲销' })).toBeChecked();
@@ -157,6 +159,27 @@ describe('流程页', () => {
     expect(harness.confirmMock).toHaveBeenCalledWith({ id: 'p-9' });
     expect(await screen.findByText(/已生效（v14）/)).toBeInTheDocument();
     expect(harness.rejectMock).not.toHaveBeenCalled();
+  });
+
+  it('关掉拣货后箭头从建单绕到发货', async () => {
+    harness.proposeMock.mockResolvedValue({
+      proposalId: 'p-pick',
+      pendingConfirm: true,
+      hint: '',
+      report: { summary: '共 1 项变更', items: [] },
+    });
+    const user = userEvent.setup();
+    render(wrap(<FlowsPage />));
+
+    await user.click(screen.getByRole('switch', { name: /^拣货$/ }));
+    expect(harness.proposeMock).toHaveBeenCalledWith({
+      patch: [{ op: 'replace', path: '/modules/module.picking/enabled', value: false }],
+      note: '流程：关掉拣货',
+    });
+    expect(chartNodes('outbound').find((node) => node.label === '拣货')?.active).toBe('false');
+    const bypass = document.querySelector('[data-testid="outbound-chart"] [data-from="建单"][data-to="发货"]');
+    expect(bypass?.querySelector('[data-node="拣货"]')).toBeTruthy();
+    expect(await screen.findByRole('region', { name: '确认这次修改' })).toHaveTextContent('关掉后，建单直接发货');
   });
 
   it('撤销后预报回到主路径', async () => {

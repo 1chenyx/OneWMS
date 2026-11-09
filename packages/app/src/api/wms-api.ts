@@ -668,6 +668,8 @@ export const wmsApi = {
     asn?: boolean;
     /** 预计到货日 YYYY-MM-DD，仅和 asn 一起用 */
     expectedAt?: string;
+    /** 出库批次分配。不传则用仓库缺省 */
+    allocation?: 'strict' | 'fifo' | 'fefo';
     note?: string;
   }) =>
     request<{ orderId: string; orderNo: string; state: string }>('/api/orders', {

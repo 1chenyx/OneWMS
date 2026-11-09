@@ -67,11 +67,12 @@ describe('ModuleRail：悬停浮出功能网格', () => {
     const user = userEvent.setup();
     renderRail();
 
-    expect(screen.queryByText('出入库单')).not.toBeInTheDocument();
+    expect(screen.queryByText('入库单')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '作业' }));
-    expect(screen.getByText('出入库单')).toBeInTheDocument();
-    expect(screen.getByText('拣货单')).toBeInTheDocument();
+    expect(screen.getByText('入库单')).toBeInTheDocument();
+    expect(screen.getByText('出库单')).toBeInTheDocument();
+    expect(screen.queryByText('拣货单')).not.toBeInTheDocument();
     expect(screen.queryByText('序列号')).not.toBeInTheDocument();
     expect(screen.queryByText('托盘')).not.toBeInTheDocument();
     expect(screen.getByTestId('module-flyout-grid').style.gridTemplateColumns).toBe('1fr 1fr');
@@ -84,8 +85,8 @@ describe('ModuleRail：悬停浮出功能网格', () => {
 
     await user.hover(screen.getByText('作业'));
     // 浮窗内层是 antd 的 tooltip 角色，子按钮不再暴露 button 角色，按可见文案断言
-    const order = await screen.findByText('出入库单', {}, { timeout: 2000 });
-    expect(screen.getByText('拣货单')).toBeInTheDocument();
+    const order = await screen.findByText('入库单', {}, { timeout: 2000 });
+    expect(screen.queryByText('拣货单')).not.toBeInTheDocument();
     expect(screen.getByText('库存')).toBeInTheDocument();
     expect(screen.getByText('盘点')).toBeInTheDocument();
     expect(screen.getByTestId('module-flyout-grid').style.gridTemplateColumns).toBe('1fr 1fr');
@@ -95,7 +96,7 @@ describe('ModuleRail：悬停浮出功能网格', () => {
     await user.click(screen.getByText('库存'));
     expect(screen.getByTestId('page').textContent).toBe('inventory');
     await waitFor(() => {
-      expect(screen.queryByText('出入库单')).not.toBeInTheDocument();
+      expect(screen.queryByText('入库单')).not.toBeInTheDocument();
     });
   });
 
@@ -109,11 +110,13 @@ describe('ModuleRail：悬停浮出功能网格', () => {
       modules: {
         'module.serial': { enabled: true, version: '0.1.0' },
         'module.lpn': { enabled: true, version: '0.1.0' },
+        'module.picking': { enabled: true, version: '0.1.0' },
       },
       roles: {},
     };
     renderRail(profile);
     await user.click(screen.getByRole('button', { name: '作业' }));
+    expect(screen.getByText('拣货单')).toBeInTheDocument();
     expect(screen.getByText('序列号')).toBeInTheDocument();
     expect(screen.getByText('托盘')).toBeInTheDocument();
     await user.click(screen.getByText('托盘'));

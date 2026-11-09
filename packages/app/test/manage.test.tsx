@@ -213,7 +213,7 @@ function NavigateThenMount({
   filter,
   children,
 }: {
-  page: 'inventory' | 'orders' | 'expiry';
+  page: 'inventory' | 'inbound' | 'expiry';
   filter?: InitialFilter;
   children: React.ReactNode;
 }) {
@@ -320,27 +320,28 @@ describe('OrdersPage：workflows 驱动流转', () => {
 
   it('状态标签来自 workflows.states；流转菜单只含合法后继', async () => {
     const user = userEvent.setup();
-    render(wrap(<OrdersPage />));
+    render(wrap(<OrdersPage direction="in" />));
     expect(screen.getByText('已创建')).toBeInTheDocument(); // label 来自 Profile
     await user.click(screen.getByRole('button', { name: /流转/ })); // 打开 Dropdown 菜单
     expect(await screen.findByRole('menuitem', { name: '已收货' })).toBeInTheDocument(); // created → received
     expect(screen.queryByRole('menuitem', { name: '拣货中' })).not.toBeInTheDocument(); // 入库单无此路径
   });
 
-  it('明细收进展开行（P1）：展开单据行 → SKU/名称/数量明细表', async () => {
+  it('明细在详情里：点详情看到 SKU、名称和数量', async () => {
     const user = userEvent.setup();
-    const { container } = render(wrap(<OrdersPage />));
-    const expand = container.querySelector('.ant-table-row-expand-icon');
-    expect(expand).toBeTruthy();
-    await user.click(expand!);
-    expect(await screen.findByText('螺丝')).toBeInTheDocument(); // 明细行 SKU 名称
-    expect(screen.getByText('100')).toBeInTheDocument(); // 明细行数量（右对齐等宽）
+    render(wrap(<OrdersPage direction="in" />));
+    expect(screen.queryByText('螺丝')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '详情' }));
+    const detail = await screen.findByRole('dialog', { name: /详情/ });
+    expect(within(detail).getByText('A-1')).toBeInTheDocument();
+    expect(within(detail).getByText('螺丝')).toBeInTheDocument();
+    expect(within(detail).getByText('100')).toBeInTheDocument();
   });
 
   it('流转：菜单选目标态 → 确认弹窗 → 调用 transition', async () => {
     transitionMock.mockResolvedValueOnce({ orderNo: 'IN-20261030-1', from: 'created', to: 'received' });
     const user = userEvent.setup();
-    render(wrap(<OrdersPage />));
+    render(wrap(<OrdersPage direction="in" />));
 
     await user.click(screen.getByRole('button', { name: /流转/ }));
     await user.click(await screen.findByRole('menuitem', { name: '已收货' }));
@@ -362,7 +363,7 @@ describe('OrdersPage：workflows 驱动流转', () => {
       },
     ];
     const user = userEvent.setup();
-    render(wrap(<OrdersPage />));
+    render(wrap(<OrdersPage direction="in" />));
 
     expect(screen.getByText('有单据状态冲突待裁决')).toBeInTheDocument();
     expect(screen.getByText(/停在 received，另一条事件要改成 canceled/)).toBeInTheDocument();
@@ -378,7 +379,7 @@ describe('OrdersPage：workflows 驱动流转', () => {
     partialEnabled = true;
     transitionMock.mockResolvedValueOnce({ orderNo: 'IN-20261030-1', from: 'created', to: 'received' });
     const user = userEvent.setup();
-    render(wrap(<OrdersPage />));
+    render(wrap(<OrdersPage direction="in" />));
 
     await user.click(screen.getByRole('button', { name: /流转/ }));
     await user.click(await screen.findByRole('menuitem', { name: '已收货' }));
@@ -505,8 +506,8 @@ describe('OrdersPage：initialFilter 接参（M12 步骤4）', () => {
   it('AI 跳转携带的 orderNo 预填过滤框，清单按单号收敛', () => {
     render(
       wrap(
-        <NavigateThenMount page="orders" filter={{ orderNo: 'IN-2026' }}>
-          <OrdersPage />
+        <NavigateThenMount page="inbound" filter={{ orderNo: 'IN-2026' }}>
+          <OrdersPage direction="in" />
         </NavigateThenMount>,
       ),
     );

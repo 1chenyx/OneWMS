@@ -362,6 +362,15 @@ export function useInventory(query?: {
   }) as ReturnType<typeof useQuery<InventoryRow[]>> | ReturnType<typeof useQuery<InventoryListPage>>;
 }
 
+/** 库存分桶：库位 × 批次 × 效期。出库开单时用来看每一桶还剩多少。 */
+export function useInventoryBuckets(enabled = true) {
+  return useQuery({
+    queryKey: ['inventory', 'buckets'],
+    queryFn: () => api.inventoryBuckets(),
+    enabled,
+  });
+}
+
 export function useAdjustInventory() {
   const qc = useQueryClient();
   return useMutation({

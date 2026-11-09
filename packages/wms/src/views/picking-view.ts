@@ -6,6 +6,7 @@ import {
   type PickingPickedPayload,
   type PickingStateChangedPayload,
 } from '../events/catalog.js';
+import { QTY_EPS } from '../state/inventory-policy.js';
 
 /**
  * 拣货单投影（PickingView，M21）——wms_picking / wms_picking_line 表。
@@ -44,6 +45,8 @@ export interface PickingLineRecord {
   /** 实拣桶（缺省 = 建议桶）；null = 未拣 */
   readonly pickedLocationId: string | null;
   readonly pickedBatchNo: string | null;
+  /** 录入过实拣，含明确拣 0。老行没有这列时用实拣量 > 0 代替 */
+  readonly confirmed: boolean;
 }
 
 interface PickingRow {
@@ -67,6 +70,7 @@ interface PickingLineRow {
   picked_qty: number;
   picked_location_id: string | null;
   picked_batch_no: string | null;
+  confirmed: number;
 }
 
 function rowToRecord(row: PickingRow): PickingRecord {
@@ -93,6 +97,7 @@ function lineRowToRecord(r: PickingLineRow): PickingLineRecord {
     pickedQty: r.picked_qty,
     pickedLocationId: r.picked_location_id,
     pickedBatchNo: r.picked_batch_no,
+    confirmed: r.confirmed === 1 || r.picked_qty > QTY_EPS,
   };
 }
 
@@ -138,13 +143,25 @@ export class PickingView {
       }
       case WMS_EVENT_TYPES.pickingPicked: {
         const p = env.payload as PickingPickedPayload;
-        // 同行重拣后到者胜：覆盖累计实拣量与实拣桶；未改拣时沿用建议桶
+        const allocations =
+          p.allocations ??
+          (p.pickedQty > QTY_EPS && p.pickedLocationId && p.pickedBatchNo
+            ? [
+                {
+                  locationId: p.pickedLocationId,
+                  batchNo: p.pickedBatchNo,
+                  quantity: p.pickedQty,
+                },
+              ]
+            : []);
+        // 同行重拣后到者胜：覆盖累计实拣量、实拣桶和拆桶明细
         this.db
           .prepare(
             `UPDATE wms_picking_line SET
                picked_qty = ?,
                picked_location_id = ?,
                picked_batch_no = ?,
+               confirmed = 1,
                updated_at = ?
              WHERE workspace_id = ? AND id = ?`,
           )
@@ -156,6 +173,17 @@ export class PickingView {
             this.workspaceId,
             p.lineId,
           );
+        this.db
+          .prepare(`DELETE FROM wms_picking_allocation WHERE workspace_id = ? AND line_id = ?`)
+          .run(this.workspaceId, p.lineId);
+        const insertAlloc = this.db.prepare(
+          `INSERT INTO wms_picking_allocation (workspace_id, line_id, location_id, batch_no, quantity)
+           VALUES (?, ?, ?, ?, ?)`,
+        );
+        for (const row of allocations) {
+          if (row.quantity <= QTY_EPS) continue;
+          insertAlloc.run(this.workspaceId, p.lineId, row.locationId, row.batchNo, row.quantity);
+        }
         break;
       }
       case WMS_EVENT_TYPES.pickingStateChanged: {
@@ -202,12 +230,41 @@ export class PickingView {
   lines(pickingId: string): PickingLineRecord[] {
     const rows = this.db
       .prepare<unknown[], PickingLineRow>(
-        `SELECT id, order_id, order_no, order_line_id, sku_id, qty_to_pick, suggested_location_id, suggested_batch_no, picked_qty, picked_location_id, picked_batch_no
+        `SELECT id, order_id, order_no, order_line_id, sku_id, qty_to_pick, suggested_location_id, suggested_batch_no, picked_qty, picked_location_id, picked_batch_no, confirmed
          FROM wms_picking_line WHERE workspace_id = ? AND picking_id = ?
          ORDER BY order_no, rowid`,
       )
       .all(this.workspaceId, pickingId) as unknown as PickingLineRow[];
     return rows.map(lineRowToRecord);
+  }
+
+  /** 这一行拆开的实绩。没有记录时关单回退到行上的单个实拣桶。 */
+  allocations(lineId: string): { locationId: string; batchNo: string; quantity: number }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT location_id, batch_no, quantity FROM wms_picking_allocation
+         WHERE workspace_id = ? AND line_id = ? ORDER BY location_id, batch_no`,
+      )
+      .all(this.workspaceId, lineId) as { location_id: string; batch_no: string; quantity: number }[];
+    return rows.map((row) => ({
+      locationId: row.location_id,
+      batchNo: row.batch_no,
+      quantity: row.quantity,
+    }));
+  }
+
+  /** 这张出库单是否还挂在未关的拣货单上。有则返回拣货单号。 */
+  openPickingNoForOrder(orderId: string): string | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT p.picking_no AS picking_no
+         FROM wms_picking_line l
+         JOIN wms_picking p ON p.workspace_id = l.workspace_id AND p.id = l.picking_id
+         WHERE l.workspace_id = ? AND l.order_id = ? AND p.state = 'created'
+         LIMIT 1`,
+      )
+      .get(this.workspaceId, orderId) as { picking_no: string } | undefined;
+    return row?.picking_no;
   }
 
   /** 行进度统计（清单页进度展示 + close 守卫「全部行拣满」的数据源） */

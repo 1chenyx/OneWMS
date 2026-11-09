@@ -32,6 +32,10 @@ export interface OrderRecord {
   readonly expectedAt: string | null;
   /** 补货单（module.replenish）。false = 普通出入库 */
   readonly replenishment: boolean;
+  /** 写了批次的出库行：建议或锁定。null = 老单，按建议。 */
+  readonly batchConstraint: 'prefer' | 'lock' | null;
+  /** 写了库位的出库行：建议或锁定。null = 老单，按建议。 */
+  readonly locationConstraint: 'prefer' | 'lock' | null;
   readonly note: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -73,6 +77,8 @@ interface OrderRow {
   return_of_order_id: string | null;
   expected_at: string | null;
   replenishment: number;
+  batch_constraint: string | null;
+  location_constraint: string | null;
   note: string | null;
   created_at: string;
   updated_at: string;
@@ -136,6 +142,9 @@ function rowToRecord(row: OrderRow): OrderRecord {
     returnOfOrderId: row.return_of_order_id,
     expectedAt: row.expected_at,
     replenishment: row.replenishment === 1,
+    batchConstraint: row.batch_constraint === 'lock' ? 'lock' : row.batch_constraint === 'prefer' ? 'prefer' : null,
+    locationConstraint:
+      row.location_constraint === 'lock' ? 'lock' : row.location_constraint === 'prefer' ? 'prefer' : null,
     note: row.note,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -168,8 +177,8 @@ export class OrderView {
         if (this.#byIdRaw(p.orderId)) return; // 已应用过（幂等）
         this.db
           .prepare(
-            `INSERT INTO wms_order (id, workspace_id, order_no, direction, state, partner_id, return_of_order_id, expected_at, replenishment, note, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
+            `INSERT INTO wms_order (id, workspace_id, order_no, direction, state, partner_id, return_of_order_id, expected_at, replenishment, note, ext_data, batch_constraint, location_constraint, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)`,
           )
           .run(
             p.orderId,
@@ -182,6 +191,8 @@ export class OrderView {
             p.asn?.expectedAt ?? null,
             p.replenishment === true ? 1 : 0,
             p.note ?? null,
+            p.batchConstraint ?? null,
+            p.locationConstraint ?? null,
             env.createdAt,
             env.createdAt,
           );

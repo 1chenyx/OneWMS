@@ -13,10 +13,12 @@ export default function ScanInput({
   onScan,
   placeholder = '扫码枪输入（或手工键入后回车）',
   style,
+  size = 'small',
 }: {
   onScan: (code: string) => void;
   placeholder?: string;
   style?: CSSProperties;
+  size?: 'small' | 'middle' | 'large';
 }) {
   const ref = useRef<InputRef>(null);
   const [value, setValue] = useState('');
@@ -35,7 +37,7 @@ export default function ScanInput({
   return (
     <Input
       ref={ref}
-      size="small"
+      size={size}
       prefix={<ScanOutlined />}
       placeholder={placeholder}
       value={value}

@@ -39,6 +39,7 @@ export interface CapabilityCardCopy {
 export const MODULE_PRESENT: Record<string, ModulePresentation> = {
   'module.asn': { name: '到货预报', line: '货没到可以先预报，到了再收' },
   'module.putaway': { name: '上架作业', line: '收货之后可以上架归位' },
+  'module.picking': { name: '拣货', line: '出库先拣货，再发货' },
   'module.reservation': { name: '拣货占用', line: '进入拣货时先占住可用量' },
   'module.partial': { name: '短收短发', line: '收货或发货可以按实数入账' },
   'module.reversal': { name: '单据冲销', line: '已收货、已发货仍可取消并回冲' },
@@ -59,7 +60,7 @@ export const FLOW_NODES: readonly FlowNodeDef[] = [
   { id: 'putaway', lane: 'inbound', label: '上架', moduleId: 'module.putaway' },
   { id: 'done', lane: 'inbound', label: '完成' },
   { id: 'created', lane: 'outbound', label: '建单' },
-  { id: 'picking', lane: 'outbound', label: '拣货' },
+  { id: 'picking', lane: 'outbound', label: '拣货', moduleId: 'module.picking' },
   { id: 'shipped', lane: 'outbound', label: '发货' },
   { id: 'done', lane: 'outbound', label: '完成' },
 ];
@@ -75,6 +76,7 @@ export const FLOW_TAGS: readonly FlowTagDef[] = [
 const FLOW_RESULT: Record<string, { on: string; off: string }> = {
   'module.asn': { on: '打开后，收货前先预报', off: '关掉后，从建单直接到收货' },
   'module.putaway': { on: '打开后，收货后先上架再结束', off: '关掉后，收完直接结束' },
+  'module.picking': { on: '打开后，出库先拣货再发货', off: '关掉后，建单直接发货。已经在拣货中的单仍可发货或取消' },
   'module.reservation': { on: '打开后，拣货时先占住这部分货', off: '关掉后，拣货不再占库存' },
   'module.partial': { on: '打开后，收货和发货可以按实数', off: '关掉后，收货和发货都按单上的数量' },
   'module.reversal': { on: '打开后，收货或发货之后可以取消并冲回库存', off: '关掉后，收货或发货之后不能再冲销' },

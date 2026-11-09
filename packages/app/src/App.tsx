@@ -4,7 +4,7 @@ import SkusPage from './pages/SkusPage';
 import LocationsPage from './pages/LocationsPage';
 import PartnersPage from './pages/PartnersPage';
 import LabelsPage from './pages/LabelsPage';
-import OrdersPage from './pages/OrdersPage';
+import { InboundOrdersPage, OutboundOrdersPage } from './pages/OrdersPage';
 import PickingsPage from './pages/PickingsPage';
 import DashboardPage from './pages/DashboardPage';
 import InventoryPage from './pages/InventoryPage';
@@ -35,7 +35,8 @@ const PAGE_COMPONENTS: Record<Page, ComponentType> = {
   locations: LocationsPage,
   partners: PartnersPage,
   labels: LabelsPage,
-  orders: OrdersPage,
+  inbound: InboundOrdersPage,
+  outbound: OutboundOrdersPage,
   pickings: PickingsPage,
   inventory: InventoryPage,
   serials: SerialsPage,

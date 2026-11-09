@@ -59,12 +59,33 @@ export function postedBySkuBatch(lines: readonly ReturnQtyLine[]): Map<string, n
   return posted;
 }
 
+/**
+ * 退货额度认实绩。有流水时按单据名下的净变动：出库看发走的批次，入库看收进的批次。
+ * 没有任何流水时回退到单据行（老数据、或整单实数为 0 没写流水）。
+ */
+export function postedBucketsForReturn(
+  direction: OrderDirection,
+  lines: readonly ReturnQtyLine[],
+  movements: readonly { skuId: string; batchNo: string; net: number }[],
+): Map<string, number> {
+  if (movements.length === 0) return postedBySkuBatch(lines);
+  const posted = new Map<string, number>();
+  for (const row of movements) {
+    const qty = direction === 'out' ? -row.net : row.net;
+    if (qty <= QTY_EPS) continue;
+    const key = bucketKey(row.skuId, row.batchNo);
+    posted.set(key, (posted.get(key) ?? 0) + qty);
+  }
+  return posted;
+}
+
 /** 原单已入账减去未取消退货占掉的数量。 */
 export function remainingBySkuBatch(
   sourceLines: readonly ReturnQtyLine[],
   priorReturns: readonly { state: string; lines: readonly ReturnQtyLine[] }[],
+  posted?: Map<string, number>,
 ): Map<string, number> {
-  const left = postedBySkuBatch(sourceLines);
+  const left = new Map(posted ?? postedBySkuBatch(sourceLines));
   for (const ret of priorReturns) {
     for (const line of ret.lines) {
       const key = bucketKey(line.skuId, line.batchNo);
@@ -84,6 +105,8 @@ export function assertReturnLines(args: {
   sourceLines: readonly ReturnQtyLine[];
   priorReturns: readonly { state: string; lines: readonly ReturnQtyLine[] }[];
   lines: readonly { skuId: string; skuCode: string; batchNo: string; quantity: number }[];
+  /** 实绩额度。缺省时按单据行。 */
+  posted?: Map<string, number>;
 }): void {
   if (!args.moduleEnabled) throw new ReturnDisabledError();
   const source = args.source;
@@ -94,7 +117,7 @@ export function assertReturnLines(args: {
   if (!sourceIsPosted(source.direction, source.state)) {
     throw new ReturnNotPostedError(source.orderNo, source.state);
   }
-  const left = remainingBySkuBatch(args.sourceLines, args.priorReturns);
+  const left = remainingBySkuBatch(args.sourceLines, args.priorReturns, args.posted);
   const asked = new Map<string, { skuCode: string; batchNo: string; quantity: number }>();
   for (const line of args.lines) {
     const key = bucketKey(line.skuId, line.batchNo);

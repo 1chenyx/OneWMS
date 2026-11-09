@@ -107,6 +107,7 @@ export function migrateWms(db: SqliteDatabase): void {
         location_code TEXT NOT NULL,
         name          TEXT NOT NULL,
         warehouse_id  TEXT,
+        capacity      REAL,
         created_at    TEXT NOT NULL,
         updated_at    TEXT NOT NULL,
         UNIQUE (workspace_id, location_code)
@@ -116,6 +117,9 @@ export function migrateWms(db: SqliteDatabase): void {
     const locationCols = db.pragma('table_info(wms_location)') as { name: string }[];
     if (locationCols.length > 0 && !locationCols.some((c) => c.name === 'warehouse_id')) {
       db.exec(`ALTER TABLE wms_location ADD COLUMN warehouse_id TEXT`);
+    }
+    if (locationCols.length > 0 && !locationCols.some((c) => c.name === 'capacity')) {
+      db.exec(`ALTER TABLE wms_location ADD COLUMN capacity REAL`);
     }
     db.exec(
       `CREATE INDEX IF NOT EXISTS idx_wms_location_warehouse ON wms_location (workspace_id, warehouse_id)`,
@@ -221,6 +225,8 @@ export function migrateWms(db: SqliteDatabase): void {
         replenishment INTEGER NOT NULL DEFAULT 0,
         note         TEXT,
         ext_data     TEXT NOT NULL DEFAULT '{}',
+        batch_constraint TEXT,
+        location_constraint TEXT,
         created_at   TEXT NOT NULL,
         updated_at   TEXT NOT NULL,
         UNIQUE (workspace_id, order_no)
@@ -245,6 +251,13 @@ export function migrateWms(db: SqliteDatabase): void {
     const orderColsAfterExpected = db.pragma('table_info(wms_order)') as { name: string }[];
     if (orderColsAfterExpected.length > 0 && !orderColsAfterExpected.some((c) => c.name === 'replenishment')) {
       db.exec(`ALTER TABLE wms_order ADD COLUMN replenishment INTEGER NOT NULL DEFAULT 0`);
+    }
+    const orderColsConstraint = db.pragma('table_info(wms_order)') as { name: string }[];
+    if (orderColsConstraint.length > 0 && !orderColsConstraint.some((c) => c.name === 'batch_constraint')) {
+      db.exec(`ALTER TABLE wms_order ADD COLUMN batch_constraint TEXT`);
+    }
+    if (orderColsConstraint.length > 0 && !orderColsConstraint.some((c) => c.name === 'location_constraint')) {
+      db.exec(`ALTER TABLE wms_order ADD COLUMN location_constraint TEXT`);
     }
 
     // 状态冲突队列（投影，可丢）：from 对不上的 state_changed 落在这里，不改单据状态。
@@ -464,12 +477,27 @@ export function migrateWms(db: SqliteDatabase): void {
         picked_qty            REAL NOT NULL DEFAULT 0,
         picked_location_id    TEXT,
         picked_batch_no       TEXT,
+        confirmed             INTEGER NOT NULL DEFAULT 0,
         created_at            TEXT NOT NULL,
         updated_at            TEXT NOT NULL,
         UNIQUE (workspace_id, picking_id, order_line_id)
       );
       CREATE INDEX IF NOT EXISTS idx_wms_picking_line_pk
         ON wms_picking_line (workspace_id, picking_id);
+    `);
+    const pickingLineCols = db.pragma('table_info(wms_picking_line)') as { name: string }[];
+    if (pickingLineCols.length > 0 && !pickingLineCols.some((c) => c.name === 'confirmed')) {
+      db.exec(`ALTER TABLE wms_picking_line ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0`);
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_picking_allocation (
+        workspace_id TEXT NOT NULL,
+        line_id      TEXT NOT NULL,
+        location_id  TEXT NOT NULL,
+        batch_no     TEXT NOT NULL,
+        quantity     REAL NOT NULL,
+        PRIMARY KEY (workspace_id, line_id, location_id, batch_no)
+      );
     `);
   })();
 }

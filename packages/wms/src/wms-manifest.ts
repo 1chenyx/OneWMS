@@ -1,5 +1,6 @@
 import type { ModuleManifest, ToolDefinition, WorkflowDef } from '@one/core';
 import { WMS_RECORDS } from './builtin-records.js';
+import { PICKING_BYPASS_WHEN, PICKING_ENTRY_WHEN } from './picking-manifest.js';
 import { ORDER_TRANSITIONS } from './state/order-state-machine.js';
 
 /** 状态中文标签（Profile 流程的展示名） */
@@ -24,9 +25,17 @@ function defaultWorkflows(): Record<string, WorkflowDef> {
     );
     // states[0] 为初始态（约定）：created 恒在首位
     const ordered = ['created', ...stateIds.filter((id) => id !== 'created')];
+    const transitions: WorkflowDef['transitions'] = ORDER_TRANSITIONS[direction].map((t) =>
+      direction === 'out' && t.from === 'created' && t.to === 'picking'
+        ? { from: t.from, to: t.to, when: PICKING_ENTRY_WHEN }
+        : { from: t.from, to: t.to },
+    );
+    if (direction === 'out') {
+      transitions.push({ from: 'created', to: 'shipped', when: PICKING_BYPASS_WHEN });
+    }
     return {
       states: ordered.map((id) => ({ id, label: STATE_LABELS[id] ?? id })),
-      transitions: ORDER_TRANSITIONS[direction].map((t) => ({ from: t.from, to: t.to })),
+      transitions,
     };
   };
   return { inbound: build('in'), outbound: build('out') };
@@ -121,6 +130,27 @@ export function wmsManifest(toolDefs: ToolDefinition[]): ModuleManifest {
             description:
               '出库单进入该状态时只预检余量、不过账。缺省 picking。转移上的 effect 优先。改成空串会回落 picking',
             default: 'picking',
+          },
+          specifiedBatchConstraint: {
+            type: 'string',
+            enum: ['prefer', 'lock'],
+            description:
+              '出库行写了批次时的执行约束。prefer=建议，拣货可以换，库存和退货认换之后的批次；lock=锁定，只能拣这一批。没填批次的行始终不限。单张出库单的 batchConstraint 优先于本值。退货单和序列号商品始终锁定',
+            default: 'prefer',
+          },
+          specifiedLocationConstraint: {
+            type: 'string',
+            enum: ['prefer', 'lock'],
+            description:
+              '出库行写了库位时的执行约束。prefer=建议，拣货可以换库位；lock=锁定，只能从这一库位出。没填库位的行始终不限。单张出库单的 locationConstraint 优先于本值。序列号商品始终锁定库位',
+            default: 'prefer',
+          },
+          putawayCapacity: {
+            type: 'string',
+            enum: ['off', 'warn', 'block'],
+            description:
+              '上架库容。off=不看容量；warn=超过容量仍放入，结果里提示；block=放不下就拒绝，货留在收货库位。库位没填容量时不拦。只作用于上架归位，不撤回收货',
+            default: 'off',
           },
         },
       },

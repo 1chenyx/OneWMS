@@ -1,9 +1,16 @@
 import type { WmsWorkspace } from '../wms.js';
+import { specifiedConstraint, type SpecifiedConstraint } from '../state/execution-policy.js';
 
 /** core.wms 模块设置读取结果：快照 Record<string, unknown> 窄化后的键 */
 export interface WmsSettings {
   defaultAllocation: 'strict' | 'fifo' | 'fefo';
   blockExpiredOutbound: boolean;
+  /** 出库行写了批次时：建议可以换，锁定不能换。没写的行始终不限。 */
+  specifiedBatchConstraint: SpecifiedConstraint;
+  /** 出库行写了库位时：建议可以换，锁定不能换。没写的行始终不限。 */
+  specifiedLocationConstraint: SpecifiedConstraint;
+  /** 库位容量：off 不看，warn 放行并提示，block 放不下就拒绝。没填容量的库位不拦。 */
+  putawayCapacity: 'off' | 'warn' | 'block';
   /** 效期看板分层阈值（天）：M15 起从 settings 读（缺省 7 / 30） */
   expiryCriticalDays: number;
   expiryWarningDays: number;
@@ -30,6 +37,7 @@ export interface WmsSettings {
 export function readWmsSettings(ws: WmsWorkspace): WmsSettings {
   const raw = ws.profile.getSnapshot().modules['core.wms']?.settings ?? {};
   const da = raw.defaultAllocation;
+  const capacity = raw.putawayCapacity;
   const cd = raw.expiryCriticalDays;
   const wd = raw.expiryWarningDays;
   const thresholdsOk =
@@ -42,6 +50,9 @@ export function readWmsSettings(ws: WmsWorkspace): WmsSettings {
   return {
     defaultAllocation: da === 'strict' || da === 'fifo' || da === 'fefo' ? da : 'strict',
     blockExpiredOutbound: raw.blockExpiredOutbound === true,
+    specifiedBatchConstraint: specifiedConstraint(raw.specifiedBatchConstraint),
+    specifiedLocationConstraint: specifiedConstraint(raw.specifiedLocationConstraint),
+    putawayCapacity: capacity === 'warn' || capacity === 'block' ? capacity : 'off',
     expiryCriticalDays: thresholdsOk ? cd : 7,
     expiryWarningDays: thresholdsOk ? wd : 30,
     inboundIncreaseState: stateName(raw.inboundIncreaseState, 'received'),

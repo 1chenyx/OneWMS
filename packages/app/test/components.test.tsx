@@ -349,8 +349,8 @@ describe('ToolInvocationCard：后置动作按钮（M12 步骤4）', () => {
         />,
       ),
     );
-    await user.click(screen.getByRole('button', { name: '去单据查看 →' }));
-    expect(onNavigate).toHaveBeenCalledWith('orders', { orderNo: 'IN-20261031-1' });
+    await user.click(screen.getByRole('button', { name: '去入库单查看 →' }));
+    expect(onNavigate).toHaveBeenCalledWith('inbound', { orderNo: 'IN-20261031-1' });
   });
 
   it('inventory.adjust 成功 → 带 SKU 过滤跳库存页；inventory.query 单 SKU 分组同样出按钮', async () => {

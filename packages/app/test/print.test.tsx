@@ -184,7 +184,7 @@ function printCssText(): string {
 describe('单据打印（A1）', () => {
   it('OrdersPage：详情里点打印预览才看纸样，预览里点打印才挂打印根并拉起 window.print', async () => {
     const user = userEvent.setup();
-    render(wrap(<OrdersPage />));
+    render(wrap(<OrdersPage direction="in" />));
 
     expect(screen.queryByRole('button', { name: '预览单据' })).not.toBeInTheDocument();
     await user.click(screen.getAllByRole('button', { name: '详情' })[0]); // 第一行 = 入库单
@@ -223,9 +223,9 @@ describe('单据打印（A1）', () => {
 
   it('OrdersPage：出库单详情无效期列，预览后再打印，数量跟随单位', async () => {
     const user = userEvent.setup();
-    render(wrap(<OrdersPage />));
+    render(wrap(<OrdersPage direction="out" />));
 
-    await user.click(screen.getAllByRole('button', { name: '详情' })[1]); // 第二行 = 出库单
+    await user.click(screen.getAllByRole('button', { name: '详情' })[0]);
 
     const detail = screen.getByRole('dialog', { name: /详情/ });
     expect(within(detail).queryByText('效期')).not.toBeInTheDocument();
@@ -245,19 +245,19 @@ describe('单据打印（A1）', () => {
 
   it('OrdersPage：勾选当前页可以一次打印，不打开详情', async () => {
     const user = userEvent.setup();
-    render(wrap(<OrdersPage />));
+    render(wrap(<OrdersPage direction="in" />));
 
     await user.click(screen.getAllByRole('checkbox')[0]);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '预览所选' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '打印所选（2）' }));
+    await user.click(screen.getByRole('button', { name: '打印所选（1）' }));
 
     await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
     const printed = document.getElementById('order-print-area');
     expect(printed).not.toBeNull();
-    expect(printed!.querySelectorAll('.print-sheet')).toHaveLength(2);
+    expect(printed!.querySelectorAll('.print-sheet')).toHaveLength(1);
     expect(printed!.textContent).toContain('IN-20261107-1');
-    expect(printed!.textContent).toContain('OUT-20261107-1');
+    expect(printed!.textContent).not.toContain('OUT-20261107-1');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 

@@ -598,7 +598,34 @@ export class PickingIncompleteError extends CoreError {
   constructor(pickingNo: string, unpicked: number) {
     super(
       'WMS_PICKING_INCOMPLETE',
-      `拣货单 ${pickingNo} 还有 ${unpicked} 行未拣满——全部行实拣数量等于应拣数量后才能关单（不需要的行请拣 0）`,
+      `拣货单 ${pickingNo} 还有 ${unpicked} 行未拣满。没开短发时，每一行都要拣到应拣数量才能关单。开了短发也要先录入实拣，没动过的行不能直接关。`,
+    );
+  }
+}
+
+/** 锁定的批次或库位不允许改拣 */
+export class PickingSubstitutionError extends CoreError {
+  constructor(skuCode: string, detail: string) {
+    super('WMS_PICKING_SUBSTITUTION', `SKU ${skuCode} 不能改拣：${detail}`);
+  }
+}
+
+/** 出库单还有未关的拣货单，不能直接发货 */
+export class PickingStillOpenError extends CoreError {
+  constructor(orderNo: string, pickingNo: string) {
+    super(
+      'WMS_PICKING_STILL_OPEN',
+      `出库单 ${orderNo} 还有未关的拣货单 ${pickingNo}。要直接发货，先取消这张拣货单。`,
+    );
+  }
+}
+
+/** 上架目标库位超过容量，且仓库把库容设成拒绝 */
+export class PutawayCapacityError extends CoreError {
+  constructor(locationCode: string, capacity: number, onHand: number, adding: number) {
+    super(
+      'WMS_PUTAWAY_CAPACITY',
+      `库位 ${locationCode} 容量 ${capacity}，现在 ${onHand}，再放 ${adding} 放不下`,
     );
   }
 }

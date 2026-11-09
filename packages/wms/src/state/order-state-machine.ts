@@ -41,6 +41,8 @@ export const WORKFLOW_BY_DIRECTION: Readonly<Record<OrderDirection, string>> = {
  * 基础转移表（种子誊写源，M8 起无行为消费方）：
  *  - 入库：created → received → done
  *  - 出库：created → picking → shipped → done
+ *    （种子誊写时 created→picking 挂 module.picking.enabled，
+ *     并另有 created→shipped 挂 !module.picking.enabled）
  *  - 取消：未完成收/发货前可取消（created / picking）
  */
 export const ORDER_TRANSITIONS: Readonly<Record<OrderDirection, readonly StateTransition[]>> = {

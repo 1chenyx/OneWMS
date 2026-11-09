@@ -156,8 +156,14 @@ function followUpAction(invocation: ChatInvocation): FollowUpAction | undefined 
     case 'wms.sku.create':
     case 'wms.sku.update':
       return { label: '去 SKU 管理查看', page: 'skus' };
-    case 'wms.order.create':
-      return { label: '去单据查看', page: 'orders', filter: { orderNo: str(payload?.orderNo) } };
+    case 'wms.order.create': {
+      const outbound = invocation.args.direction === 'out';
+      return {
+        label: outbound ? '去出库单查看' : '去入库单查看',
+        page: outbound ? 'outbound' : 'inbound',
+        filter: { orderNo: str(payload?.orderNo) },
+      };
+    }
     case 'wms.inventory.adjust':
     case 'wms.inventory.move':
       return { label: '去库存页查看', page: 'inventory', filter: { skuCode: str(payload?.skuCode) } };

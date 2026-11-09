@@ -232,4 +232,7 @@ export {
   PickingOrderStateError,
   PickingLineNotFoundError,
   PickingNoOrdersError,
+  PickingSubstitutionError,
+  PickingStillOpenError,
+  PutawayCapacityError,
 } from './errors.js';

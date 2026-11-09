@@ -29,7 +29,7 @@ describe('导航不再单列导入导出', () => {
   it('档案和作业页还在，没有「导入导出」入口', () => {
     const items = NAV_CATEGORIES.flatMap((category) => category.items.map((item) => item.label));
     expect(items).not.toContain('导入导出');
-    expect(items).toEqual(expect.arrayContaining(['SKU 管理', '库位管理', '往来单位', '出入库单', '库存']));
+    expect(items).toEqual(expect.arrayContaining(['SKU 管理', '库位管理', '往来单位', '入库单', '出库单', '库存']));
   });
 });
 

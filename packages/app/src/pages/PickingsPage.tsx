@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CheckSquareOutlined, CloseOutlined, EyeOutlined, PlusOutlined } from '@ant-design/icons';
 import {
+  Alert,
   App as AntApp,
   Button,
   Card,
@@ -20,6 +21,7 @@ import {
   useOrders,
   usePickPickingLine,
   usePickings,
+  useProfileSnapshot,
   useCancelPicking,
 } from '../api/hooks';
 import { ApiError } from '../api/client';
@@ -42,6 +44,8 @@ import { fmtQty } from '../lib/format';
  */
 export default function PickingsPage() {
   const { message, modal } = AntApp.useApp();
+  const snapshot = useProfileSnapshot();
+  const pickingOff = snapshot.data?.modules['module.picking']?.enabled === false;
   const [stateFilter, setStateFilter] = useState<'created' | 'closed' | 'canceled' | ''>('');
   const { data: pickings, isLoading } = usePickings(stateFilter || undefined);
   const { data: orders } = useOrders('out');
@@ -228,6 +232,13 @@ export default function PickingsPage() {
           </>
         }
       />
+      {pickingOff ? (
+        <Alert
+          type="info"
+          showIcon
+          message="拣货已关闭。新的出库单直接发货。已经在拣货中的单仍可在这里做完，或在出库单上发货、取消。"
+        />
+      ) : null}
       <Card>
         <PrintSelectionBar
           count={selectedPickings.length}

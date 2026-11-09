@@ -172,7 +172,7 @@ describe('草稿保存', () => {
     expect(screen.getByText('未保存')).toBeInTheDocument();
   });
 
-  it('保存提交整份清单，并转到对话页', async () => {
+  it('保存后在本页确认，确认才写入，不跳到对话页', async () => {
     proposeMock.mockResolvedValueOnce({ proposalId: 'p-9' });
     const user = userEvent.setup();
     await renderPage();

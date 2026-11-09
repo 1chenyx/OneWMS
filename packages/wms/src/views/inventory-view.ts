@@ -524,6 +524,43 @@ export class InventoryView {
     }));
   }
 
+  /** 某库位上的实物合计，给库容用。 */
+  quantityAtLocation(locationId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(quantity), 0) AS qty FROM wms_inventory
+         WHERE workspace_id = ? AND location_id = ?`,
+      )
+      .get(this.workspaceId, locationId) as { qty: number };
+    return row.qty;
+  }
+
+  /**
+   * 一张单据名下的库存净变动，按库位和批次。
+   * 出库发货是负数，入库收货是正数，上架一负一正互抵后批次净额仍是实收。
+   */
+  movementsByOrder(orderId: string): { skuId: string; locationId: string; batchNo: string; net: number }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT sku_id, location_id, batch_no, SUM(delta) AS net
+         FROM wms_inventory_ledger
+         WHERE workspace_id = ? AND order_id = ?
+         GROUP BY sku_id, location_id, batch_no`,
+      )
+      .all(this.workspaceId, orderId) as {
+      sku_id: string;
+      location_id: string;
+      batch_no: string;
+      net: number;
+    }[];
+    return rows.map((row) => ({
+      skuId: row.sku_id,
+      locationId: row.location_id,
+      batchNo: row.batch_no,
+      net: row.net,
+    }));
+  }
+
   /** 某 SKU 的流水账（审计/对账） */
   ledgerOf(skuId: string): LedgerRecord[] {
     const rows = this.db

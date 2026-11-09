@@ -29,6 +29,7 @@ import { partialManifest } from './partial-manifest.js';
 import { reservationManifest } from './reservation-manifest.js';
 import { returnManifest } from './return-manifest.js';
 import { asnManifest } from './asn-manifest.js';
+import { outboundPickingPatch, pickingManifest } from './picking-manifest.js';
 import { replenishManifest } from './replenish-manifest.js';
 import { createReplenishTools } from './tools/replenish-tools.js';
 import { warehouseManifest } from './warehouse-manifest.js';
@@ -64,6 +65,7 @@ export class WmsDomain {
   readonly #warehouseManifest: ModuleManifest;
   readonly #serialManifest: ModuleManifest;
   readonly #lpnManifest: ModuleManifest;
+  readonly #pickingManifest: ModuleManifest;
   readonly #cache = new Map<string, WmsWorkspace>();
 
   private constructor(core: OneCore) {
@@ -100,6 +102,7 @@ export class WmsDomain {
     this.#warehouseManifest = warehouseManifest(warehouseToolDefs);
     this.#serialManifest = serialManifest(serialToolDefs);
     this.#lpnManifest = lpnManifest(lpnToolDefs);
+    this.#pickingManifest = pickingManifest();
     core.exposeModuleRegistry().registerManifest(this.#manifest);
     core.exposeModuleRegistry().registerManifest(this.#putawayManifest);
     core.exposeModuleRegistry().registerManifest(this.#reversalManifest);
@@ -111,6 +114,7 @@ export class WmsDomain {
     core.exposeModuleRegistry().registerManifest(this.#warehouseManifest);
     core.exposeModuleRegistry().registerManifest(this.#serialManifest);
     core.exposeModuleRegistry().registerManifest(this.#lpnManifest);
+    core.exposeModuleRegistry().registerManifest(this.#pickingManifest);
   }
 
   /** 把领域挂到内核上（幂等心智：attach 两次 = 工具覆盖注册 + 表 IF NOT EXISTS + 目录覆盖登记） */
@@ -137,6 +141,7 @@ export class WmsDomain {
         this.#warehouseManifest,
         this.#serialManifest,
         this.#lpnManifest,
+        this.#pickingManifest,
       );
       this.#cache.set(workspaceId, ws);
     }
@@ -189,6 +194,7 @@ export class WmsWorkspace {
   readonly #warehouseManifest: ModuleManifest;
   readonly #serialManifest: ModuleManifest;
   readonly #lpnManifest: ModuleManifest;
+  readonly #pickingManifest: ModuleManifest;
   #cursor = -1;
 
   constructor(
@@ -206,6 +212,7 @@ export class WmsWorkspace {
     warehouseManifest: ModuleManifest,
     serialManifest: ModuleManifest,
     lpnManifest: ModuleManifest,
+    pickingManifest: ModuleManifest,
   ) {
     this.#facade = core.workspace(workspaceId);
     this.#db = db;
@@ -221,6 +228,7 @@ export class WmsWorkspace {
     this.#warehouseManifest = warehouseManifest;
     this.#serialManifest = serialManifest;
     this.#lpnManifest = lpnManifest;
+    this.#pickingManifest = pickingManifest;
     this.events = this.#facade.events;
     this.fields = this.#facade.fields;
     this.tools = this.#facade.tools;
@@ -259,6 +267,37 @@ export class WmsWorkspace {
     this.#installOptional(this.#warehouseManifest);
     this.#installOptional(this.#serialManifest);
     this.#installOptional(this.#lpnManifest);
+    this.#installOptional(this.#pickingManifest);
+    this.#alignPickingGate();
+  }
+
+  /**
+   * 老库的出库流程在种子里写死了 created→picking，base 装过就不再改。
+   * 打开工作区时把缺的 when 和绕行边补上。新库种子已经带上，这里是空操作。
+   * 补丁对不上时只警告，不挡住打开。
+   */
+  #alignPickingGate(): void {
+    const outbound = this.profile.getSnapshot().workflows.outbound;
+    if (!outbound) return;
+    const patch = outboundPickingPatch(outbound);
+    if (!patch) return;
+    const actor = `module:module.picking@${this.#nodeId}`;
+    let proposalId: string | undefined;
+    try {
+      proposalId = this.profile.propose(actor, patch, '出库拣货步骤改为可开关').proposalId;
+      this.profile.confirm(proposalId, actor);
+    } catch (e) {
+      if (proposalId) {
+        try {
+          this.profile.reject(proposalId);
+        } catch {
+          // 提议已经不在待确认里
+        }
+      }
+      console.warn(
+        `[module.picking] 出库流程未能补上拣货开关：${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   /**

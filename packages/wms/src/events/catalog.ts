@@ -113,6 +113,8 @@ export interface LocationCreatedPayload {
   readonly name: string;
   /** 所属仓库（module.warehouse）。缺省 = 未分仓 */
   readonly warehouseId?: string;
+  /** 库容。缺省 = 不限。上架是否拦截由 settings.putawayCapacity 决定 */
+  readonly capacity?: number;
 }
 
 /** 库位更名（LWW：只携带变更字段；locationCode 是业务键不可改——历史单据引用它） */
@@ -125,6 +127,8 @@ export interface LocationUpdatedPayload {
    * 只有 module.warehouse 启用时工具才会写这个字段。
    */
   readonly warehouseId?: string | null;
+  /** 库容。缺省 = 不改。null = 改回不限 */
+  readonly capacity?: number | null;
 }
 
 export interface WarehouseCreatedPayload {
@@ -253,6 +257,13 @@ export interface OrderCreatedPayload {
    * 缺省 = 不是补货单。只有 wms.replenish.create 会写上。
    */
   readonly replenishment?: boolean;
+  /**
+   * 出库行写了批次时的约束。缺省 = 按仓库设置，再缺省是建议。
+   * 没填批次的行不看这个字段。
+   */
+  readonly batchConstraint?: 'prefer' | 'lock';
+  /** 出库行写了库位时的约束。缺省 = 按仓库设置，再缺省是建议。 */
+  readonly locationConstraint?: 'prefer' | 'lock';
   readonly lines: readonly OrderLinePayload[];
   readonly note?: string;
 }
@@ -457,6 +468,13 @@ export interface PickingCreatedPayload {
  * 实拣桶缺省用建议桶，picker 可改拣其他库位/批次（记录事实）。
  * 不落库存流水——扣减发生在关单（close）时的 inventory.adjusted。
  */
+export interface PickingAllocationPayload {
+  readonly locationId: string;
+  readonly locationCode?: string;
+  readonly batchNo: string;
+  readonly quantity: number;
+}
+
 export interface PickingPickedPayload {
   readonly pickingId: string;
   readonly pickingNo: string;
@@ -465,6 +483,12 @@ export interface PickingPickedPayload {
   readonly pickedLocationId?: string;
   readonly pickedLocationCode?: string;
   readonly pickedBatchNo?: string;
+  /**
+   * 这一行的全部实绩。在场时覆盖该行原来的桶。
+   * 缺省 = 旧事件的单桶，由 pickedLocation / pickedBatch / pickedQty 表达。
+   * 空数组配合 pickedQty 0 = 这行明确拣了 0。
+   */
+  readonly allocations?: readonly PickingAllocationPayload[];
 }
 
 /**

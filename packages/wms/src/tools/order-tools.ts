@@ -441,7 +441,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     id: 'wms.order.transition',
     label: '单据状态转移',
     description:
-      '推进单据状态，并按该转移的库存效应联动库存（按行的库位 + 批次）。未在转移上声明 effect 时：入库进入 received（可用 settings.inboundIncreaseState 改名）按行增加库存；出库进入 picking（outboundCheckState）只预检余量；出库进入 shipped（outboundDecreaseState）按行扣减。转移上的 effect（increase/decrease/check/none）优先于这三键。module.reversal 启用时，已收货可取消并扣回，已发货可取消并加回；停用后这两条转移不可用。module.partial 启用时，会改库存的转移可以带 lines 声明实收/实发（不大于该行订单数量，0 表示这行没到/没发）；不带 lines 按订单数量整单入账。停用 module.partial 后不能改少。已经入账的行，冲销按已入账数量，不能再改。合法目标由当前流程决定。过期批次拦截只作用于出库履约，不拦截入库冲销。拣货关单不走本工具的短发。module.reservation 启用时，出库进入只预检的状态会按行占用可用量，其他出库单不能再拿走；发货或取消时释放。停用后新的拣货不再占用，已有占用仍会在发货或取消时释放。',
+      '推进单据状态，并按该转移的库存效应联动库存（按行的库位 + 批次）。未在转移上声明 effect 时：入库进入 received（可用 settings.inboundIncreaseState 改名）按行增加库存；出库进入 picking（outboundCheckState）只预检余量；出库进入 shipped（outboundDecreaseState）按行扣减。转移上的 effect（increase/decrease/check/none）优先于这三键。module.reversal 启用时，已收货可取消并扣回，已发货可取消并加回；停用后这两条转移不可用。module.partial 启用时，会改库存的转移可以带 lines 声明实收/实发（不大于该行订单数量，0 表示这行没到/没发）；不带 lines 按订单数量整单入账。停用 module.partial 后不能改少。已经入账的行，冲销按已入账数量，不能再改。合法目标由当前流程决定。过期批次拦截只作用于出库履约，不拦截入库冲销。拣货关单不走本工具的短发。module.reservation 启用时，出库进入只预检的状态会按行占用可用量，其他出库单不能再拿走；发货或取消时释放。停用后新的拣货不再占用，已有占用仍会在发货或取消时释放。module.picking 启用时，出库从已创建先进入拣货中（只预检）；停用后已创建直接发货（预检并扣减）。已经在拣货中的单仍可发货或取消。',
     permission: 'write',
     parameters: {
       type: 'object',

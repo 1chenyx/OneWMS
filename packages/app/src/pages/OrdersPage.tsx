@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { DownOutlined, PlusOutlined, RollbackOutlined, VerticalAlignTopOutlined } from '@ant-design/icons';
-import { Alert, App as AntApp, Button, Card, Dropdown, Input, InputNumber, Segmented, Table, Tag, Tooltip, Typography } from 'antd';
+import { Alert, App as AntApp, Button, Card, Dropdown, Input, InputNumber, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ProfileSnapshot } from '@one/core';
 import { evalWhenCondition } from '@one/core/when';
@@ -9,7 +9,6 @@ import { ApiError } from '../api/client';
 import type { Order } from '../api/client';
 import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
 import OrderDetailDrawer from '../components/OrderDetailDrawer';
-import OrderFormModal from '../components/OrderFormModal';
 import PutawayModal from '../components/PutawayModal';
 import ReturnModal from '../components/ReturnModal';
 import PageHeader from '../components/PageHeader';
@@ -19,6 +18,7 @@ import { OrderPrintSheet } from '../components/print-sheets';
 import { serverPagination, monoCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
 import { useAppNav } from '../app-nav';
+import OrderCreatePage from './OrderCreatePage';
 
 /**
  * 单据管理页——流转按钮由 Profile workflows 驱动（UI 消费配置面）：
@@ -31,31 +31,33 @@ import { useAppNav } from '../app-nav';
  * Dropdown（点选目标态 → modal.confirm 二次确认——出入库动库存，不裸点）；
  * 清单按页向服务端要，单号过滤走 q。点单号或「详情」打开抽屉。
  * 详情只看单据。右上角「打印预览」再看纸样。勾选当前页可以一次打出多页，不经过预览。
+ * 「新建单据」离开清单，打开整页开单。入库页和出库页各开各的，方向在进页时已经定了。
  * AI 跳转携带的 orderNo 预填过滤框（M12 步骤4，挂载时一次性消费）。
  */
-export default function OrdersPage() {
+export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
   const { message, modal } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
-  const [direction, setDirection] = useState<'all' | 'in' | 'out'>('all');
   const [orderNoFilter, setOrderNoFilter] = useState(() => takeInitialFilter()?.orderNo ?? '');
   const noKw = orderNoFilter.trim();
   const list = useListPage(`${direction}|${noKw}`);
-  const { data: orders, isLoading } = useOrders(direction === 'all' ? undefined : direction, {
+  const { data: orders, isLoading } = useOrders(direction, {
     q: noKw || undefined,
     limit: list.limit,
     offset: list.offset,
   });
   const orderPayload = orders as Order[] | ListPage<Order> | undefined;
   // 测试桩仍返回整表数组，过滤留在客户端。服务端分页时 q 已经过滤过。
-  const visibleOrders = Array.isArray(orderPayload)
-    ? orderPayload.filter((o) => (noKw ? o.orderNo.toLowerCase().includes(noKw.toLowerCase()) : true))
-    : rowsOf(orderPayload);
+  const visibleOrders = (
+    Array.isArray(orderPayload)
+      ? orderPayload.filter((o) => (noKw ? o.orderNo.toLowerCase().includes(noKw.toLowerCase()) : true))
+      : rowsOf(orderPayload)
+  ).filter((o) => o.direction === direction);
   const snapshot = useProfileSnapshot();
   const transition = useTransitionOrder();
   const conflicts = useOrderConflicts();
   const acceptConflict = useAcceptConflict();
   const dismissConflict = useDismissConflict();
-  const [formOpen, setFormOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [putawayOrder, setPutawayOrder] = useState<Order | null>(null);
   const [returnOrder, setReturnOrder] = useState<Order | null>(null);
   const session = usePrintSession<Order>();
@@ -294,22 +296,23 @@ export default function OrdersPage() {
     },
   ];
 
+  if (creating) {
+    return (
+      <OrderCreatePage direction={direction} onClose={() => setCreating(false)} />
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
-        title="出入库单"
-        subtitle="单据与流转；流转按钮由配置层流程定义驱动"
+        title={direction === 'in' ? '入库单' : '出库单'}
+        subtitle={
+          direction === 'in'
+            ? '收货、上架和到货预报。新建时把货和库位写清楚。'
+            : '拣货和发货。新建时先看每一件货还剩多少，再决定出哪一桶。'
+        }
         extra={
           <>
-            <Segmented
-              value={direction}
-              onChange={(v) => setDirection(v as 'all' | 'in' | 'out')}
-              options={[
-                { value: 'all', label: '全部' },
-                { value: 'in', label: '入库' },
-                { value: 'out', label: '出库' },
-              ]}
-            />
             <Input
               allowClear
               placeholder="按单号过滤"
@@ -320,7 +323,7 @@ export default function OrdersPage() {
             <OrderSheetPort
               labelState={(state, direction) => stateLabel(snapshot.data, state, direction)}
             />
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setFormOpen(true)}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>
               新建单据
             </Button>
           </>
@@ -385,7 +388,6 @@ export default function OrdersPage() {
           })}
           locale={{ emptyText: '还没有单据' }}
         />
-        <OrderFormModal open={formOpen} onClose={() => setFormOpen(false)} />
         <PutawayModal open={putawayOrder !== null} order={putawayOrder} onClose={() => setPutawayOrder(null)} />
         <ReturnModal open={returnOrder !== null} order={returnOrder} onClose={() => setReturnOrder(null)} />
       </Card>
@@ -472,4 +474,12 @@ function nextStates(snapshot: ProfileSnapshot | undefined, direction: Order['dir
         .map((t) => t.to),
     ),
   ];
+}
+
+export function InboundOrdersPage() {
+  return <OrdersPage direction="in" />;
+}
+
+export function OutboundOrdersPage() {
+  return <OrdersPage direction="out" />;
 }
