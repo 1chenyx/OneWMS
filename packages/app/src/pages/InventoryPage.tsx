@@ -213,13 +213,39 @@ export default function InventoryPage() {
     },
   ];
 
+  const locationOptions = [
+    { value: 'DEFAULT', label: 'DEFAULT · 默认库位' },
+    ...(locations ?? []).map((location) => ({
+      value: location.locationCode,
+      label:
+        location.name && location.name !== location.locationCode
+          ? `${location.locationCode} · ${location.name}`
+          : location.locationCode,
+    })),
+  ];
+  const sliceRows = sliceQuery.isError ? [] : (sliceQuery.data?.rows ?? []);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
         title="库存"
-        subtitle="流水汇总：余量 / 冻结 / 可用量（低于安全库存标红）"
+        subtitle={
+          sliced
+            ? '实物余量。冻结、预占和可用量只在按 SKU、且不筛库位 / 批次 / 仓库时显示。'
+            : '按 SKU 合计：余量 / 冻结 / 可用量（低于安全库存标红）。换视角可看库位、批次或仓库。'
+        }
         extra={
           <>
+            <Segmented<InventorySliceView>
+              value={activeView}
+              onChange={setView}
+              options={[
+                { value: 'sku', label: '按 SKU' },
+                { value: 'location', label: '按库位' },
+                { value: 'batch', label: '按批次' },
+                ...(warehouseOn ? [{ value: 'warehouse' as const, label: '按仓库' }] : []),
+              ]}
+            />
             <ScanInput onScan={handleScan} />
             <Input
               allowClear
@@ -228,9 +254,52 @@ export default function InventoryPage() {
               onChange={(e) => setKeyword(e.target.value)}
               style={{ width: 180 }}
             />
-            <Checkbox checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)}>
-              只看低库存
-            </Checkbox>
+            <Select
+              aria-label="库位"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="库位"
+              value={locationCode}
+              onChange={(value) => setLocationCode(value)}
+              options={locationOptions}
+              style={{ width: 180 }}
+            />
+            <Input
+              allowClear
+              aria-label="批次号"
+              placeholder="批次号"
+              value={batchNo}
+              onChange={(e) => setBatchNo(e.target.value)}
+              style={{ width: 140 }}
+            />
+            {warehouseOn ? (
+              <Select
+                aria-label="仓库"
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                placeholder="仓库"
+                value={warehouseFilter}
+                onChange={(value) => setWarehouseFilter(value)}
+                options={[
+                  { value: '__unassigned__', label: '未分仓' },
+                  ...(warehouses ?? []).map((warehouse) => ({
+                    value: warehouse.warehouseCode,
+                    label:
+                      warehouse.name && warehouse.name !== warehouse.warehouseCode
+                        ? `${warehouse.warehouseCode} · ${warehouse.name}`
+                        : warehouse.warehouseCode,
+                  })),
+                ]}
+                style={{ width: 180 }}
+              />
+            ) : null}
+            {sliced ? null : (
+              <Checkbox checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)}>
+                只看低库存
+              </Checkbox>
+            )}
             {replenishOn ? <Button onClick={() => setReplenishOpen(true)}>生成补货单</Button> : null}
             <InventorySheetPort reservationOn={reservationOn} />
             <Button type="primary" icon={<EditOutlined />} onClick={() => openAdjust(null)}>
@@ -240,23 +309,136 @@ export default function InventoryPage() {
         }
       />
       <Card>
-        <Table<InventoryRow>
-          rowKey="skuId"
-          columns={columns}
-          dataSource={visibleRows}
-          loading={isLoading}
-          pagination={serverPagination({
-            current: list.page,
-            total: isListPage(payload) ? payload.total : visibleRows.length,
-            onChange: list.setPage,
-          })}
-          locale={{ emptyText: '还没有库存流水（录入期初或调整后出现）' }}
-        />
+        {sliced ? (
+          <Table<InventorySliceRow>
+            rowKey="key"
+            columns={sliceColumns(activeView)}
+            dataSource={sliceRows}
+            loading={sliceQuery.isLoading}
+            pagination={serverPagination({
+              current: list.page,
+              total: sliceQuery.data?.total ?? 0,
+              onChange: list.setPage,
+            })}
+            locale={{
+              emptyText: sliceQuery.isError
+                ? sliceQuery.error instanceof Error
+                  ? sliceQuery.error.message
+                  : '库存查询失败'
+                : '没有符合条件的实物库存',
+            }}
+            expandable={{
+              rowExpandable: (row) => row.details.length > 0,
+              expandedRowRender: (row) => <SliceDetailTable details={row.details} unit={row.unit} />,
+            }}
+          />
+        ) : (
+          <Table<InventoryRow>
+            rowKey="skuId"
+            columns={columns}
+            dataSource={visibleRows}
+            loading={isLoading}
+            pagination={serverPagination({
+              current: list.page,
+              total: isListPage(payload) ? payload.total : visibleRows.length,
+              onChange: list.setPage,
+            })}
+            locale={{ emptyText: '还没有库存流水（录入期初或调整后出现）' }}
+          />
+        )}
         <AdjustModal open={adjustOpen} preset={preset} onClose={() => setAdjustOpen(false)} />
         <HoldModal row={holdRow} onClose={() => setHoldRow(null)} />
         {replenishOn ? <ReplenishModal open={replenishOpen} onClose={() => setReplenishOpen(false)} /> : null}
       </Card>
     </div>
+  );
+}
+
+function sliceColumns(view: InventorySliceView): ColumnsType<InventorySliceRow> {
+  const skuColumns: ColumnsType<InventorySliceRow> = [
+    { title: '编码', dataIndex: 'skuCode', key: 'skuCode', onCell: monoCell },
+    { title: '名称', dataIndex: 'name', key: 'name' },
+  ];
+  const quantityColumn: ColumnsType<InventorySliceRow>[number] = {
+    title: '余量',
+    dataIndex: 'quantity',
+    key: 'quantity',
+    align: 'right',
+    onCell: numCell,
+    render: (value: number, row) => <Typography.Text strong>{fmtQty(value, row.unit)}</Typography.Text>,
+  };
+  if (view === 'location') {
+    return [
+      ...skuColumns,
+      { title: '库位', dataIndex: 'locationCode', key: 'locationCode', onCell: monoCell },
+      { title: '库位名称', dataIndex: 'locationName', key: 'locationName' },
+      quantityColumn,
+    ];
+  }
+  if (view === 'batch') {
+    return [
+      ...skuColumns,
+      { title: '批次', dataIndex: 'batchNo', key: 'batchNo', onCell: monoCell },
+      {
+        title: '效期',
+        dataIndex: 'batchExpiryDate',
+        key: 'batchExpiryDate',
+        render: (value: string | null) => value ?? '—',
+      },
+      quantityColumn,
+    ];
+  }
+  if (view === 'warehouse') {
+    return [
+      {
+        title: '仓库',
+        key: 'warehouse',
+        onCell: monoCell,
+        render: (_, row) => warehouseLabel(row),
+      },
+      ...skuColumns,
+      quantityColumn,
+    ];
+  }
+  return [...skuColumns, quantityColumn];
+}
+
+function warehouseLabel(row: InventorySliceRow): string {
+  if (!row.warehouseCode) return row.warehouseName ?? '未分仓';
+  if (row.warehouseName && row.warehouseName !== row.warehouseCode) {
+    return `${row.warehouseCode} · ${row.warehouseName}`;
+  }
+  return row.warehouseCode;
+}
+
+/** 展开行：这一组合计是由哪些桶加出来的。 */
+function SliceDetailTable({ details, unit }: { details: InventorySliceDetail[]; unit: string | null }) {
+  return (
+    <Table<InventorySliceDetail>
+      size="small"
+      rowKey={(detail) => `${detail.locationCode}@${detail.batchNo}`}
+      pagination={false}
+      dataSource={details}
+      columns={[
+        { title: '库位', dataIndex: 'locationCode', key: 'locationCode', onCell: monoCell },
+        { title: '库位名称', dataIndex: 'locationName', key: 'locationName' },
+        { title: '批次', dataIndex: 'batchNo', key: 'batchNo', onCell: monoCell },
+        {
+          title: '效期',
+          dataIndex: 'batchExpiryDate',
+          key: 'batchExpiryDate',
+          render: (value: string | null) => value ?? '—',
+        },
+        {
+          title: '余量',
+          dataIndex: 'quantity',
+          key: 'quantity',
+          align: 'right',
+          onCell: numCell,
+          render: (value: number) => <Typography.Text strong>{fmtQty(value, unit)}</Typography.Text>,
+        },
+      ]}
+    />
   );
 }
 
