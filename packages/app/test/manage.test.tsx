@@ -39,6 +39,9 @@ let partialEnabled = false;
 /** 拣货占用开关。默认关，库存表不出现预占列。 */
 let reservationEnabled = false;
 
+/** 多仓开关。默认关，库存页不出现「按仓库」。 */
+let warehouseEnabled = false;
+
 /** 单据冲突队列。默认空，避免其它用例被警告条干扰。 */
 let conflictsFixture: {
   eventId: string;
@@ -162,6 +165,7 @@ vi.mock('../src/api/hooks', () => ({
         ...(reservationEnabled
           ? { 'module.reservation': { enabled: true, version: '0.1.0', settings: {} } }
           : {}),
+        ...(warehouseEnabled ? { 'module.warehouse': { enabled: true, version: '0.1.0', settings: {} } } : {}),
       },
     },
   }),
@@ -185,6 +189,62 @@ vi.mock('../src/api/hooks', () => ({
     data: reservationEnabled
       ? inventoryFixture.map((row, index) => (index === 0 ? { ...row, reserved: 6 } : row))
       : inventoryFixture,
+  }),
+  useInventorySlices: (query: { view?: string } | null) => ({
+    isLoading: false,
+    isError: false,
+    error: null,
+    data: query
+      ? query.view === 'warehouse'
+        ? {
+            total: 1,
+            limit: 50,
+            offset: 0,
+            hasMore: false,
+            view: 'warehouse',
+            rows: [
+              {
+                key: 'wh@s-1',
+                skuCode: 'A-1',
+                name: '螺丝',
+                unit: '个',
+                quantity: 4,
+                warehouseCode: 'WH-1',
+                warehouseName: '一号仓',
+                details: [
+                  { locationCode: 'A-01', locationName: '一号架', batchNo: 'B1', batchExpiryDate: '2027-06-01', quantity: 4 },
+                ],
+              },
+            ],
+          }
+        : {
+            total: 1,
+            limit: 50,
+            offset: 0,
+            hasMore: false,
+            view: query.view,
+            rows: [
+              {
+                key: 's-1@A-01',
+                skuCode: 'A-1',
+                name: '螺丝',
+                unit: '个',
+                quantity: 12,
+                locationCode: 'A-01',
+                locationName: '一号架',
+                batchNo: 'B1',
+                batchExpiryDate: '2027-01-01',
+                details: [
+                  { locationCode: 'A-01', locationName: '一号架', batchNo: 'B1', batchExpiryDate: '2027-01-01', quantity: 12 },
+                ],
+              },
+            ],
+          }
+      : undefined,
+  }),
+  useWarehouses: () => ({
+    isLoading: false,
+    data: [{ id: 'w-1', warehouseCode: 'WH-1', name: '一号仓', locationCount: 1, createdAt: '', updatedAt: '' }],
   }),
   useAdjustInventory: () => ({ mutateAsync: adjustMock, isPending: false }),
   useHolds: (skuCode?: string) => ({
@@ -233,6 +293,7 @@ afterEach(() => {
   conflictsFixture = [];
   partialEnabled = false;
   reservationEnabled = false;
+  warehouseEnabled = false;
 });
 
 describe('SkusPage：动态列（Profile 消费闭环）', () => {
@@ -499,6 +560,46 @@ describe('InventoryPage：清单与调整', () => {
     );
     expect((screen.getByPlaceholderText('按编码/名称过滤') as HTMLInputElement).value).toBe('A-1');
     expect(screen.getByText('A-1')).toBeInTheDocument(); // 过滤后仍可见
+  });
+
+  it('按库位只显示实物余量，展开能看到批次；多仓关掉时没有按仓库', async () => {
+    const user = userEvent.setup();
+    render(wrap(<InventoryPage />));
+
+    expect(screen.getByText('可用量')).toBeInTheDocument();
+    expect(screen.queryByText('按仓库')).not.toBeInTheDocument();
+
+    await user.click(screen.getByText('按库位'));
+    expect(screen.queryByText('可用量')).not.toBeInTheDocument();
+    expect(screen.queryByText('只看低库存')).not.toBeInTheDocument();
+    expect(screen.getByText('A-01')).toBeInTheDocument();
+    expect(screen.getByText('12 个')).toBeInTheDocument();
+    expect(within(screen.getByText('A-1').closest('tr')!).queryByRole('button', { name: '调整' })).not.toBeInTheDocument();
+
+    await user.click(document.querySelector('.ant-table-row-expand-icon')!);
+    expect(screen.getByText('B1')).toBeInTheDocument();
+    expect(screen.getByText('2027-01-01')).toBeInTheDocument();
+  });
+
+  it('按 SKU 时筛了库位，也改成实物余量', async () => {
+    const user = userEvent.setup();
+    render(wrap(<InventoryPage />));
+
+    await user.click(screen.getByRole('combobox', { name: '库位' }));
+    await user.click(await screen.findByText('DEFAULT · 默认库位'));
+    expect(screen.queryByText('可用量')).not.toBeInTheDocument();
+    expect(screen.getByText('12 个')).toBeInTheDocument();
+  });
+
+  it('多仓打开时可以按仓库看合计', async () => {
+    warehouseEnabled = true;
+    const user = userEvent.setup();
+    render(wrap(<InventoryPage />));
+
+    await user.click(screen.getByText('按仓库'));
+    expect(screen.getByText('WH-1 · 一号仓')).toBeInTheDocument();
+    expect(screen.getByText('4 个')).toBeInTheDocument();
+    expect(screen.queryByText('可用量')).not.toBeInTheDocument();
   });
 });
 

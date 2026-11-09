@@ -232,7 +232,9 @@ export default function InventoryPage() {
         subtitle={
           sliced
             ? '实物余量。冻结、预占和可用量只在按 SKU、且不筛库位 / 批次 / 仓库时显示。'
-            : '按 SKU 合计：余量 / 冻结 / 可用量（低于安全库存标红）。换视角可看库位、批次或仓库。'
+            : warehouseOn
+              ? '按 SKU 合计：余量 / 冻结 / 可用量（低于安全库存标红）。换视角可看库位、批次或仓库。'
+              : '按 SKU 合计：余量 / 冻结 / 可用量（低于安全库存标红）。换视角可看库位或批次。'
         }
         extra={
           <>
@@ -317,7 +319,7 @@ export default function InventoryPage() {
             loading={sliceQuery.isLoading}
             pagination={serverPagination({
               current: list.page,
-              total: sliceQuery.data?.total ?? 0,
+              total: sliceQuery.isError ? 0 : (sliceQuery.data?.total ?? 0),
               onChange: list.setPage,
             })}
             locale={{

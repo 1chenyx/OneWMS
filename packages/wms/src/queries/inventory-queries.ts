@@ -305,13 +305,14 @@ export function listInventorySlices(
   ws.sync();
   if (opts.view === 'warehouse' || opts.warehouseId !== undefined) assertWarehouseEnabled(ws);
   const locationId = opts.locationCode ? resolveLocation(ws, opts.locationCode).locationId : undefined;
+  // 批次框是随打随筛的，按包含匹配；库位和仓库来自下拉，仍是精确匹配。
   const batchNo = opts.batchNo?.trim() || undefined;
   const needle = opts.q?.trim().toLowerCase() ?? '';
   const groups = new Map<string, SliceFact[]>();
   for (const row of ws.inventory.list()) {
     if (row.quantity === 0) continue;
     if (locationId !== undefined && row.locationId !== locationId) continue;
-    if (batchNo !== undefined && row.batchNo !== batchNo) continue;
+    if (batchNo !== undefined && !row.batchNo.includes(batchNo)) continue;
     const fact = sliceFact(ws, row);
     if (opts.warehouseId !== undefined && fact.warehouseId !== opts.warehouseId) continue;
     if (needle && !fact.skuCode.toLowerCase().includes(needle) && !fact.name.toLowerCase().includes(needle)) continue;

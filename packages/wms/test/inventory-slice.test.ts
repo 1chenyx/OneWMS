@@ -77,7 +77,10 @@ afterEach(() => {
   core.close();
 });
 
-function page(view: 'sku' | 'location' | 'batch' | 'warehouse', extra: Record<string, unknown> = {}) {
+function page(
+  view: 'sku' | 'location' | 'batch' | 'warehouse',
+  extra: { q?: string; locationCode?: string; batchNo?: string; warehouseId?: string | null } = {},
+) {
   return listInventorySlices(ws, { view, limit: 50, offset: 0, ...extra });
 }
 
@@ -148,6 +151,8 @@ describe('listInventorySlices', () => {
 
     const named = page('location', { q: '螺母' });
     expect(named.rows.map((row) => row.skuCode)).toEqual(['B-2']);
+    const partialBatch = page('location', { batchNo: 'B1' });
+    expect(partialBatch.rows.flatMap((row) => row.details.map((detail) => detail.batchNo)).sort()).toEqual(['B1', 'B1']);
 
     const wh1 = page('warehouse', { warehouseId: ws.warehouses.byCode('WH-1')!.id });
     expect(wh1.rows.map((row) => row.skuCode)).toEqual(['A-1']);

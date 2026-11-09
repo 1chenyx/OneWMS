@@ -313,6 +313,10 @@ describe('库存端点', () => {
       },
     ]);
 
+    const badView = await app.request('/api/inventory/slices?view=bin&limit=50');
+    expect(badView.status).toBe(400);
+    expect(((await badView.json()) as { code: string }).code).toBe('BAD_QUERY');
+
     // 出库超余量 → 拒绝（库存不可为负）
     const bad = await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: -100 });
     expect(bad.status).toBe(400);
@@ -1041,6 +1045,22 @@ describe('多仓端点（module.warehouse）', () => {
     expect(stock.warehouseCode).toBe('WH-1');
     expect(stock.rows).toEqual([
       expect.objectContaining({ skuCode: 'A-1', locationCode: 'A-01', quantity: 4 }),
+    ]);
+
+    const slices = await app.request('/api/inventory/slices?view=warehouse&warehouseCode=WH-1&limit=50');
+    expect(slices.status).toBe(200);
+    const sliceBody = (await slices.json()) as {
+      view: string;
+      rows: { warehouseCode: string; skuCode: string; quantity: number; details: { locationCode: string; quantity: number }[] }[];
+    };
+    expect(sliceBody.view).toBe('warehouse');
+    expect(sliceBody.rows).toEqual([
+      expect.objectContaining({
+        warehouseCode: 'WH-1',
+        skuCode: 'A-1',
+        quantity: 4,
+        details: [expect.objectContaining({ locationCode: 'A-01', quantity: 4 })],
+      }),
     ]);
 
     const missing = await app.request('/api/warehouses/NOPE/stock');
