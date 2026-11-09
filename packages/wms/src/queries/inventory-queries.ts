@@ -1,7 +1,9 @@
 import type { WmsWorkspace } from '../wms.js';
 import { readWmsSettings } from '../config/wms-settings.js';
-import { codeOfLocation } from '../state/inventory-policy.js';
+import { DEFAULT_LOCATION_ID } from '../events/catalog.js';
+import { codeOfLocation, resolveLocation } from '../state/inventory-policy.js';
 import { toListPage, type ListPage } from './page.js';
+import { assertWarehouseEnabled } from './warehouse-queries.js';
 
 export interface InventorySummaryRow {
   skuId: string;
@@ -228,4 +230,178 @@ export function getExpiryBoard(
       a.batchNo.localeCompare(b.batchNo),
   );
   return { today, rows };
+}
+
+/** 库存页的视角。sku 在带了库位、批次或仓库筛选时也走这里，只返回实物余量。 */
+export type InventorySliceView = 'sku' | 'location' | 'batch' | 'warehouse';
+
+/** 一行展开后的桶。库位 × 批次，数量是该桶余量。 */
+export interface InventorySliceDetail {
+  locationCode: string;
+  locationName: string;
+  batchNo: string;
+  batchExpiryDate: string | null;
+  quantity: number;
+}
+
+/**
+ * 一个视角上的合计行。
+ * 按库位带 location*，按批次带 batch*，按仓库带 warehouse*。
+ * 未分仓的 warehouseCode 为 null，warehouseName 为「未分仓」。
+ */
+export interface InventorySliceRow {
+  key: string;
+  skuCode: string;
+  name: string;
+  unit: string | null;
+  quantity: number;
+  locationCode?: string;
+  locationName?: string;
+  batchNo?: string;
+  batchExpiryDate?: string | null;
+  warehouseCode?: string | null;
+  warehouseName?: string | null;
+  details: InventorySliceDetail[];
+}
+
+export interface InventorySlicePage extends ListPage<InventorySliceRow> {
+  view: InventorySliceView;
+}
+
+interface SliceFact {
+  skuId: string;
+  skuCode: string;
+  name: string;
+  unit: string | null;
+  locationId: string;
+  locationCode: string;
+  locationName: string;
+  warehouseId: string | null;
+  warehouseCode: string | null;
+  warehouseName: string | null;
+  batchNo: string;
+  batchExpiryDate: string | null;
+  quantity: number;
+}
+
+/**
+ * 按视角把库存桶收成页。
+ * 数量只加总实物余量，不含冻结和拣货占用。零余量的桶不出现，负数仍留下。
+ * 仓库不是库存键：按仓库时把库位上的 warehouseId 加总，DEFAULT 和未划仓的库位归「未分仓」。
+ * warehouseId 为 undefined 表示不按仓库收；null 表示只看未分仓。这两种和 view=warehouse 都要求多仓开着。
+ */
+export function listInventorySlices(
+  ws: WmsWorkspace,
+  opts: {
+    view: InventorySliceView;
+    q?: string;
+    locationCode?: string;
+    batchNo?: string;
+    warehouseId?: string | null;
+    limit: number;
+    offset: number;
+  },
+): InventorySlicePage {
+  ws.sync();
+  if (opts.view === 'warehouse' || opts.warehouseId !== undefined) assertWarehouseEnabled(ws);
+  const locationId = opts.locationCode ? resolveLocation(ws, opts.locationCode).locationId : undefined;
+  const batchNo = opts.batchNo?.trim() || undefined;
+  const needle = opts.q?.trim().toLowerCase() ?? '';
+  const groups = new Map<string, SliceFact[]>();
+  for (const row of ws.inventory.list()) {
+    if (row.quantity === 0) continue;
+    if (locationId !== undefined && row.locationId !== locationId) continue;
+    if (batchNo !== undefined && row.batchNo !== batchNo) continue;
+    const fact = sliceFact(ws, row);
+    if (opts.warehouseId !== undefined && fact.warehouseId !== opts.warehouseId) continue;
+    if (needle && !fact.skuCode.toLowerCase().includes(needle) && !fact.name.toLowerCase().includes(needle)) continue;
+    const key = sliceGroupKey(opts.view, fact);
+    const list = groups.get(key);
+    if (list) list.push(fact);
+    else groups.set(key, [fact]);
+  }
+  const rows = [...groups.values()]
+    .map((facts) => sliceRow(opts.view, facts))
+    .sort((a, b) => compareSliceRows(opts.view, a, b));
+  return { view: opts.view, ...toListPage(rows.slice(opts.offset, opts.offset + opts.limit), rows.length, opts.limit, opts.offset) };
+}
+
+function sliceFact(
+  ws: WmsWorkspace,
+  row: { skuId: string; locationId: string; batchNo: string; batchExpiryDate: string | null; quantity: number },
+): SliceFact {
+  const sku = ws.skus.byId(row.skuId);
+  const isDefault = row.locationId === DEFAULT_LOCATION_ID;
+  const location = isDefault ? undefined : ws.locations.byId(row.locationId);
+  const warehouse = location?.warehouseId ? ws.warehouses.byId(location.warehouseId) : undefined;
+  return {
+    skuId: row.skuId,
+    skuCode: sku?.skuCode ?? '(未知)',
+    name: sku?.name ?? '',
+    unit: sku?.unit ?? null,
+    locationId: row.locationId,
+    locationCode: isDefault ? DEFAULT_LOCATION_ID : (location?.locationCode ?? row.locationId),
+    locationName: isDefault ? '默认库位' : (location?.name ?? '(未知库位)'),
+    warehouseId: location?.warehouseId ?? null,
+    warehouseCode: warehouse?.warehouseCode ?? (location?.warehouseId ? location.warehouseId : null),
+    warehouseName: warehouse?.name ?? null,
+    batchNo: row.batchNo,
+    batchExpiryDate: row.batchExpiryDate,
+    quantity: row.quantity,
+  };
+}
+
+function sliceGroupKey(view: InventorySliceView, fact: SliceFact): string {
+  if (view === 'location') return `${fact.skuId}\u0000${fact.locationId}`;
+  if (view === 'batch') return `${fact.skuId}\u0000${fact.batchNo}`;
+  if (view === 'warehouse') return `${fact.warehouseId ?? ''}\u0000${fact.skuId}`;
+  return fact.skuId;
+}
+
+function sliceRow(view: InventorySliceView, facts: SliceFact[]): InventorySliceRow {
+  const head = facts[0]!;
+  const details = facts
+    .map((fact) => ({
+      locationCode: fact.locationCode,
+      locationName: fact.locationName,
+      batchNo: fact.batchNo,
+      batchExpiryDate: fact.batchExpiryDate,
+      quantity: fact.quantity,
+    }))
+    .sort((a, b) => a.locationCode.localeCompare(b.locationCode) || a.batchNo.localeCompare(b.batchNo));
+  const expiry = details.find((detail) => detail.batchExpiryDate)?.batchExpiryDate ?? null;
+  const row: InventorySliceRow = {
+    key: sliceGroupKey(view, head),
+    skuCode: head.skuCode,
+    name: head.name,
+    unit: head.unit,
+    quantity: facts.reduce((sum, fact) => sum + fact.quantity, 0),
+    details,
+  };
+  if (view === 'location') {
+    row.locationCode = head.locationCode;
+    row.locationName = head.locationName;
+  } else if (view === 'batch') {
+    row.batchNo = head.batchNo;
+    row.batchExpiryDate = expiry;
+  } else if (view === 'warehouse') {
+    row.warehouseCode = head.warehouseCode;
+    row.warehouseName = head.warehouseId ? (head.warehouseName ?? '(未知仓库)') : '未分仓';
+  }
+  return row;
+}
+
+function compareSliceRows(view: InventorySliceView, a: InventorySliceRow, b: InventorySliceRow): number {
+  if (view === 'location') {
+    return (a.locationCode ?? '').localeCompare(b.locationCode ?? '') || a.skuCode.localeCompare(b.skuCode);
+  }
+  if (view === 'batch') {
+    return a.skuCode.localeCompare(b.skuCode) || (a.batchNo ?? '').localeCompare(b.batchNo ?? '');
+  }
+  if (view === 'warehouse') {
+    const warehouseOrder =
+      (a.warehouseCode ?? '\uffff').localeCompare(b.warehouseCode ?? '\uffff');
+    return warehouseOrder || a.skuCode.localeCompare(b.skuCode);
+  }
+  return a.skuCode.localeCompare(b.skuCode);
 }

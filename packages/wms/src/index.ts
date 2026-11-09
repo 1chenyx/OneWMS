@@ -135,6 +135,7 @@ export {
   listHoldRows,
   listInventorySummary,
   listInventorySummaryPage,
+  listInventorySlices,
   listLedger,
 } from './queries/inventory-queries.js';
 export type {
@@ -142,6 +143,10 @@ export type {
   ExpiryBoard,
   ExpiryLevel,
   HoldListRow,
+  InventorySliceDetail,
+  InventorySlicePage,
+  InventorySliceRow,
+  InventorySliceView,
   InventorySummaryPage,
   InventorySummaryRow,
   LedgerRow,

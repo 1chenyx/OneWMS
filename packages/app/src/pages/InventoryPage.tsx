@@ -1,10 +1,21 @@
 import { useState } from 'react';
 import { EditOutlined, LockOutlined } from '@ant-design/icons';
-import { App as AntApp, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Typography } from 'antd';
+import { App as AntApp, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Segmented, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useAdjustInventory, useCreateHold, useHolds, useInventory, useProfileSnapshot, useReleaseHold, useSkus } from '../api/hooks';
+import {
+  useAdjustInventory,
+  useCreateHold,
+  useHolds,
+  useInventory,
+  useInventorySlices,
+  useLocations,
+  useProfileSnapshot,
+  useReleaseHold,
+  useSkus,
+  useWarehouses,
+} from '../api/hooks';
 import { ApiError, api } from '../api/client';
-import type { InventoryRow } from '../api/client';
+import type { InventoryRow, InventorySliceDetail, InventorySliceRow, InventorySliceView } from '../api/client';
 import { isListPage, rowsOf, useListPage } from '../api/page';
 import type { InventoryListPage } from '../api/wms-api';
 import { useAppNav } from '../app-nav';
@@ -16,30 +27,57 @@ import { serverPagination, monoCell, numCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
 
 /**
- * 库存页：清单（流水汇总投影 + SKU 联查）+ 手工调整 + 冻结管理（M19）
- * + 低库存预警（M20：安全库存列、可用量低于阈值标红、「只看低库存」过滤）。
- * 调整走 wms.inventory.adjust 工具（库存不可为负的护栏在 handler）；
- * 冻结走 wms.inventory.hold / release（不改物理库存，单据出库按可用量拦截）。
- * AI 跳转携带的 skuCode 预填过滤框（M12 步骤4，挂载时一次性消费）。
- * 扫码（M18）：扫条码（或编码）= 选中该 SKU 并打开调整弹窗（无库存行也照开，
- * 余量显示 0——期初录入入口）。
+ * 库存页：默认按 SKU 合计（余量 / 冻结 / 可用量 / 安全库存）。
+ * 按库位、按批次、按仓库，或在按 SKU 上筛了库位、批次、仓库时，只显示实物余量。
+ * 冻结和可用量是 SKU 级的，不挂到某一桶上。
+ * 调整走 wms.inventory.adjust；冻结走 wms.inventory.hold / release。
+ * AI 跳转携带的 skuCode 预填过滤框。扫条码或编码打开该 SKU 的调整弹窗。
  */
 export default function InventoryPage() {
   const { message } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
   const [keyword, setKeyword] = useState(() => takeInitialFilter()?.skuCode ?? '');
   const [lowOnly, setLowOnly] = useState(false);
+  const [view, setView] = useState<InventorySliceView>('sku');
+  const [locationCode, setLocationCode] = useState<string | undefined>();
+  const [batchNo, setBatchNo] = useState('');
+  const [warehouseFilter, setWarehouseFilter] = useState<string | undefined>();
+  const snapshot = useProfileSnapshot();
+  const warehouseOn = snapshot.data?.modules['module.warehouse']?.enabled === true;
+  const activeView: InventorySliceView = view === 'warehouse' && !warehouseOn ? 'sku' : view;
   const kw = keyword.trim();
-  const list = useListPage(`${kw}|${lowOnly ? 1 : 0}`);
+  const batchKey = batchNo.trim();
+  const warehouseKey = warehouseOn ? (warehouseFilter ?? '') : '';
+  const dimensionFiltered = Boolean(locationCode || batchKey || warehouseKey);
+  const sliced = activeView !== 'sku' || dimensionFiltered;
+  const list = useListPage(`${activeView}|${kw}|${sliced ? 0 : lowOnly ? 1 : 0}|${locationCode ?? ''}|${batchKey}|${warehouseKey}`);
   const { data, isLoading } = useInventory({
     q: kw || undefined,
-    lowOnly,
+    lowOnly: sliced ? false : lowOnly,
     limit: list.limit,
     offset: list.offset,
   });
+  const sliceQuery = useInventorySlices(
+    sliced
+      ? {
+          view: activeView,
+          q: kw || undefined,
+          locationCode,
+          batchNo: batchKey || undefined,
+          ...(warehouseKey === '__unassigned__'
+            ? { unassigned: true }
+            : warehouseKey
+              ? { warehouseCode: warehouseKey }
+              : {}),
+          limit: list.limit,
+          offset: list.offset,
+        }
+      : null,
+  );
+  const { data: locations } = useLocations();
+  const { data: warehouses } = useWarehouses(warehouseOn);
   const payload = data as InventoryRow[] | InventoryListPage | undefined;
   const loaded = rowsOf(payload);
-  const snapshot = useProfileSnapshot();
   const { data: skus } = useSkus();
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [preset, setPreset] = useState<InventoryRow | null>(null);

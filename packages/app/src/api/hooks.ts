@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
-import type { InventoryListPage, InventoryRow, Location, Order, Partner, Sku } from './client';
+import type { InventoryListPage, InventoryRow, InventorySlicePage, Location, Order, Partner, Sku } from './client';
 import type { ListPage } from './page';
 
 /** Profile 快照：动态列 / 流转按钮的数据源（切页挂载即刷新，提议确认后自然可见） */
@@ -360,6 +360,39 @@ export function useInventory(query?: {
       query ? api.inventory(query) : api.inventory(),
     placeholderData: query ? keepPreviousData : undefined,
   }) as ReturnType<typeof useQuery<InventoryRow[]>> | ReturnType<typeof useQuery<InventoryListPage>>;
+}
+
+/**
+ * 按库位、批次、仓库，或带维度筛选的 SKU 合计。只含实物余量。
+ * query 为 null 时不请求（按 SKU 且没有维度筛选，走 useInventory）。
+ */
+export function useInventorySlices(
+  query: {
+    view: InventorySlicePage['view'];
+    q?: string;
+    locationCode?: string;
+    batchNo?: string;
+    warehouseCode?: string;
+    unassigned?: boolean;
+    limit: number;
+    offset: number;
+  } | null,
+) {
+  return useQuery({
+    queryKey: ['inventory', 'slices', query],
+    queryFn: () => api.inventorySlices(query!),
+    enabled: query !== null,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** 仓库清单。多仓关闭时不要请求，端点会拒绝。 */
+export function useWarehouses(enabled = true) {
+  return useQuery({
+    queryKey: ['warehouses'],
+    queryFn: () => api.warehouses(),
+    enabled,
+  });
 }
 
 /** 库存分桶：库位 × 批次 × 效期。出库开单时用来看每一桶还剩多少。 */

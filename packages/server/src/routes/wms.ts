@@ -10,6 +10,7 @@ import {
   listHoldRows,
   listInventorySummary,
   listInventorySummaryPage,
+  listInventorySlices,
   listLedger,
   getReturnable,
   getReplenishment,
@@ -309,6 +310,33 @@ export function wmsRoutes(ctx: AppContext): Hono {
           q: c.req.query('q') || undefined,
           skuCode: c.req.query('skuCode') || undefined,
           lowOnly: c.req.query('lowOnly') === '1',
+        }),
+      );
+    })
+    /**
+     * 库存分维度。view=sku|location|batch|warehouse。
+     * 行上只有实物余量；冻结、预占、可用量仍走 GET /inventory 的 SKU 合计。
+     * 仓库筛选与库位清单同一套：warehouseCode 或 unassigned=1，不能同时给。
+     */
+    .get('/inventory/slices', (c) => {
+      const view = c.req.query('view')?.trim() ?? '';
+      if (view !== 'sku' && view !== 'location' && view !== 'batch' && view !== 'warehouse') {
+        throw new BadQueryError('view 须为 sku、location、batch 或 warehouse');
+      }
+      const page = readListPage(c.req.query('limit'), c.req.query('offset'));
+      if (!page) throw new BadQueryError('库存分维度查询必须带 limit');
+      return c.json(
+        listInventorySlices(ctx.ws, {
+          view,
+          ...page,
+          q: c.req.query('q')?.trim() || undefined,
+          locationCode: c.req.query('locationCode')?.trim() || undefined,
+          batchNo: c.req.query('batchNo')?.trim() || undefined,
+          warehouseId: readLocationWarehouseId(
+            ctx.ws,
+            c.req.query('unassigned'),
+            c.req.query('warehouseCode'),
+          ),
         }),
       );
     })

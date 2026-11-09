@@ -195,6 +195,38 @@ export interface InventoryRow {
   unit: string | null;
 }
 
+/** 库存页视角。按库位 / 批次 / 仓库，或按 SKU 但带了维度筛选。 */
+export type InventorySliceView = 'sku' | 'location' | 'batch' | 'warehouse';
+
+/** 视角行展开后的一桶。 */
+export interface InventorySliceDetail {
+  locationCode: string;
+  locationName: string;
+  batchNo: string;
+  batchExpiryDate: string | null;
+  quantity: number;
+}
+
+/** 一个视角上的合计。只含实物余量，没有冻结、预占、可用量。 */
+export interface InventorySliceRow {
+  key: string;
+  skuCode: string;
+  name: string;
+  unit: string | null;
+  quantity: number;
+  locationCode?: string;
+  locationName?: string;
+  batchNo?: string;
+  batchExpiryDate?: string | null;
+  warehouseCode?: string | null;
+  warehouseName?: string | null;
+  details: InventorySliceDetail[];
+}
+
+export interface InventorySlicePage extends ListPage<InventorySliceRow> {
+  view: InventorySliceView;
+}
+
 /** 库存分桶明细行（GET /api/inventory/buckets；Excel 导出到桶粒度用） */
 export interface InventoryBucketRow {
   skuCode: string;
@@ -733,6 +765,27 @@ export const wmsApi = {
   inventory,
   /** 库存分桶明细（SKU×库位×批次）——Excel 导出用 */
   inventoryBuckets: () => request<InventoryBucketRow[]>('/api/inventory/buckets'),
+  /** 按视角看实物余量。limit 必填。未分仓用 unassigned，不与 warehouseCode 同时传。 */
+  inventorySlices: (query: {
+    view: InventorySliceView;
+    q?: string;
+    locationCode?: string;
+    batchNo?: string;
+    warehouseCode?: string;
+    unassigned?: boolean;
+    limit: number;
+    offset?: number;
+  }) => {
+    const params = new URLSearchParams();
+    params.set('view', query.view);
+    if (query.q) params.set('q', query.q);
+    if (query.locationCode) params.set('locationCode', query.locationCode);
+    if (query.batchNo) params.set('batchNo', query.batchNo);
+    if (query.unassigned) params.set('unassigned', '1');
+    else if (query.warehouseCode) params.set('warehouseCode', query.warehouseCode);
+    writePage(params, query);
+    return request<InventorySlicePage>(`/api/inventory/slices?${params.toString()}`);
+  },
   /** 库存流水（导出/对账）——limit 上限 5000，skuCode 可选过滤 */
   ledger: (query?: { limit?: number; skuCode?: string }) => {
     const p = new URLSearchParams();
