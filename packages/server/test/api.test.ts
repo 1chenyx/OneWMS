@@ -75,7 +75,7 @@ describe('GET /api/health 与 /api/profile/snapshot', () => {
       schema: { entities: Record<string, { extensions: Array<{ key: string }> }> };
       workflows: Record<string, unknown>;
     };
-    expect(snap.version).toBe(11); // core.wms + core.ai + core.memory + putaway + reversal + partial + reservation + return + asn + replenish + warehouse
+    expect(snap.version).toBe(13); // core.wms + core.ai + core.memory + putaway + reversal + partial + reservation + return + asn + replenish + warehouse + serial + lpn
     const keys = snap.schema.entities.sku!.extensions.map((f) => f.key).sort();
     expect(keys).toEqual(['category', 'spec', 'unit']);
     expect(Object.keys(snap.workflows).sort()).toEqual(['inbound', 'outbound']);
@@ -107,6 +107,45 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
   it('model 与当前配置相同 → 仍走进程通道', async () => {
     const app = setup(scriptedProvider([{ text: '好的', toolCalls: [] }]));
     const res = await post(app, '/api/chat/sessions/s1/message', { message: '你好', model: 'test-model' });
+    expect(res.status).toBe(200);
+    expect(parseSse(await res.text()).at(-1)?.event).toBe('turn-done');
+  });
+
+  it('profileId 不存在 → 400，不开始这一轮', async () => {
+    const app = setup(scriptedProvider([{ text: '好的', toolCalls: [] }]));
+    const res = await post(app, '/api/chat/sessions/s1/message', { message: '你好', profileId: 'missing' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { message: string }).message).toBe('没有这条已配置的模型');
+  });
+
+  it('profileId 指向当前这条，再带上相同模型名 → 仍走进程通道', async () => {
+    const provider = scriptedProvider([{ text: '好的', toolCalls: [] }]);
+    ctx = createAppContext({
+      dbPath: ':memory:',
+      workspaceId: 'ws-server-test',
+      provider,
+      aiConfig: { kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:11434', model: 'test-model' },
+      aiConfigSource: 'file',
+      aiCatalog: {
+        version: 2,
+        activeId: 'p1',
+        profiles: [
+          {
+            id: 'p1',
+            vendorId: 'custom',
+            label: '本地',
+            kind: 'openai-compatible',
+            model: 'test-model',
+            baseUrl: 'http://127.0.0.1:11434',
+          },
+        ],
+      },
+    });
+    const res = await post(createApp(ctx), '/api/chat/sessions/s1/message', {
+      message: '你好',
+      profileId: 'p1',
+      model: 'test-model',
+    });
     expect(res.status).toBe(200);
     expect(parseSse(await res.text()).at(-1)?.event).toBe('turn-done');
   });
@@ -517,6 +556,36 @@ describe('提议确认端点（人类专属，§4.1）', () => {
     const confirm = await post(app, `/api/proposals/${data.proposalId}/confirm`, {});
     expect(confirm.status).toBe(200);
     expect(ctx!.ws.profile.getSnapshot().modules['module.putaway']!.enabled).toBe(false);
+  });
+
+  it('GET /api/profile/catalog：中文名和流程贡献，不含工具', async () => {
+    const app = setup();
+    const res = await app.request('/api/profile/catalog');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      modules: Array<{
+        id: string;
+        name: string;
+        description: string;
+        system: boolean;
+        contributions: Array<{ workflowKey: string; states: Array<{ id: string }> }>;
+        tools?: unknown;
+        settings?: unknown;
+      }>;
+    };
+    const putaway = body.modules.find((item) => item.id === 'module.putaway');
+    expect(putaway).toMatchObject({ name: '上架作业', system: false });
+    expect(putaway?.description).toMatch(/上架/);
+    expect(putaway?.contributions[0]).toMatchObject({ workflowKey: 'inbound' });
+    expect(putaway?.contributions[0]?.states.map((state) => state.id)).toContain('putaway');
+    expect(putaway).not.toHaveProperty('tools');
+    expect(putaway).not.toHaveProperty('settings');
+    expect(body.modules.find((item) => item.id === 'core.wms')).toMatchObject({
+      name: '仓储基础',
+      system: true,
+      contributions: [],
+    });
+    expect(body.modules.find((item) => item.id === 'core.ai')?.name).toBe('AI 助手');
   });
 
   it('POST /api/profile/propose：patch 非数组 → 400', async () => {

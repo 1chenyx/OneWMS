@@ -16,6 +16,10 @@ import {
   listWarehouses,
   listWarehouseStock,
   presentLocation,
+  listSerials,
+  querySerial,
+  listLpns,
+  lpnStock,
   listOrdersWithLines,
   listOrdersWithLinesPage,
   listPickingsWithLines,
@@ -24,7 +28,7 @@ import {
   StocktakeNotFoundError,
   withPickingLines,
 } from '@one/wms';
-import type { OrderDirection } from '@one/wms';
+import type { OrderDirection, PartnerKind } from '@one/wms';
 import type { AppContext } from '../context.js';
 import { BadQueryError } from '../errors.js';
 
@@ -45,6 +49,28 @@ function readListPage(
     throw new BadQueryError('offset 须为不小于 0 的整数');
   }
   return { limit, offset };
+}
+
+/**
+ * 库位清单的仓库范围。
+ * 不传 = 全部（盘点、导入、下拉仍走这条）；unassigned=1 = 未分仓；warehouseCode = 该仓库的库位。
+ * 未知仓库是查询参数错误，不把空清单伪装成「这个仓没有库位」。
+ */
+function readLocationWarehouseId(
+  ws: AppContext['ws'],
+  unassigned: string | undefined,
+  warehouseCode: string | undefined,
+): string | null | undefined {
+  const flag = unassigned?.trim() ?? '';
+  const code = warehouseCode?.trim() ?? '';
+  if (flag !== '' && flag !== '1') throw new BadQueryError('unassigned 只能是 1');
+  if (flag === '1' && code !== '') throw new BadQueryError('不能同时按仓库和未分仓筛选');
+  if (flag === '1') return null;
+  if (code === '') return undefined;
+  ws.sync();
+  const warehouse = ws.warehouses.byCode(code);
+  if (!warehouse) throw new BadQueryError(`仓库不存在：${code}`);
+  return warehouse.id;
 }
 
 export type { ExpiryBatchRow, ExpiryLevel, OrderWithLines } from '@one/wms';
@@ -118,7 +144,9 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/partners', (c) => {
       const kind = c.req.query('kind');
       const q = c.req.query('q');
-      const kindFilter = kind === 'supplier' || kind === 'customer' ? kind : undefined;
+      // 显式标注类型：字面量联合经对象属性推断会被拓宽成 string，视图签名收不下
+      const kindFilter: PartnerKind | undefined =
+        kind === 'supplier' || kind === 'customer' ? kind : undefined;
       const matched = { kind: kindFilter, q: q || undefined };
       const page = readListPage(c.req.query('limit'), c.req.query('offset'));
       if (!page) return c.json(ctx.ws.partners.listMatching(matched));
@@ -234,6 +262,16 @@ export function wmsRoutes(ctx: AppContext): Hono {
         ),
       );
     })
+    .post('/orders/:orderNo/revise', async (c) => {
+      const body = await c.req.json().catch(() => ({}));
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.order.revise',
+          { ...body, orderNo: c.req.param('orderNo') },
+          actorOf(ctx),
+        ),
+      );
+    })
     .post('/orders/:orderNo/transition', async (c) => {
       const body = await c.req.json();
       const result = await ctx.ws.tools.invoke(
@@ -333,8 +371,13 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/locations', (c) => {
       const q = c.req.query('q') || undefined;
       const page = readListPage(c.req.query('limit'), c.req.query('offset'));
-      if (!page) return c.json(ctx.ws.locations.list(q).map((location) => presentLocation(ctx.ws, location)));
-      const { rows, total } = ctx.ws.locations.listPage({ q, ...page });
+      const warehouseId = readLocationWarehouseId(ctx.ws, c.req.query('unassigned'), c.req.query('warehouseCode'));
+      if (!page) {
+        return c.json(
+          ctx.ws.locations.list(q, warehouseId).map((location) => presentLocation(ctx.ws, location)),
+        );
+      }
+      const { rows, total } = ctx.ws.locations.listPage({ q, warehouseId, ...page });
       return c.json({
         total,
         ...page,
@@ -360,6 +403,40 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/warehouses/:warehouseCode/stock', (c) =>
       c.json(listWarehouseStock(ctx.ws, c.req.param('warehouseCode'))),
     )
+    .get('/serials', (c) =>
+      c.json(
+        listSerials(ctx.ws, {
+          skuCode: c.req.query('skuCode') || undefined,
+          locationCode: c.req.query('locationCode') || undefined,
+          status: c.req.query('status') || undefined,
+        }),
+      ),
+    )
+    .get('/serials/:serialNo', (c) => c.json(querySerial(ctx.ws, c.req.param('serialNo'))))
+    .get('/lpns', (c) => c.json(listLpns(ctx.ws)))
+    .post('/lpns', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.lpn.create', body, actorOf(ctx)), 201);
+    })
+    .post('/lpns/:code/pack', async (c) => {
+      const body = await c.req.json();
+      return c.json(
+        await ctx.ws.tools.invoke('wms.lpn.pack', { ...body, lpnCode: c.req.param('code') }, actorOf(ctx)),
+      );
+    })
+    .post('/lpns/:code/unpack', async (c) => {
+      const body = await c.req.json();
+      return c.json(
+        await ctx.ws.tools.invoke('wms.lpn.unpack', { ...body, lpnCode: c.req.param('code') }, actorOf(ctx)),
+      );
+    })
+    .post('/lpns/:code/move', async (c) => {
+      const body = await c.req.json();
+      return c.json(
+        await ctx.ws.tools.invoke('wms.lpn.move', { ...body, lpnCode: c.req.param('code') }, actorOf(ctx)),
+      );
+    })
+    .get('/lpns/:code/stock', (c) => c.json(lpnStock(ctx.ws, c.req.param('code'))))
     .post('/locations', async (c) => {
       const body = await c.req.json();
       return c.json(await ctx.ws.tools.invoke('wms.location.create', body, actorOf(ctx)), 201);

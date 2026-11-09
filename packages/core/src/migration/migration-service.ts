@@ -5,7 +5,17 @@ import type { ProfileService } from '../profile/profile-service.js';
 
 /** 迁移包标识与版本（导入端的结构校验位——防误投任意 JSON） */
 export const MIGRATION_BUNDLE_KIND = 'onewms-migration-bundle';
+/** 本代码写出的包版本（写新） */
 export const MIGRATION_BUNDLE_VERSION = 1;
+/**
+ * 本代码还能读的最低包版本（读旧的下界——永久保留最低读能力）。
+ *
+ * 导入端按 [MIN, CURRENT] 区间校验而不是硬相等：一旦 bump 到 2，用户
+ * 7 天滚动窗口里的老备份与老迁移包全部还在，硬相等会让它们一夜之间不可恢复。
+ * 只有在包结构真的不兼容（改字段含义、换编码）时才提高下界，且必须配一条
+ * 「先用中间版本升级」的人话错误。
+ */
+export const MIGRATION_BUNDLE_MIN_VERSION = 1;
 
 /**
  * 迁移包（DESIGN §1.1「配置包 + 事件重放」、§6.4 迁移闭环，里程碑 7）。
@@ -16,7 +26,8 @@ export const MIGRATION_BUNDLE_VERSION = 1;
  */
 export interface MigrationBundle {
   readonly kind: typeof MIGRATION_BUNDLE_KIND;
-  readonly bundleVersion: typeof MIGRATION_BUNDLE_VERSION;
+  /** 包结构版本；导入端按 [MIN, CURRENT] 区间接受，故类型是 number 而非字面量 */
+  readonly bundleVersion: number;
   /** 源节点身份（追溯用） */
   readonly nodeId: string;
   /** 工作区边界（迁移 = 同工作区搬家；跨工作区 = 跨密钥边界，导入拒绝） */
@@ -72,8 +83,17 @@ export class MigrationService {
     if (!b || b.kind !== MIGRATION_BUNDLE_KIND) {
       throw new MigrationError(`不是合法的迁移包（kind 应为 ${MIGRATION_BUNDLE_KIND}）`);
     }
-    if (b.bundleVersion !== MIGRATION_BUNDLE_VERSION) {
-      throw new MigrationError(`迁移包版本不支持：${String(b.bundleVersion)}（本节点支持 ${MIGRATION_BUNDLE_VERSION}）`);
+    if (
+      typeof b.bundleVersion !== 'number' ||
+      b.bundleVersion < MIGRATION_BUNDLE_MIN_VERSION ||
+      b.bundleVersion > MIGRATION_BUNDLE_VERSION
+    ) {
+      throw new MigrationError(
+        `迁移包版本不支持：${String(b.bundleVersion)}（本节点支持 v${MIGRATION_BUNDLE_MIN_VERSION} ~ v${MIGRATION_BUNDLE_VERSION}）` +
+          (typeof b.bundleVersion === 'number' && b.bundleVersion > MIGRATION_BUNDLE_VERSION
+            ? '——该包由更新版本的 OneWMS 导出，请先升级本节点程序。'
+            : ''),
+      );
     }
     if (typeof b.workspaceId !== 'string' || b.workspaceId !== workspaceId) {
       throw new MigrationError(

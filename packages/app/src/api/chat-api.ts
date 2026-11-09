@@ -40,7 +40,8 @@ export interface ChatAttachmentChip {
 
 /**
  * 发送一条消息并逐事件消费 SSE 流（agentId 选助手，缺省 'general'）。
- * model 有值时指定这一轮的模型名（同一接入点）；不传则由服务端决定。
+ * profileId 有值时用用户保存的那一条接入点（地址和密钥）。
+ * model 只在同一条上改模型名时才传；不传 profileId 则由服务端用当前配置。
  * 非流式错误（503/400/404/409 等 JSON 响应）统一抛 ApiError——UI 按 code 分支提示。
  */
 export async function streamChatMessage(
@@ -49,6 +50,7 @@ export async function streamChatMessage(
   agentId: string,
   onEvent: (ev: ChatStreamEvent) => void,
   attachments?: ChatAttachmentPayload[],
+  profileId?: string,
   model?: string,
 ): Promise<void> {
   const res = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/message`, {
@@ -58,6 +60,7 @@ export async function streamChatMessage(
       message,
       agentId,
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(profileId ? { profileId } : {}),
       ...(model ? { model } : {}),
     }),
   });

@@ -23,5 +23,13 @@
         "displayLanguageSelector": false
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/1chenyx/OneWMS/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRDQzYxOUE0ODMzMDBDQjQKUldTMEREQ0RwQm5HVFBTRkV5Q3RjSmxpUTZqamkwOUI3djUzVHNGUFNFdkF6dmlhblhJZjNleS8K"
+    }
   }
 }

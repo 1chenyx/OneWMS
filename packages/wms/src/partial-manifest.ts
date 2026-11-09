@@ -1,4 +1,5 @@
 import type { ModuleManifest } from '@one/core';
+import { ORDER_PARTIAL_FIELD, extraRecord } from './builtin-records.js';
 
 /**
  * module.partial —— 短收短发。
@@ -17,5 +18,7 @@ export function partialManifest(): ModuleManifest {
     version: '0.1.0',
     capabilities: ['db.read', 'events.subscribe'],
     dependencies: { modules: ['core.wms'] },
+    aliases: ['短收', '短发'],
+    records: [extraRecord('order', '单据', [ORDER_PARTIAL_FIELD])],
   };
 }

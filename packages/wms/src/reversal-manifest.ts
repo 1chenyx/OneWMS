@@ -21,6 +21,7 @@ export function reversalManifest(): ModuleManifest {
     version: '0.1.0',
     capabilities: ['db.read', 'events.subscribe'],
     dependencies: { modules: ['core.wms'] },
+    aliases: ['冲销'],
     workflows: {
       contributes: {
         inbound: {

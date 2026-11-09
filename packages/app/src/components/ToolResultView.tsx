@@ -1,15 +1,13 @@
 import { Descriptions, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ReactNode } from 'react';
+import { TABLE_PAGINATION } from './table-style';
 
 /**
  * 工具结果视图（M12 步骤2）：查询类工具的 payload 渲染成表格，
  * 其余工具兜底 JSON——「界面管明细、模型只总结」分工的落点。
  * 返回值结构是 @one/wms 工具层的手写镜像（前端不依赖 @one/wms）。
  */
-
-/** 表格最多渲染的行数（防大结果卡死聊天流；超出截断 + 总数提示） */
-const MAX_TABLE_ROWS = 50;
 
 /** inventory.query 形态一：库位平铺行（行含批次与效期） */
 interface FlatRow {
@@ -58,22 +56,6 @@ function isSkuGroup(v: unknown): v is SkuGroup {
   return !!v && typeof v === 'object' && Array.isArray((v as SkuGroup).byLocation);
 }
 
-/** 截断到上限（超限的行不渲染，只提示总数） */
-function capRows<T>(rows: T[]): { rows: T[]; total: number; truncated: boolean } {
-  return rows.length > MAX_TABLE_ROWS
-    ? { rows: rows.slice(0, MAX_TABLE_ROWS), total: rows.length, truncated: true }
-    : { rows, total: rows.length, truncated: false };
-}
-
-/** 截断提示（跟在表格后面） */
-function TruncationNote({ total }: { total: number }) {
-  return (
-    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-      共 {total} 行，仅显示前 {MAX_TABLE_ROWS} 行
-    </Typography.Text>
-  );
-}
-
 const expiryText = (v: string | null) => v ?? '—';
 
 /** 剩余天数文案：负数 = 已过期天数 */
@@ -117,7 +99,6 @@ function renderQuery(payload: unknown): ReactNode {
 
 /** 形态一：库位平铺（「这个库位里有什么」——行含批次与效期） */
 function renderFlatRows(rows: FlatRow[]) {
-  const { rows: capped, total, truncated } = capRows(rows);
   const columns: ColumnsType<FlatRow> = [
     { title: 'SKU', dataIndex: 'skuCode' },
     { title: '名称', dataIndex: 'name' },
@@ -127,8 +108,7 @@ function renderFlatRows(rows: FlatRow[]) {
   ];
   return (
     <>
-      <Table size="small" columns={columns} dataSource={withKeys(capped)} pagination={false} />
-      {truncated ? <TruncationNote total={total} /> : null}
+      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={TABLE_PAGINATION} />
     </>
   );
 }
@@ -161,14 +141,13 @@ function renderSingleGroup(g: SkuGroup) {
         <Descriptions.Item label="名称">{g.name}</Descriptions.Item>
         <Descriptions.Item label="总量">{g.total}</Descriptions.Item>
       </Descriptions>
-      <Table size="small" columns={columns} dataSource={withKeys(g.byLocation)} pagination={false} />
+      <Table size="small" columns={columns} dataSource={withKeys(g.byLocation)} pagination={TABLE_PAGINATION} />
     </>
   );
 }
 
 /** 形态三：全部 SKU 分组清单——每 SKU 一行汇总（分库位明细追问具体 SKU 可得） */
 function renderGroupList(groups: SkuGroup[]) {
-  const { rows: capped, total, truncated } = capRows(groups);
   const columns: ColumnsType<SkuGroup> = [
     { title: 'SKU', dataIndex: 'skuCode' },
     { title: '名称', dataIndex: 'name' },
@@ -176,15 +155,14 @@ function renderGroupList(groups: SkuGroup[]) {
   ];
   return (
     <>
-      <Table size="small" columns={columns} dataSource={withKeys(capped)} pagination={false} />
-      {truncated ? <TruncationNote total={total} /> : null}
+      <Table size="small" columns={columns} dataSource={withKeys(groups)} pagination={TABLE_PAGINATION} />
     </>
   );
 }
 
 function renderExpiring(payload: unknown) {
   if (!Array.isArray(payload)) return renderPlain(payload);
-  const { rows: capped, total, truncated } = capRows(payload as ExpiringRow[]);
+  const rows = payload as ExpiringRow[];
   const columns: ColumnsType<ExpiringRow> = [
     { title: 'SKU', dataIndex: 'skuCode' },
     { title: '库位', dataIndex: 'locationCode' },
@@ -195,15 +173,14 @@ function renderExpiring(payload: unknown) {
   ];
   return (
     <>
-      <Table size="small" columns={columns} dataSource={withKeys(capped)} pagination={false} />
-      {truncated ? <TruncationNote total={total} /> : null}
+      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={TABLE_PAGINATION} />
     </>
   );
 }
 
 function renderLocationList(payload: unknown) {
   if (!Array.isArray(payload)) return renderPlain(payload);
-  const { rows: capped, total, truncated } = capRows(payload as LocationRow[]);
+  const rows = payload as LocationRow[];
   const columns: ColumnsType<LocationRow> = [
     { title: '库位', dataIndex: 'locationCode' },
     { title: '名称', dataIndex: 'name' },
@@ -211,8 +188,7 @@ function renderLocationList(payload: unknown) {
   ];
   return (
     <>
-      <Table size="small" columns={columns} dataSource={withKeys(capped)} pagination={false} />
-      {truncated ? <TruncationNote total={total} /> : null}
+      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={TABLE_PAGINATION} />
     </>
   );
 }
@@ -265,7 +241,6 @@ function renderObjectTable(rows: Record<string, unknown>[]) {
     if (keys.length >= 8) break;
   }
   if (keys.length === 0) return null;
-  const { rows: capped, total, truncated } = capRows(rows);
   const columns: ColumnsType<Record<string, unknown>> = keys.map((key) => ({
     title: fieldLabel(key),
     dataIndex: key,
@@ -273,8 +248,7 @@ function renderObjectTable(rows: Record<string, unknown>[]) {
   }));
   return (
     <>
-      <Table size="small" columns={columns} dataSource={withKeys(capped)} pagination={false} />
-      {truncated ? <TruncationNote total={total} /> : null}
+      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={TABLE_PAGINATION} />
     </>
   );
 }

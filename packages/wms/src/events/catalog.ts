@@ -28,6 +28,7 @@ export const WMS_EVENT_TYPES = {
   partnerCreated: 'wms.partner.created',
   partnerUpdated: 'wms.partner.updated',
   orderCreated: 'wms.order.created',
+  orderRevised: 'wms.order.revised',
   orderStateChanged: 'wms.order.state_changed',
   orderConflictDismissed: 'wms.order.conflict_dismissed',
   orderConflictAccepted: 'wms.order.conflict_accepted',
@@ -254,6 +255,24 @@ export interface OrderCreatedPayload {
   readonly replenishment?: boolean;
   readonly lines: readonly OrderLinePayload[];
   readonly note?: string;
+}
+
+/**
+ * 修订单据内容（尚未改状态）。
+ * 在场的字段才覆盖；lines 在场则整单明细替换。
+ * 单号、方向、状态、原单、补货标记不在这条事件里。
+ */
+export interface OrderRevisedPayload {
+  readonly orderId: string;
+  readonly orderNo: string;
+  /** null = 去掉往来单位 */
+  readonly partnerId?: string | null;
+  /** null = 清空备注 */
+  readonly note?: string | null;
+  /** null = 清空预计到货日。只有预报单会带这个字段 */
+  readonly expectedAt?: string | null;
+  /** 在场 = 用这一份明细替换原来的行。缺省 = 明细不动 */
+  readonly lines?: readonly OrderLinePayload[];
 }
 
 /** 一次转移之后某行的净入账（module.partial）。正=净入库，负=净出库，0=冲平或实数为零 */

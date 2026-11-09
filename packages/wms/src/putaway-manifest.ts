@@ -27,6 +27,7 @@ export function putawayManifest(toolDefs: ToolDefinition[]): ModuleManifest {
     version: '0.1.0',
     capabilities: ['db.read', 'events.subscribe', 'tools.register'],
     dependencies: { modules: ['core.wms'] },
+    aliases: ['上架'],
     tools: toolDefs.map((tool) => detachHandler(tool)),
     workflows: {
       contributes: {

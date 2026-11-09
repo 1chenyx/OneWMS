@@ -6,6 +6,7 @@ import {
   WMS_EVENT_TYPES,
   type OrderConflictResolvedPayload,
   type OrderCreatedPayload,
+  type OrderRevisedPayload,
   type OrderStateChangedPayload,
 } from '../events/catalog.js';
 import type { OrderDirection } from '../state/order-state-machine.js';
@@ -59,6 +60,8 @@ export interface OrderLineRecord {
   readonly quantity: number;
   /** 已入账净量。null = 没记过短收短发（按订单数量） */
   readonly fulfilledQty: number | null;
+  /** 序列号。没有时不出现这个键，避免旧断言被多出来的空数组打破 */
+  readonly serials?: readonly string[];
 }
 
 interface OrderRow {
@@ -82,6 +85,7 @@ interface OrderLineRow {
   batch_expiry_date: string | null;
   quantity: number;
   fulfilled_qty: number | null;
+  serials: string | null;
 }
 
 interface ConflictRow {
@@ -94,6 +98,18 @@ interface ConflictRow {
   actual_state: string;
   status: string;
   created_at: string;
+}
+
+function parseSerials(raw: string | null): string[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return undefined;
+    const serials = parsed.filter((item): item is string => typeof item === 'string' && item.length > 0);
+    return serials.length > 0 ? serials : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function conflictToRecord(row: ConflictRow): OrderConflictRecord {
@@ -138,6 +154,7 @@ export class OrderView {
     // 每次重开都会把正常转移再记成一条冲突。标记由迁移在「头没丢」时从 oplog 补上。
     if (
       (env.type === WMS_EVENT_TYPES.orderCreated ||
+        env.type === WMS_EVENT_TYPES.orderRevised ||
         env.type === WMS_EVENT_TYPES.orderStateChanged ||
         env.type === WMS_EVENT_TYPES.orderConflictDismissed ||
         env.type === WMS_EVENT_TYPES.orderConflictAccepted) &&
@@ -169,8 +186,8 @@ export class OrderView {
             env.createdAt,
           );
         const insertLine = this.db.prepare(
-          `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity, serials)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const line of p.lines) {
           // 行 id 由 orderId+skuId+locationId+batchNo 四段派生（M11）：同一事件重放
@@ -186,7 +203,56 @@ export class OrderView {
             batchNo,
             line.batchExpiryDate ?? null,
             line.quantity,
+            line.serials && line.serials.length > 0 ? JSON.stringify(line.serials) : null,
           );
+        }
+        break;
+      }
+      case WMS_EVENT_TYPES.orderRevised: {
+        const p = env.payload as OrderRevisedPayload;
+        const current = this.#byIdRaw(p.orderId);
+        if (!current) break;
+        if ('partnerId' in p) {
+          this.db
+            .prepare(`UPDATE wms_order SET partner_id = ? WHERE workspace_id = ? AND id = ?`)
+            .run(p.partnerId ?? null, this.workspaceId, p.orderId);
+        }
+        if ('note' in p) {
+          this.db
+            .prepare(`UPDATE wms_order SET note = ? WHERE workspace_id = ? AND id = ?`)
+            .run(p.note ?? null, this.workspaceId, p.orderId);
+        }
+        if ('expectedAt' in p) {
+          this.db
+            .prepare(`UPDATE wms_order SET expected_at = ? WHERE workspace_id = ? AND id = ?`)
+            .run(p.expectedAt ?? null, this.workspaceId, p.orderId);
+        }
+        this.db
+          .prepare(`UPDATE wms_order SET updated_at = ? WHERE workspace_id = ? AND id = ?`)
+          .run(env.createdAt, this.workspaceId, p.orderId);
+        if (p.lines) {
+          this.db
+            .prepare(`DELETE FROM wms_order_line WHERE workspace_id = ? AND order_id = ?`)
+            .run(this.workspaceId, p.orderId);
+          const insertLine = this.db.prepare(
+            `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity, serials)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          );
+          for (const line of p.lines) {
+            const locationId = line.locationId ?? DEFAULT_LOCATION_ID;
+            const batchNo = line.batchNo ?? DEFAULT_BATCH_NO;
+            insertLine.run(
+              `${p.orderId}:${line.skuId}:${locationId}:${batchNo}`,
+              this.workspaceId,
+              p.orderId,
+              line.skuId,
+              locationId,
+              batchNo,
+              line.batchExpiryDate ?? null,
+              line.quantity,
+              line.serials && line.serials.length > 0 ? JSON.stringify(line.serials) : null,
+            );
+          }
         }
         break;
       }
@@ -371,17 +437,21 @@ export class OrderView {
   lines(orderId: string): OrderLineRecord[] {
     const rows = this.db
       .prepare<unknown[], OrderLineRow>(
-        `SELECT sku_id, location_id, batch_no, batch_expiry_date, quantity, fulfilled_qty FROM wms_order_line WHERE workspace_id = ? AND order_id = ? ORDER BY rowid`,
+        `SELECT sku_id, location_id, batch_no, batch_expiry_date, quantity, fulfilled_qty, serials FROM wms_order_line WHERE workspace_id = ? AND order_id = ? ORDER BY rowid`,
       )
       .all(this.workspaceId, orderId) as unknown as OrderLineRow[];
-    return rows.map((r) => ({
-      skuId: r.sku_id,
-      locationId: r.location_id,
-      batchNo: r.batch_no,
-      batchExpiryDate: r.batch_expiry_date,
-      quantity: r.quantity,
-      fulfilledQty: r.fulfilled_qty,
-    }));
+    return rows.map((r) => {
+      const serials = parseSerials(r.serials);
+      return {
+        skuId: r.sku_id,
+        locationId: r.location_id,
+        batchNo: r.batch_no,
+        batchExpiryDate: r.batch_expiry_date,
+        quantity: r.quantity,
+        fulfilledQty: r.fulfilled_qty,
+        ...(serials ? { serials } : {}),
+      };
+    });
   }
 
   listConflicts(status: OrderConflictRecord['status'] = 'open'): OrderConflictRecord[] {

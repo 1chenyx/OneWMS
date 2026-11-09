@@ -2,8 +2,11 @@
 //! 启动时拉起内置 Node 服务端（resources/server/node.exe），
 //! 健康检查通过后创建窗口加载 http://127.0.0.1:<动态端口>；
 //! 应用退出时杀掉服务端子进程。
+//! 运行期在后台静默检查/下载新版本，装的动作交给用户选时机（见 updater.rs）。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod updater;
 
 use std::net::{TcpListener, TcpStream};
 use std::os::windows::process::CommandExt;
@@ -17,7 +20,10 @@ struct ServerChild(Mutex<Option<Child>>);
 
 fn main() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(ServerChild(Mutex::new(None)))
+        .manage(updater::PendingUpdate::default())
         .setup(|app| {
             let port = spawn_server(app.handle())?;
             let url = format!("http://127.0.0.1:{port}/").parse()?;
@@ -26,6 +32,8 @@ fn main() {
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(960.0, 600.0)
                 .build()?;
+            // 窗口起来之后再开检查线程：别和启动高峰（拉服务端 + 迁移 + 投影追账）抢 IO
+            updater::spawn(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -33,7 +41,10 @@ fn main() {
 
     app.run(|app_handle, event| {
         if let RunEvent::Exit = event {
+            // 顺序要紧：先回收 node 子进程（它占着 SQLite），再装更新。
+            // install() 在 Windows 上会直接 exit(0)，之后就再没有机会收尾了。
             kill_server(app_handle);
+            updater::install_on_exit(app_handle);
         }
     });
 }
@@ -88,6 +99,9 @@ fn spawn_server(app: &AppHandle) -> Result<u16, Box<dyn std::error::Error>> {
         .env("ONE_PORT", port.to_string())
         .env("ONE_DB_PATH", data_dir.join("onewms.db"))
         .env("ONE_WORKSPACE", "default")
+        // 升级闸门的比对基准：用安装包自己的版本，而不是 sidecar 里 package.json 的。
+        // 用户在「关于」和安装包上看到的是这个号，降级提示里也必须说这个号。
+        .env("ONE_APP_VERSION", env!("CARGO_PKG_VERSION"))
         // node.exe 是控制台子系统程序，不加此标志会弹出黑色控制台窗口
         .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
         .spawn()
@@ -105,8 +119,11 @@ fn spawn_server(app: &AppHandle) -> Result<u16, Box<dyn std::error::Error>> {
     Err("内置服务端启动超时".into())
 }
 
-/// 退出时回收服务端子进程
-fn kill_server(app: &AppHandle) {
+/// 退出时回收服务端子进程。
+/// pub(crate)：updater 的 on_before_exit 钩子也要调它——Windows 上 install()
+/// 起完安装器直接 exit(0)，不会走 RunEvent::Exit，不在这收就会留下孤儿 node.exe。
+/// 幂等（take 后为 None），两条路径都调也只会杀一次。
+pub(crate) fn kill_server(app: &AppHandle) {
     if let Some(mut child) = app.state::<ServerChild>().0.lock().unwrap().take() {
         let _ = child.kill();
         let _ = child.wait();

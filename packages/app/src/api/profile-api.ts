@@ -17,9 +17,28 @@ export interface ProposeResponse {
   hint: string;
 }
 
+/** 已安装模块的展示目录。不含工具和参数，只给流程页读名字、说明和贡献。 */
+export interface ProfileCatalogModule {
+  id: string;
+  name: string;
+  description: string;
+  system: boolean;
+  contributions: {
+    workflowKey: string;
+    states: { id: string; label: string }[];
+    transitions: { from: string; to: string; when?: string; effect?: 'increase' | 'decrease' | 'check' | 'none' }[];
+  }[];
+}
+
+export interface ProfileCatalog {
+  modules: ProfileCatalogModule[];
+}
+
 export const profileApi = {
   profileSnapshot: () => request<ProfileSnapshot>('/api/profile/snapshot'),
-  /** 提议配置变更（M21 设置页入口；AI 走工具总线，同一队列同一确认界面） */
+  /** 已安装模块的名字、说明和流程贡献（流程页、模块页） */
+  profileCatalog: () => request<ProfileCatalog>('/api/profile/catalog'),
+  /** 提议配置变更（流程页、模块页入口；AI 走工具总线，同一队列同一确认界面） */
   proposeProfile: (
     patch: { op: string; path: string; value?: unknown }[],
     note?: string,

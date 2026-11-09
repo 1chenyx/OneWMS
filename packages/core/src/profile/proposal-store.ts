@@ -42,6 +42,8 @@ export interface ProposalSummary {
   summary: string;
   status: ProposalStatus;
   createdAt: string;
+  /** patch 里的 path。界面用来把助手定义和其它配置分开确认，不展示给用户。 */
+  paths: string[];
 }
 
 export class ProposalStore {
@@ -85,7 +87,7 @@ export class ProposalStore {
     return [...this.#proposals.values()]
       .filter((p) => p.workspaceId === workspaceId && p.status === 'pending')
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map(({ proposalId, proposedBy, note, baseVersion, report, status, createdAt }) => ({
+      .map(({ proposalId, proposedBy, note, baseVersion, report, status, createdAt, patch }) => ({
         proposalId,
         proposedBy,
         note,
@@ -93,6 +95,7 @@ export class ProposalStore {
         summary: report.summary,
         status,
         createdAt,
+        paths: patch.map((op) => op.path),
       }));
   }
 

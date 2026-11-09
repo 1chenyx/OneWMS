@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { CheckSquareOutlined, CloseOutlined, PlusOutlined, PrinterOutlined } from '@ant-design/icons';
+import { useEffect, useMemo, useState } from 'react';
+import { CheckSquareOutlined, CloseOutlined, EyeOutlined, PlusOutlined } from '@ant-design/icons';
 import {
   App as AntApp,
   Button,
@@ -10,6 +10,7 @@ import {
   Select,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -24,7 +25,9 @@ import {
 import { ApiError } from '../api/client';
 import type { Picking, PickingLine } from '../api/client';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell, numCell, printTd, printTh } from '../components/table-style';
+import { PrintPreviewModal, PrintRoot, PrintSelectionBar, PrintStyle, usePrintSession } from '../components/print-preview';
+import { PickingPrintSheet, pickingPrintTitle } from '../components/print-sheets';
+import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
 
 /**
@@ -33,6 +36,7 @@ import { fmtQty } from '../lib/format';
  *  - 作业：展开行逐条「录入实拣」（可改实拣库位/批次——记实不扣账）；
  *  - 关单：全部行拣满后统一扣减（订单 → shipped；流水 reason: picking:单号）；
  *  - 取消：留审计，订单留待人工。
+ *  - 打印：行上预览弹窗；勾选后一次打出多页。版式和弹窗是同一份。
  * 行为权威在服务端工具（wms.picking.*）：未拣满/余量不足/流程配置
  * 拒绝时按 400 + WMS_ 错误码提示。
  */
@@ -47,8 +51,14 @@ export default function PickingsPage() {
   const cancel = useCancelPicking();
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
-  /** A1 打印：正在打印的拣货单（非空 = 打印区已挂载，可拉起系统打印） */
-  const [printPicking, setPrintPicking] = useState<Picking | null>(null);
+  const session = usePrintSession<Picking>();
+  /** 换状态筛选后清空勾选。拣货单数据在客户端，勾选跟着当前这份清单。 */
+  const [selectedPickingIds, setSelectedPickingIds] = useState<string[]>([]);
+  useEffect(() => {
+    setSelectedPickingIds([]);
+  }, [stateFilter]);
+  const selectedPickings = (pickings ?? []).filter((p) => selectedPickingIds.includes(p.id));
+  const previewPicking = session.previewDocs[session.previewIndex];
 
   // 可聚合的出库单：拣货中状态（服务端还会再校验一层）
   const pickingStateOrders = useMemo(
@@ -92,18 +102,6 @@ export default function PickingsPage() {
         }
       },
     });
-
-  /** 打印拣货单（A1）：先挂打印区（按建议库位排序的纸质作业表），绘完最后一帧
-   *  再拉起系统打印对话框；打完（afterprint）卸掉打印区回到纯页面。 */
-  const doPrint = (r: Picking) => {
-    setPrintPicking(r);
-    const cleanup = () => {
-      setPrintPicking(null);
-      window.removeEventListener('afterprint', cleanup);
-    };
-    window.addEventListener('afterprint', cleanup);
-    window.setTimeout(() => window.print(), 60);
-  };
 
   const submitCreate = async () => {
     if (selectedOrders.length === 0) {
@@ -170,14 +168,15 @@ export default function PickingsPage() {
       width: 240,
       render: (_, r) => (
         <>
-          <Button
-            size="small"
-            icon={<PrinterOutlined />}
-            style={{ marginRight: 8 }}
-            onClick={() => doPrint(r)}
-          >
-            打印
-          </Button>
+          <Tooltip title="预览拣货单">
+            <Button
+              size="small"
+              icon={<EyeOutlined />}
+              aria-label="预览拣货单"
+              style={{ marginRight: 8 }}
+              onClick={() => session.openPreview([r])}
+            />
+          </Tooltip>
           {r.state === 'created' ? (
             <>
               <Button
@@ -230,8 +229,17 @@ export default function PickingsPage() {
         }
       />
       <Card>
+        <PrintSelectionBar
+          count={selectedPickings.length}
+          onPreview={() => session.openPreview(selectedPickings)}
+          onPrint={() => session.printNow(selectedPickings)}
+        />
         <Table<Picking>
           rowKey="id"
+          rowSelection={{
+            selectedRowKeys: selectedPickings.map((p) => p.id),
+            onChange: (keys) => setSelectedPickingIds(keys.map(String)),
+          }}
           columns={columns}
           dataSource={pickings ?? []}
           loading={isLoading}
@@ -277,63 +285,23 @@ export default function PickingsPage() {
         </Modal>
       </Card>
 
-      {printPicking ? (
-        <Card title={`打印预览：拣货单 ${printPicking.pickingNo}`}>
-          <div id="picking-print-area" style={{ maxWidth: 720 }}>
-            <Typography.Title level={4} style={{ marginTop: 0 }}>
-              拣货单 {printPicking.pickingNo}
-            </Typography.Title>
-            <div style={{ fontSize: 12, color: '#444', marginBottom: 8 }}>
-              关联出库单：{[...new Set(printPicking.lines.map((l) => l.orderNo))].join('、') || '-'}
-              　创建时间：{printPicking.createdAt.slice(0, 19).replace('T', ' ')}
-              　状态：
-              {printPicking.state === 'created' ? '拣货中' : printPicking.state === 'closed' ? '已关单' : '已取消'}
-            </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr>
-                  <th style={printTh}>拣</th>
-                  <th style={printTh}>SKU</th>
-                  <th style={printTh}>名称</th>
-                  <th style={printTh}>建议库位</th>
-                  <th style={printTh}>建议批次</th>
-                  <th style={printTh}>应拣</th>
-                  <th style={printTh}>已拣</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...printPicking.lines]
-                  .sort((a, b) =>
-                    (a.suggestedLocationCode ?? '').localeCompare(b.suggestedLocationCode ?? ''),
-                  )
-                  .map((l) => (
-                    <tr key={l.id}>
-                      <td style={printTd}>□</td>
-                      <td style={printTd}>{l.skuCode}</td>
-                      <td style={printTd}>{l.skuName}</td>
-                      <td style={printTd}>{l.suggestedLocationCode ?? '-'}</td>
-                      <td style={printTd}>{l.suggestedBatchNo ?? '-'}</td>
-                      <td style={{ ...printTd, textAlign: 'right' }}>{fmtQty(l.qtyToPick, l.unit)}</td>
-                      <td style={{ ...printTd, textAlign: 'right' }}>{fmtQty(l.pickedQty, l.unit)}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-            <div style={{ marginTop: 32, fontSize: 12 }}>拣货人签字：______________　　日期：______________</div>
-          </div>
-        </Card>
-      ) : null}
-
-      {/* 打印样式：只让拣货单可见，其余（侧边栏/工具条/卡片边框）全部隐藏 */}
-      <style>{`
-        @media print {
-          @page { margin: 12mm; }
-          body * { visibility: hidden !important; }
-          #picking-print-area, #picking-print-area * { visibility: visible !important; }
-          #picking-print-area { position: absolute !important; left: 0; top: 0; width: 100%; }
-          #picking-print-area tr { page-break-inside: avoid; break-inside: avoid; }
-        }
-      `}</style>
+      <PrintPreviewModal
+        open={session.previewDocs.length > 0}
+        title={previewPicking ? pickingPrintTitle(previewPicking) : ''}
+        index={session.previewIndex}
+        total={session.previewDocs.length}
+        onIndexChange={session.setPreviewIndex}
+        onClose={session.closePreview}
+        onPrint={() => session.printNow(session.previewDocs)}
+      >
+        {previewPicking ? <PickingPrintSheet picking={previewPicking} /> : null}
+      </PrintPreviewModal>
+      <PrintRoot
+        id="picking-print-area"
+        docs={session.printDocs}
+        renderDoc={(picking) => <PickingPrintSheet picking={picking} />}
+      />
+      <PrintStyle rootId="picking-print-area" />
     </div>
   );
 }
@@ -381,7 +349,7 @@ function PickLinesTable({
       size="small"
       rowKey="id"
       dataSource={picking.lines}
-      pagination={false}
+      pagination={TABLE_PAGINATION}
       columns={[
         { title: '出库单', dataIndex: 'orderNo', onCell: monoCell, width: 150 },
         { title: 'SKU', dataIndex: 'skuCode', onCell: monoCell, width: 120 },

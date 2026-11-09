@@ -26,6 +26,8 @@ export interface SkuRecord {
   readonly status?: string;
   /** 单位（A3）：数量单位（kg / 箱 / 件…）；null = 不显示 */
   readonly unit: string | null;
+  /** 按序列号管理（module.serial）。老数据缺省否 */
+  readonly serialTracked: boolean;
   readonly extData: Record<string, unknown>;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -39,6 +41,7 @@ interface SkuRow {
   reorder_point: number;
   status: string;
   unit: string | null;
+  serial_tracked: number;
   ext_data: string;
   created_at: string;
   updated_at: string;
@@ -53,6 +56,7 @@ function rowToRecord(row: SkuRow): SkuRecord {
     reorderPoint: row.reorder_point,
     status: row.status,
     unit: row.unit || null,
+    serialTracked: row.serial_tracked === 1,
     extData: JSON.parse(row.ext_data) as Record<string, unknown>,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -74,8 +78,8 @@ export class SkuView {
         // sku_code / barcode 唯一冲突不走 OR IGNORE 静默——那是业务冲突，必须显式炸出来
         this.db
           .prepare(
-            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, reorder_point, status, unit, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, reorder_point, status, unit, serial_tracked, ext_data, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             p.skuId,
@@ -86,6 +90,7 @@ export class SkuView {
             p.reorderPoint ?? 0,
             'active',
             p.unit ?? null,
+            p.serialTracked === true ? 1 : 0,
             JSON.stringify(p.extData ?? {}),
             env.createdAt,
             env.createdAt,
@@ -101,6 +106,7 @@ export class SkuView {
                barcode = COALESCE(?, barcode),
                reorder_point = COALESCE(?, reorder_point),
                unit = COALESCE(?, unit),
+               serial_tracked = COALESCE(?, serial_tracked),
                status = COALESCE(?, status),
                ext_data = COALESCE(?, ext_data),
                updated_at = ?
@@ -111,6 +117,7 @@ export class SkuView {
             p.barcode ?? null,
             p.reorderPoint ?? null,
             p.unit ?? null,
+            p.serialTracked === undefined ? null : p.serialTracked ? 1 : 0,
             p.status ?? null,
             p.extData === undefined ? null : JSON.stringify(p.extData),
             env.createdAt,

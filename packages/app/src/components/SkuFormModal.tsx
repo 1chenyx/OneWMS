@@ -27,6 +27,7 @@ export default function SkuFormModal({
   const { message } = AntApp.useApp();
   const [form] = Form.useForm();
   const snapshot = useProfileSnapshot();
+  const serialOn = snapshot.data?.modules['module.serial']?.enabled === true;
   const create = useCreateSku();
   const update = useUpdateSku();
   const editing = sku != null;
@@ -49,6 +50,7 @@ export default function SkuFormModal({
       barcode: sku.barcode ?? undefined,
       reorderPoint: sku.reorderPoint > 0 ? sku.reorderPoint : undefined,
       unit: sku.unit ?? undefined,
+      ...(serialOn ? { serialTracked: sku.serialTracked === true } : {}),
     };
     for (const ext of extensions) {
       const v = sku.extData[ext.key];
@@ -56,7 +58,7 @@ export default function SkuFormModal({
       values[ext.key] = ext.type === 'json' ? JSON.stringify(v) : v;
     }
     form.setFieldsValue(values);
-  }, [open, sku, form, extensions]);
+  }, [open, sku, form, extensions, serialOn]);
 
   const submit = async (values: Record<string, unknown>) => {
     // 收集扩展字段值：空值跳过；json 类型提交前 parse
@@ -90,6 +92,7 @@ export default function SkuFormModal({
             reorderPoint,
             // 单位与条码不同：编辑态显式传（空串 = 清空），未改也幂等
             unit: unit ?? '',
+            ...(serialOn ? { serialTracked: values.serialTracked === true } : {}),
             extData,
           },
         });
@@ -101,6 +104,7 @@ export default function SkuFormModal({
           barcode: barcode || undefined,
           reorderPoint: reorderPoint > 0 ? reorderPoint : undefined,
           unit: unit || undefined,
+          ...(serialOn && values.serialTracked === true ? { serialTracked: true } : {}),
           extData: Object.keys(extData).length ? extData : undefined,
         });
         message.success(`SKU ${values.skuCode} 已创建`);
@@ -151,6 +155,16 @@ export default function SkuFormModal({
         >
           <InputNumber style={{ width: '100%' }} min={0} precision={0} placeholder="如 50" />
         </Form.Item>
+        {serialOn ? (
+          <Form.Item
+            name="serialTracked"
+            label="按序列号管理"
+            valuePropName="checked"
+            extra="一件一个号。已经有库存的商品不能再改成按序列号管理。"
+          >
+            <Switch />
+          </Form.Item>
+        ) : null}
         {extensions.map((ext) => (
           <Form.Item key={ext.key} name={ext.key} label={ext.label} valuePropName={ext.type === 'boolean' ? 'checked' : 'value'}>
             {fieldControl(ext)}

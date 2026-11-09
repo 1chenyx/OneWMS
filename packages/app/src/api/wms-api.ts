@@ -14,6 +14,8 @@ export interface Sku {
   /** 档案状态（A2 软停用）：'archived' = 已停用（默认隐藏）；缺省 = 启用 */
   status?: string;
   name: string;
+  /** 按序列号管理。缺省或 false = 只记数量。仅 module.serial 开启时有意义 */
+  serialTracked?: boolean;
   extData: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -33,6 +35,8 @@ export interface OrderLine {
   batchExpiryDate?: string | null;
   /** 已入账净量。null = 没记过短收短发（按订单数量） */
   fulfilledQty?: number | null;
+  /** 这一行的序列号。仅按件管理、且 module.serial 开启时才有 */
+  serials?: string[];
 }
 
 export interface Order {
@@ -263,6 +267,36 @@ export interface WarehouseStock {
   rows: WarehouseStockRow[];
 }
 
+/** 序列号（GET /api/serials）。lpnCode 只有装在托盘上才有。 */
+export interface SerialRow {
+  serialNo: string;
+  skuCode: string;
+  locationCode: string;
+  batchNo: string;
+  status: 'in' | 'out';
+  lpnCode?: string;
+}
+
+/** 托盘清单（GET /api/lpns）。 */
+export interface LpnRow {
+  lpnCode: string;
+  locationCode: string;
+  lineCount: number;
+}
+
+export interface LpnStockLine {
+  skuCode: string;
+  batchNo: string;
+  quantity: number;
+}
+
+/** 某个托盘上装了什么（GET /api/lpns/:code/stock）。 */
+export interface LpnStock {
+  lpnCode: string;
+  locationCode: string;
+  lines: LpnStockLine[];
+}
+
 /** 盘点单清单行（GET /api/stocktakes；scope 是编码展示，'全场' = 全仓） */
 export interface Stocktake {
   id: string;
@@ -439,16 +473,22 @@ function inventory(query?: {
   return request<InventoryRow[] | InventoryListPage>(qs ? `/api/inventory?${qs}` : '/api/inventory');
 }
 
-/** 库位清单。不传 limit 时是全量数组；q 在服务端过滤。 */
-function locations(query?: { q?: string }): Promise<Location[]>;
-function locations(query: { q?: string; limit: number; offset?: number }): Promise<ListPage<Location>>;
-function locations(query?: {
+type LocationListQuery = {
   q?: string;
-  limit?: number;
-  offset?: number;
-}): Promise<Location[] | ListPage<Location>> {
+  /** 只返回这个仓库里的库位。与 unassigned 互斥。 */
+  warehouseCode?: string;
+  /** 只返回还没划进仓库的库位。 */
+  unassigned?: boolean;
+};
+
+/** 库位清单。不传 limit 时是全量数组；q 在服务端过滤。仓库范围也在服务端过滤。 */
+function locations(query?: LocationListQuery): Promise<Location[]>;
+function locations(query: LocationListQuery & { limit: number; offset?: number }): Promise<ListPage<Location>>;
+function locations(query?: LocationListQuery & { limit?: number; offset?: number }): Promise<Location[] | ListPage<Location>> {
   const params = new URLSearchParams();
   if (query?.q) params.set('q', query.q);
+  if (query?.unassigned) params.set('unassigned', '1');
+  else if (query?.warehouseCode) params.set('warehouseCode', query.warehouseCode);
   writePage(params, query);
   const qs = params.toString();
   return request<Location[] | ListPage<Location>>(qs ? `/api/locations?${qs}` : '/api/locations');
@@ -462,6 +502,7 @@ export const wmsApi = {
     barcode?: string;
     reorderPoint?: number;
     unit?: string;
+    serialTracked?: boolean;
     extData?: Record<string, unknown>;
   }) =>
     request<{
@@ -483,6 +524,7 @@ export const wmsApi = {
       barcode?: string;
       reorderPoint?: number;
       unit?: string;
+      serialTracked?: boolean;
       extData?: Record<string, unknown>;
     },
   ) =>
@@ -614,6 +656,7 @@ export const wmsApi = {
       locationCode?: string;
       batchNo?: string;
       batchExpiryDate?: string;
+      serials?: string[];
     }[];
     /** 单据号（可选，缺省由服务端生成）。导入时用来把多行并成一张单 */
     orderNo?: string;
@@ -628,6 +671,27 @@ export const wmsApi = {
     note?: string;
   }) =>
     request<{ orderId: string; orderNo: string; state: string }>('/api/orders', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  /** 修订单据内容。只传要改的字段；服务端按状态拒绝已经入账或已结束的字段。 */
+  reviseOrder: (
+    orderNo: string,
+    body: {
+      note?: string | null;
+      partnerCode?: string | null;
+      expectedAt?: string | null;
+      lines?: {
+        skuCode: string;
+        quantity: number;
+        locationCode?: string;
+        batchNo?: string;
+        batchExpiryDate?: string;
+        serials?: string[];
+      }[];
+    },
+  ) =>
+    request<{ orderNo: string; state: string }>(`/api/orders/${encodeURIComponent(orderNo)}/revise`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
@@ -673,7 +737,7 @@ export const wmsApi = {
   },
   /** 效期看板（M14）：全仓批次分层清单（读直查投影，切页挂载即刷新） */
   expiryBoard: () => request<ExpiryBoard>('/api/inventory/expiry'),
-  adjustInventory: (body: { skuCode: string; delta: number; reason?: string }) =>
+  adjustInventory: (body: { skuCode: string; delta: number; reason?: string; serials?: string[] }) =>
     request<{ skuCode: string; quantity: number }>('/api/inventory/adjust', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -716,6 +780,37 @@ export const wmsApi = {
     ),
   warehouseStock: (warehouseCode: string) =>
     request<WarehouseStock>(`/api/warehouses/${encodeURIComponent(warehouseCode)}/stock`),
+  serials: (query?: { skuCode?: string; locationCode?: string; status?: string }) => {
+    const params = new URLSearchParams();
+    if (query?.skuCode) params.set('skuCode', query.skuCode);
+    if (query?.locationCode) params.set('locationCode', query.locationCode);
+    if (query?.status) params.set('status', query.status);
+    const qs = params.toString();
+    return request<SerialRow[]>(`/api/serials${qs ? `?${qs}` : ''}`);
+  },
+  serial: (serialNo: string) => request<SerialRow>(`/api/serials/${encodeURIComponent(serialNo)}`),
+  lpns: () => request<LpnRow[]>('/api/lpns'),
+  createLpn: (body: { lpnCode: string; locationCode?: string }) =>
+    request<{ lpnId: string; lpnCode: string; locationCode: string }>('/api/lpns', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  packLpn: (lpnCode: string, body: { skuCode: string; quantity: number; batchNo?: string; serials?: string[] }) =>
+    request<{ lpnCode: string; skuCode: string; batchNo: string; quantity: number }>(
+      `/api/lpns/${encodeURIComponent(lpnCode)}/pack`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  unpackLpn: (lpnCode: string, body: { skuCode: string; quantity: number; batchNo?: string; serials?: string[] }) =>
+    request<{ lpnCode: string; skuCode: string; batchNo: string; quantity: number }>(
+      `/api/lpns/${encodeURIComponent(lpnCode)}/unpack`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  moveLpn: (lpnCode: string, body: { toLocationCode: string }) =>
+    request<{ lpnCode: string; from: string; to: string; lines: LpnStockLine[] }>(
+      `/api/lpns/${encodeURIComponent(lpnCode)}/move`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  lpnStock: (lpnCode: string) => request<LpnStock>(`/api/lpns/${encodeURIComponent(lpnCode)}/stock`),
   stocktakes: () => request<Stocktake[]>('/api/stocktakes'),
   stocktakeDetail: (no: string) =>
     request<StocktakeDetail>(`/api/stocktakes/${encodeURIComponent(no)}`),

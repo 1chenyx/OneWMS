@@ -174,7 +174,7 @@ export default function ExpiryPage() {
                   },
                 ]}
                 dataSource={r.buckets}
-                pagination={false}
+                pagination={TABLE_PAGINATION}
                 style={{ maxWidth: 360 }}
               />
             ),

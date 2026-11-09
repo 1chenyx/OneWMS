@@ -22,12 +22,16 @@ export type Page =
   | 'orders'
   | 'pickings'
   | 'inventory'
+  | 'serials'
+  | 'pallets'
   | 'stocktakes'
   | 'expiry'
   | 'chat'
   | 'agents'
   | 'memory'
   | 'ai-config'
+  | 'flows'
+  | 'modules'
   | 'settings';
 
 /** navigate 携带给目标页的一次性初始过滤（目标页按需取字段） */
@@ -36,6 +40,8 @@ export interface InitialFilter {
   skuCode?: string;
   /** 单据页：单号过滤（AI 建单后的跳转定位） */
   orderNo?: string;
+  /** 托盘页：打开时选中这个托盘 */
+  lpnCode?: string;
 }
 
 interface AppNavValue {

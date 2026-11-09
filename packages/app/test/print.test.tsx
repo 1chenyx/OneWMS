@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App as AntApp, ConfigProvider } from 'antd';
@@ -10,8 +10,8 @@ import { AppNavProvider } from '../src/app-nav';
 
 /**
  * 单据打印（A1）测试：mock 数据层 hooks + 桩掉 window.print。
- * 断言三件事：点按钮 → 打印区挂载（内容齐全：单头/明细/效期/签字栏）→
- * 拉起系统打印对话框（window.print 被调）。
+ * 行上「详情」只打开详情。右上角「打印预览」再打开预览，不拉起系统打印。预览里点「打印」才挂打印根。
+ * 勾选当前页后，「打印所选」一次打出多页，不打开详情。
  * 拣货单另断言行按建议库位排序（纸质作业按库位走，少跑冤枉路）。
  */
 
@@ -107,6 +107,31 @@ const pickingsFixture = [
       },
     ],
   },
+  {
+    id: 'pk-2',
+    pickingNo: 'PK-20261107-2',
+    state: 'closed',
+    note: null,
+    createdAt: '2026-11-07T10:00:00.000Z',
+    updatedAt: '2026-11-07T10:00:00.000Z',
+    lines: [
+      {
+        id: 'pl-3',
+        orderId: 'o-2',
+        orderNo: 'OUT-20261107-9',
+        skuId: 's-3',
+        skuCode: 'C-3',
+        skuName: '垫片',
+        unit: '件',
+        qtyToPick: 4,
+        suggestedLocationCode: 'C-01',
+        suggestedBatchNo: 'B-9',
+        pickedQty: 4,
+        pickedLocationCode: null,
+        pickedBatchNo: null,
+      },
+    ],
+  },
 ];
 
 vi.mock('../src/api/hooks', () => ({
@@ -120,6 +145,7 @@ vi.mock('../src/api/hooks', () => ({
   usePartners: () => ({ isLoading: false, data: [] }),
   useSkus: () => ({ isLoading: false, data: [] }),
   usePutawayOrder: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useReviseOrder: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useLocations: () => ({ isLoading: false, data: [] }),
   usePickings: () => ({ isLoading: false, data: pickingsFixture }),
   useCreatePicking: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -151,55 +177,132 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
+function printCssText(): string {
+  return [...document.querySelectorAll('style')].map((s) => s.textContent ?? '').join('\n');
+}
+
 describe('单据打印（A1）', () => {
-  it('OrdersPage：入库单打印——单头/明细（效期列）/数量带单位/签收栏齐全，拉起 window.print', async () => {
+  it('OrdersPage：详情里点打印预览才看纸样，预览里点打印才挂打印根并拉起 window.print', async () => {
     const user = userEvent.setup();
     render(wrap(<OrdersPage />));
 
-    await user.click(screen.getAllByRole('button', { name: '打印单据' })[0]); // 第一行 = 入库单
+    expect(screen.queryByRole('button', { name: '预览单据' })).not.toBeInTheDocument();
+    await user.click(screen.getAllByRole('button', { name: '详情' })[0]); // 第一行 = 入库单
 
+    expect(document.getElementById('order-print-area')).toBeNull();
+    const detail = screen.getByRole('dialog', { name: /详情/ });
+    expect(within(detail).getByText(/华东供应商/)).toBeInTheDocument();
+    expect(within(detail).getByText(/周度补货/)).toBeInTheDocument();
+    expect(within(detail).getByText('2027-01-01')).toBeInTheDocument();
+    expect(within(detail).getByText('10 箱')).toBeInTheDocument();
+    expect(within(detail).queryByText(/签收人签字/)).not.toBeInTheDocument();
+    expect(within(detail).getByRole('button', { name: '编辑' })).toBeInTheDocument();
+    expect(within(detail).getByRole('button', { name: '打印预览' })).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(printSpy).not.toHaveBeenCalled();
+
+    await user.click(within(detail).getByRole('button', { name: '打印预览' }));
+    const preview = screen.getByText('预览 入库单 IN-20261107-1').closest('[role="dialog"]') as HTMLElement;
+    expect(within(preview).getByText('入库单 IN-20261107-1')).toBeInTheDocument();
+    expect(within(preview).getByText(/签收人签字/)).toBeInTheDocument();
+    expect(printSpy).not.toHaveBeenCalled();
+
+    await user.click(within(preview).getByRole('button', { name: '打印' }));
+
+    await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
     const area = document.getElementById('order-print-area');
     expect(area).not.toBeNull();
-    expect(screen.getByText('入库单 IN-20261107-1')).toBeInTheDocument();
-    expect(screen.getByText('华东供应商')).toBeInTheDocument(); // 往来单位
-    expect(screen.getByText('周度补货')).toBeInTheDocument(); // 备注
-    expect(screen.getByText('2027-01-01')).toBeInTheDocument(); // 入库单效期列
-    expect(screen.getByText('10 箱')).toBeInTheDocument(); // 数量带单位（A3 联动）
-    expect(screen.getByText(/签收人签字/)).toBeInTheDocument();
-    await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
+    expect(area!.closest('.ant-card')).toBeNull();
+    expect(area).toHaveStyle({ visibility: 'hidden' });
+    expect(area!.textContent).toContain('入库单 IN-20261107-1');
+    expect(area!.textContent).toContain('2027-01-01');
+    expect(area!.textContent).toContain('10 箱');
+    expect(area!.textContent).toContain('签收人签字');
+    expect(printCssText()).toContain('#order-print-area .print-sheet { break-after: page; page-break-after: always; }');
   });
 
-  it('OrdersPage：出库单打印——无效期列，数量跟随单位', async () => {
+  it('OrdersPage：出库单详情无效期列，预览后再打印，数量跟随单位', async () => {
     const user = userEvent.setup();
     render(wrap(<OrdersPage />));
 
-    await user.click(screen.getAllByRole('button', { name: '打印单据' })[1]); // 第二行 = 出库单
+    await user.click(screen.getAllByRole('button', { name: '详情' })[1]); // 第二行 = 出库单
 
-    expect(screen.getByText('出库单 OUT-20261107-1')).toBeInTheDocument();
-    expect(screen.queryByText('效期')).not.toBeInTheDocument(); // 出库单不印效期
-    expect(screen.getByText('2.5 kg')).toBeInTheDocument();
+    const detail = screen.getByRole('dialog', { name: /详情/ });
+    expect(within(detail).queryByText('效期')).not.toBeInTheDocument();
+    expect(within(detail).getByText('2.5 kg')).toBeInTheDocument();
+    expect(printSpy).not.toHaveBeenCalled();
+
+    await user.click(within(detail).getByRole('button', { name: '打印预览' }));
+    const preview = screen.getByText('预览 出库单 OUT-20261107-1').closest('[role="dialog"]') as HTMLElement;
+    expect(within(preview).getByText('出库单 OUT-20261107-1')).toBeInTheDocument();
+    expect(within(preview).queryByText('效期')).not.toBeInTheDocument();
+    expect(within(preview).getByText('2.5 kg')).toBeInTheDocument();
+
+    await user.click(within(preview).getByRole('button', { name: '打印' }));
     await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
+    expect(document.getElementById('order-print-area')!.textContent).toContain('2.5 kg');
   });
 
-  it('PickingsPage：拣货单打印——行按建议库位排序，勾选框/应拣已拣（带单位）/签字栏齐全', async () => {
+  it('OrdersPage：勾选当前页可以一次打印，不打开详情', async () => {
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage />));
+
+    await user.click(screen.getAllByRole('checkbox')[0]);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '预览所选' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '打印所选（2）' }));
+
+    await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
+    const printed = document.getElementById('order-print-area');
+    expect(printed).not.toBeNull();
+    expect(printed!.querySelectorAll('.print-sheet')).toHaveLength(2);
+    expect(printed!.textContent).toContain('IN-20261107-1');
+    expect(printed!.textContent).toContain('OUT-20261107-1');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('PickingsPage：拣货单预览在弹窗里，行按建议库位排序，点打印才拉起 window.print', async () => {
     const user = userEvent.setup();
     render(wrap(<PickingsPage />));
 
-    await user.click(screen.getByRole('button', { name: /打印/ }));
+    await user.click(screen.getAllByRole('button', { name: '预览拣货单' })[0]);
 
-    const area = document.getElementById('picking-print-area');
-    expect(area).not.toBeNull();
-    expect(screen.getByText('拣货单 PK-20261107-1')).toBeInTheDocument();
-    expect(screen.getByText(/关联出库单：OUT-20261107-1/)).toBeInTheDocument();
-    // 明细行按建议库位升序：A-01（fixture 里排第二）应成为第一行
-    const rows = area!.querySelectorAll('tbody tr');
+    expect(document.getElementById('picking-print-area')).toBeNull();
+    expect(printSpy).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('拣货单 PK-20261107-1')).toBeInTheDocument();
+    expect(within(dialog).getByText(/关联出库单：OUT-20261107-1/)).toBeInTheDocument();
+    const rows = dialog.querySelectorAll('tbody tr');
     expect(rows.length).toBe(2);
     expect(rows[0].textContent).toContain('A-1');
-    expect(rows[0].textContent).toContain('□'); // 勾选框
+    expect(rows[0].textContent).toContain('□');
     expect(rows[1].textContent).toContain('B-2');
-    expect(screen.getByText('3')).toBeInTheDocument(); // A-1 应拣（无单位 = 裸数字）
-    expect(screen.getByText('2.5 kg')).toBeInTheDocument(); // B-2 应拣（带单位）
-    expect(screen.getByText(/拣货人签字/)).toBeInTheDocument();
+    expect(within(dialog).getByText('3')).toBeInTheDocument();
+    expect(within(dialog).getByText('2.5 kg')).toBeInTheDocument();
+    expect(within(dialog).getByText(/拣货人签字/)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: '打印' }));
     await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
+    const area = document.getElementById('picking-print-area');
+    expect(area).not.toBeNull();
+    expect(area!.closest('.ant-card')).toBeNull();
+    const printedRows = area!.querySelectorAll('tbody tr');
+    expect(printedRows[0].textContent).toContain('A-1');
+    expect(printedRows[1].textContent).toContain('B-2');
+  });
+
+  it('PickingsPage：勾选后一次打印多张拣货单', async () => {
+    const user = userEvent.setup();
+    render(wrap(<PickingsPage />));
+
+    await user.click(screen.getAllByRole('checkbox')[0]);
+    await user.click(screen.getByRole('button', { name: '打印所选（2）' }));
+
+    await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
+    const area = document.getElementById('picking-print-area');
+    expect(area!.querySelectorAll('.print-sheet')).toHaveLength(2);
+    expect(area!.textContent).toContain('PK-20261107-1');
+    expect(area!.textContent).toContain('PK-20261107-2');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });

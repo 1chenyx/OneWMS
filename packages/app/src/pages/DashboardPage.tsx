@@ -27,7 +27,7 @@ import {
 } from '../api/hooks';
 import type { AlertSummary, FlowTrendPoint, LocationDistribution, OrderStateCount } from '../api/client';
 import PageHeader from '../components/PageHeader';
-import { monoCell, numCell } from '../components/table-style';
+import { monoCell, numCell, TABLE_PAGINATION } from '../components/table-style';
 
 /**
  * 运营看板页（M21）——五维度 Segmented 切换，各自独立查询/端点/queryKey：
@@ -192,7 +192,7 @@ function LocationsView() {
       {rows.length === 0 ? (
         <Empty description="还没有库存" />
       ) : (
-        <Table<LocationDistribution> rowKey="locationCode" size="small" columns={columns} dataSource={rows} pagination={false} />
+        <Table<LocationDistribution> rowKey="locationCode" size="small" columns={columns} dataSource={rows} pagination={TABLE_PAGINATION} />
       )}
     </Card>
   );
@@ -247,7 +247,7 @@ function OrdersView() {
       {rows.length === 0 ? (
         <Empty description="还没有单据" />
       ) : (
-        <Table<OrderStateCount> rowKey={(r) => `${r.direction}:${r.state}`} size="small" columns={columns} dataSource={rows} pagination={false} />
+        <Table<OrderStateCount> rowKey={(r) => `${r.direction}:${r.state}`} size="small" columns={columns} dataSource={rows} pagination={TABLE_PAGINATION} />
       )}
     </Card>
   );
@@ -294,7 +294,7 @@ function AlertsView() {
           <Table
             rowKey={(r) => `${r.skuCode}:${r.locationCode}:${r.batchNo}`}
             size="small"
-            pagination={false}
+            pagination={TABLE_PAGINATION}
             dataSource={d.negativeBuckets}
             columns={[
               { title: 'SKU', dataIndex: 'skuCode', onCell: monoCell },

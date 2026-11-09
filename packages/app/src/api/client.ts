@@ -43,7 +43,17 @@ export type {
   AiProfileWrite,
   AiTestResult,
 } from './agent-api';
-export type { MemoryItem, MemoryListResponse, MemorySettings } from './memory-api';
+export type {
+  MemoryConsolidateResult,
+  MemoryConsolidateScopeResult,
+  MemoryHistoryEntry,
+  MemoryLedgerResponse,
+  MemoryRewriteInput,
+  MemoryScope,
+  MemorySection,
+  MemorySettings,
+  ResidentMemory,
+} from './memory-api';
 export type {
   AlertSummary,
   DashboardOverview,
@@ -59,6 +69,10 @@ export type {
   Location,
   LocationDistribution,
   Warehouse,
+  SerialRow,
+  LpnRow,
+  LpnStock,
+  LpnStockLine,
   Order,
   OrderLine,
   ReplenishmentSuggestion,

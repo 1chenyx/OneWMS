@@ -114,9 +114,12 @@ export class LocationView {
     return row ? rowToRecord(row) : undefined;
   }
 
-  /** 全部库位（按编码排序）。q 对编码和名称做包含匹配。 */
-  list(q?: string): LocationRecord[] {
-    const { where, args } = this.#match(q);
+  /**
+   * 全部库位（按编码排序）。q 对编码和名称做包含匹配。
+   * warehouseId 不传 = 不按仓库滤；null = 只要未分仓；字符串 = 该仓库。
+   */
+  list(q?: string, warehouseId?: string | null): LocationRecord[] {
+    const { where, args } = this.#match({ q, warehouseId });
     const rows = this.db
       .prepare<unknown[], LocationRow>(`SELECT * FROM wms_location WHERE ${where} ORDER BY location_code`)
       .all(...args) as unknown as LocationRow[];
@@ -124,8 +127,13 @@ export class LocationView {
   }
 
   /** 与 list 同一套条件，SQL LIMIT/OFFSET。 */
-  listPage(opts: { q?: string; limit: number; offset: number }): { rows: LocationRecord[]; total: number } {
-    const { where, args } = this.#match(opts.q);
+  listPage(opts: {
+    q?: string;
+    limit: number;
+    offset: number;
+    warehouseId?: string | null;
+  }): { rows: LocationRecord[]; total: number } {
+    const { where, args } = this.#match(opts);
     const total = (
       this.db.prepare(`SELECT COUNT(*) AS total FROM wms_location WHERE ${where}`).get(...args) as {
         total: number;
@@ -139,13 +147,19 @@ export class LocationView {
     return { rows: rows.map(rowToRecord), total };
   }
 
-  #match(q?: string): { where: string; args: unknown[] } {
+  #match(opts?: { q?: string; warehouseId?: string | null }): { where: string; args: unknown[] } {
     const where = ['workspace_id = ?'];
     const args: unknown[] = [this.workspaceId];
+    const q = opts?.q;
     if (q) {
       where.push(`(location_code LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\')`);
       const pat = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
       args.push(pat, pat);
+    }
+    if (opts?.warehouseId === null) where.push('warehouse_id IS NULL');
+    else if (opts?.warehouseId) {
+      where.push('warehouse_id = ?');
+      args.push(opts.warehouseId);
     }
     return { where: where.join(' AND '), args };
   }

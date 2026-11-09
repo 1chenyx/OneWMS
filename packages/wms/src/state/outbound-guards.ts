@@ -2,6 +2,7 @@ import type { WmsWorkspace } from '../wms.js';
 import { readWmsSettings } from '../config/wms-settings.js';
 import { bucketLabel, codeOfLocation, isExpired, QTY_EPS } from './inventory-policy.js';
 import { ExpiredBatchError, InsufficientStockError, StockHeldError, StockReservedError } from '../errors.js';
+import { assertLooseEnough } from './lpn-policy.js';
 
 /**
  * 出库硬守卫（M21 自 order-tools.ts 提取，行为不变——现有测试兜底）：
@@ -55,6 +56,15 @@ export function assertOnHand(
     if (onHand + QTY_EPS < line.quantity) {
       throw new InsufficientStockError(label, -line.quantity, onHand);
     }
+    assertLooseEnough(ws, {
+      skuCode: ws.skus.byId(line.skuId)?.skuCode ?? line.skuId,
+      skuId: line.skuId,
+      locationId: line.locationId,
+      locationCode: codeOfLocation(ws, line.locationId),
+      batchNo: line.batchNo,
+      take: line.quantity,
+      onHand,
+    });
     const reserved = ws.inventory.reservedOf(line.skuId, line.locationId, line.batchNo, except);
     if (onHand - reserved + QTY_EPS < line.quantity) {
       throw new StockReservedError(label, line.quantity, onHand, reserved);

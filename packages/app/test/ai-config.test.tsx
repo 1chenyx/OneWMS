@@ -84,7 +84,9 @@ describe('厂商画廊', () => {
 
     await user.click(screen.getByRole('button', { name: 'DeepSeek' }));
     expect(screen.getByText('https://api.deepseek.com/v1')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'deepseek-chat', pressed: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'deepseek-flash', pressed: true })).toBeInTheDocument();
+    expect(screen.queryByLabelText('模型 ID')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('其他模型 ID')).not.toBeInTheDocument();
     expect(screen.getByLabelText('API Key')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '添加并设为当前' }));
@@ -96,7 +98,7 @@ describe('厂商画廊', () => {
     addMock.mockResolvedValueOnce({
       configured: true,
       source: 'file',
-      config: { kind: 'openai-compatible', model: 'deepseek-chat', baseUrl: 'https://api.deepseek.com/v1', apiKeySet: true },
+      config: { kind: 'openai-compatible', model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1', apiKeySet: true },
       profiles: [],
     });
     const user = userEvent.setup();
@@ -111,10 +113,25 @@ describe('厂商画廊', () => {
       kind: 'openai-compatible',
       baseUrl: 'https://api.deepseek.com/v1',
       apiKey: 'sk-test',
-      models: ['deepseek-chat'],
+      models: ['deepseek-flash'],
       activate: true,
     });
-    expect(await screen.findByText('已保存，当前使用 deepseek-chat')).toBeInTheDocument();
+    expect(await screen.findByText('已保存，当前使用 deepseek-flash')).toBeInTheDocument();
+  });
+
+  it('只有自定义要手填模型 ID', async () => {
+    const user = userEvent.setup();
+    render(wrap(<AiConfigPage />));
+    await user.click(screen.getByRole('button', { name: '豆包（火山方舟）' }));
+    expect(screen.getByRole('button', { name: 'doubao-seed-evolving', pressed: true })).toBeInTheDocument();
+    expect(screen.queryByLabelText('模型 ID')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '自定义' }));
+    expect(screen.getByLabelText('模型 ID')).toBeInTheDocument();
+    await user.type(screen.getByLabelText('接口地址'), 'https://example.com/v1');
+    await user.click(screen.getByRole('button', { name: '添加并设为当前' }));
+    expect(await screen.findByText('请填写模型 ID')).toBeInTheDocument();
+    expect(addMock).not.toHaveBeenCalled();
   });
 
   it('本地 Ollama 不出现密钥，保存体是 ollama', async () => {

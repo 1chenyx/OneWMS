@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import {
+  ensureProjectionVersion,
   OneCore,
   type EventsView,
   type FieldsView,
@@ -11,7 +12,7 @@ import {
   type WorkspaceFacade,
 } from '@one/core';
 import { migrateMemory } from './db/migrations.js';
-import { MemoryView } from './views/memory-view.js';
+import { MemorySectionView, MEMORY_PROJECTION_VERSION } from './views/memory-view.js';
 import { createMemoryTools } from './tools/memory-tools.js';
 import { isMemoryEventType } from './events/catalog.js';
 import { MEMORY_MODULE_ID } from './config/memory-settings.js';
@@ -65,13 +66,13 @@ function detachHandler(t: ToolDefinition): Omit<ToolDefinition, 'handler'> {
 }
 
 /**
- * MemoryWorkspace —— 记忆领域工作区门面：内核五视图 + 记忆投影 + 追账器。
+ * MemoryWorkspace —— 记忆领域工作区门面：内核五视图 + 章节投影 + 追账器。
  *
  * 追账模型（与 WmsWorkspace 同一条纪律）：#cursor 是内存游标（已应用的
  * lamport 高水位）；sync() 增量应用游标之后的 memory.* 事件；replay() 清空
  * 投影、游标复位、全量重放——同步、迁移、修复共用同一条 applyEvent 路径。
- * 构造期即全量追账一次 + manifest 安装种子：新进程打开旧库（投影落后）、
- * 全新工作区都正确。
+ * 构造期即全量追账一次 + manifest 安装种子：新进程打开旧库（投影落后，
+ * 含 v1 条目事件 → legacy 章节）、全新工作区都正确。
  */
 export class MemoryWorkspace {
   /** 内核五视图（与 WorkspaceFacade 同源，直接展开在门面上） */
@@ -81,8 +82,8 @@ export class MemoryWorkspace {
   readonly profile: ProfileView;
   readonly modules: ModulesView;
 
-  /** 记忆投影 */
-  readonly memory: MemoryView;
+  /** 记忆章节投影（查询 + T0 渲染 + T2 预取匹配都在它身上） */
+  readonly sections: MemorySectionView;
 
   readonly #facade: WorkspaceFacade;
   readonly #db: Database.Database;
@@ -98,7 +99,15 @@ export class MemoryWorkspace {
     this.tools = this.#facade.tools;
     this.profile = this.#facade.profile;
     this.modules = this.#facade.modules;
-    this.memory = new MemoryView(db, workspaceId);
+    this.sections = new MemorySectionView(db, workspaceId);
+    // 投影版本戳（层 1）：代码里的派生规则比库里记的新 → 整组重建章节投影。
+    // 放在 sync() 之前：replay() 自带清空 + 游标复位 + 全量重放，随后 sync() 空转。
+    ensureProjectionVersion(db, {
+      group: 'memory',
+      workspaceId,
+      codeVersion: MEMORY_PROJECTION_VERSION,
+      rebuild: () => this.replay(),
+    });
     this.sync();
     this.#installModule(manifest);
   }
@@ -112,7 +121,7 @@ export class MemoryWorkspace {
   }
 
   /**
-   * 增量追账：把游标之后本工作区的 memory.* 事件应用到记忆投影。
+   * 增量追账：把游标之后本工作区的 memory.* 事件应用到章节投影。
    * 单事务；applyEvent 抛错则整体回滚、游标不动——确定性失败。
    */
   sync(): { appliedEvents: number } {
@@ -130,7 +139,7 @@ export class MemoryWorkspace {
     this.events.forEach((env) => {
       totalEvents++;
       if (isMemoryEventType(env.type)) {
-        this.memory.applyEvent(env);
+        this.sections.applyEvent(env);
         appliedMemoryEvents++;
       }
       this.#cursor = env.lamport;
@@ -139,12 +148,12 @@ export class MemoryWorkspace {
   }
 
   /**
-   * 全量重放重建记忆投影（不含内核投影——那是 core.replay() 的职责）。
+   * 全量重放重建章节投影（不含内核投影——那是 core.replay() 的职责）。
    * 幂等；「事件账本 ↔ 记忆投影」强一致的自检路径。
    */
   replay(): { totalEvents: number; appliedMemoryEvents: number } {
     const run = this.#db.transaction(() => {
-      this.memory.clear();
+      this.sections.clear();
       this.#cursor = -1;
       return this.#consumeEvents();
     });
@@ -154,17 +163,20 @@ export class MemoryWorkspace {
 
 /**
  * core.memory 模块 manifest：tools 从工具定义派生（声明与事实零重复维护）；
- * settings 两键（autoMemory / maxMemoryItems）——新库由 install 从 default
+ * settings 两键（autoMemory / maxSections）——新库由 install 从 default
  * 种子，老库读取方兜底缺省（readMemorySettings），改值走 profile 慢通道。
+ *
+ * 版本 0.2.0：形态从「条目」改为「章节 markdown 账本」（工具 read/append/rewrite）。
  */
 export function memoryManifest(toolDefs: ToolDefinition[]): ModuleManifest {
   return {
     id: MEMORY_MODULE_ID,
     name: 'AI 记忆',
     description:
-      'AI 聊天记忆：分层记录用户偏好（personal）与仓库业务约定（project），对话时注入上下文；' +
-      '支持对话后自动提取与人工/对话中显式记录，记忆随事件账本多节点同步。',
-    version: '0.1.0',
+      'AI 聊天记忆：以 markdown 章节记录用户偏好（personal）与仓库业务约定（project）。' +
+      '对话时常驻注入「用户画像全文 + 业务章节目录」，细节按需读取、关键词命中自动预取；' +
+      '支持对话后自动追加与人工/对话中显式改写，记忆随事件账本多节点同步。',
+    version: '0.2.0',
     capabilities: ['db.read', 'events.subscribe', 'tools.register'],
     tools: toolDefs.map((tool) => detachHandler(tool)),
     settings: {
@@ -176,11 +188,11 @@ export function memoryManifest(toolDefs: ToolDefinition[]): ModuleManifest {
             description: '对话结束后自动提取记忆（后台静默执行，失败不影响聊天）',
             default: true,
           },
-          maxMemoryItems: {
+          maxSections: {
             type: 'integer',
             minimum: 1,
-            description: '记忆总量上限（条）：达到后拒绝新增，需先遗忘或清理',
-            default: 200,
+            description: '记忆章节总数上限：达到后拒绝新建章节，需先归并或删除',
+            default: 24,
           },
         },
       },

@@ -1,4 +1,5 @@
 import type { ModuleManifest, ToolDefinition, WorkflowDef } from '@one/core';
+import { WMS_RECORDS } from './builtin-records.js';
 import { ORDER_TRANSITIONS } from './state/order-state-machine.js';
 
 /** 状态中文标签（Profile 流程的展示名） */
@@ -64,6 +65,12 @@ export function wmsManifest(toolDefs: ToolDefinition[]): ModuleManifest {
         { entity: 'sku', key: 'unit', label: '单位', type: 'string' },
       ],
     },
+    aliases: ['仓储'],
+    workflowAliases: {
+      inbound: ['入库', '入库流程'],
+      outbound: ['出库', '出库流程'],
+    },
+    records: WMS_RECORDS,
     tools: toolDefs.map((tool) => detachHandler(tool)),
     workflows: { base: defaultWorkflows() },
     settings: {

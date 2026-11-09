@@ -33,8 +33,19 @@ export type { AppContext } from './context.js';
 export { readAiConfig } from './ai-config.js';
 export { APP_DIST, mountStatic } from './static.js';
 export { runMemoryExtraction, scheduleMemoryExtraction } from './memory-hook.js';
+export type { ExtractionStats } from './memory-hook.js';
+export { runMemoryConsolidation } from './memory-consolidate.js';
+export type { ConsolidationStats } from './memory-consolidate.js';
 export { runSyncRound } from './sync/sync-client.js';
 export type { SyncRoundResult } from './sync/sync-client.js';
+export {
+  APP_VERSION_META_KEY,
+  decideUpgrade,
+  downgradeMessage,
+  resolveAppVersion,
+  runUpgradeGate,
+} from './upgrade/upgrade-gate.js';
+export type { GateDecision, UpgradeGateReport } from './upgrade/upgrade-gate.js';
 
 /** 组装 Hono 应用（测试口：不起端口，app.request 直测） */
 export function createApp(ctx: AppContext): Hono {
@@ -96,6 +107,16 @@ export function start(): void {
       ctx.backupDir === null
         ? '[one-server] 自动备份：关闭（当前宿主无可写数据目录）'
         : `[one-server] 自动备份：${ctx.backupDir}  间隔=${ctx.backupIntervalMs === 0 ? '仅手动' : `${Math.round(ctx.backupIntervalMs / 3_600_000)} 小时`}  保留=${ctx.backupKeep} 份`,
+    );
+    const gate = ctx.upgradeGate;
+    console.log(
+      gate.decision.kind === 'upgrade'
+        ? `[one-server] 升级闸门：v${gate.decision.from} → v${gate.decision.to}，升级前备份 ${gate.backupName ?? `未生成（${gate.backupSkippedReason ?? '原因未知'}）`}`
+        : gate.decision.kind === 'fresh'
+          ? `[one-server] 升级闸门：全新数据目录，已记版本 v${gate.appVersion}`
+          : gate.decision.kind === 'disabled'
+            ? `[one-server] 升级闸门：关闭（${gate.decision.reason}）——不做版本比对，也不生成升级前备份`
+            : `[one-server] 升级闸门：版本未变（v${gate.decision.kind === 'same' ? gate.decision.version : gate.appVersion}）`,
     );
     const ip = lanIPv4();
     console.log(

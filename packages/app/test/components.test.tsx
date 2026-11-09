@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ConfigProvider } from 'antd';
+import zhCN from 'antd/locale/zh_CN';
 import ImpactReportView from '../src/components/ImpactReportView';
 import ToolInvocationCard from '../src/components/ToolInvocationCard';
 import type { ImpactReport } from '@one/core';
@@ -208,7 +209,7 @@ describe('ToolInvocationCard：查询结果表格渲染（M12 步骤2）', () =>
     expect(screen.queryByText(/\{/)).not.toBeInTheDocument();
   });
 
-  it('结果超 50 行：截断为前 50 行 + 总数提示', () => {
+  it('结果超过一页时可以翻到后面的行', async () => {
     const rows = Array.from({ length: 60 }, (_, i) => ({
       skuCode: `A-${i + 1}`,
       name: 'x',
@@ -216,14 +217,20 @@ describe('ToolInvocationCard：查询结果表格渲染（M12 步骤2）', () =>
       batchExpiryDate: null,
       quantity: 1,
     }));
+    const user = userEvent.setup();
     render(
-      <ToolInvocationCard
-        invocation={{ callId: 'c7', toolId: 'wms.inventory.query', args: {}, ok: true, payload: rows }}
-      />,
+      <ConfigProvider locale={zhCN}>
+        <ToolInvocationCard
+          invocation={{ callId: 'c7', toolId: 'wms.inventory.query', args: {}, ok: true, payload: rows }}
+        />
+      </ConfigProvider>,
     );
-    expect(screen.getByText('共 60 行，仅显示前 50 行')).toBeInTheDocument();
+    expect(screen.getByText('共 60 条')).toBeInTheDocument();
     expect(screen.getByText('A-50')).toBeInTheDocument();
     expect(screen.queryByText('A-60')).not.toBeInTheDocument();
+    await user.click(screen.getByTitle('下一页'));
+    expect(screen.getByText('A-60')).toBeInTheDocument();
+    expect(screen.queryByText('A-1')).not.toBeInTheDocument();
   });
 });
 

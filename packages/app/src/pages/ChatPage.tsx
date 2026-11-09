@@ -3,14 +3,16 @@ import type { ButtonProps } from 'antd';
 import { DownOutlined, PaperClipOutlined, SendOutlined } from '@ant-design/icons';
 import { Alert, App as AntApp, Button, Card, Dropdown, Input, Modal, Space, Spin, Tag, Typography } from 'antd';
 import { api } from '../api/client';
-import type { AgentDef, ChatAttachmentPayload, ChatInvocation } from '../api/client';
+import type { AgentDef, AiProfilePublic, ChatAttachmentPayload, ChatInvocation } from '../api/client';
 import { useAiConfig, useProposals } from '../api/hooks';
 import { useChatSession } from '../chat/ChatProvider';
 import type { ChatTurn } from '../chat/ChatProvider';
 import { parseChatFile, MAX_CHAT_FILES } from '../chat/parse-attachment';
 import { useAppNav } from '../app-nav';
 import type { InitialFilter, Page } from '../app-nav';
+import { findVendor, modelsForVendor } from '../lib/ai-vendors';
 import ProposalDetail from '../components/ProposalDetail';
+import { proposalsForChat } from './agent-proposal';
 import ToolInvocationCard from '../components/ToolInvocationCard';
 import ToolRun from '../components/ToolRun';
 import PageHeader from '../components/PageHeader';
@@ -18,15 +20,35 @@ import PageHeader from '../components/PageHeader';
 /**
  * AI 对话面板（M12：SSE 流式 + 会话化；M16：多助手切换）：
  *  - 状态在 ChatProvider（App 级 context）——切页不丢对话；
- *  - 输入框底部两个下拉：切换助手（选项来自 GET /api/agents）、切换模型
- *    （同一接入点上的模型名，选项来自 GET /api/ai-config/models）。
- *    切换助手 = 换新会话 + 清空历史（流式中锁定）；切换模型不换会话；
- *  - 配置确认：profile.propose、助手定义、AI 记忆设置的提议一到就弹窗，
- *    写明将改成什么样、有什么影响；关掉后可从输入框上方再打开；
+ *  - 输入框底部两个下拉：切换助手（选项来自 GET /api/agents）、
+ *    切换厂商和模型（一个按钮：厂商作子菜单分组，点是这个厂商的模型，
+ *    预设加上已经保存过的名字）。地址和密钥跟这个厂商已保存的那一条走。
+ *    切换助手 = 换新会话 + 清空历史（流式中锁定）；切换厂商或模型不换会话；
+ *  - 配置确认：对话里的 profile.propose 和 AI 记忆设置一到就弹窗，
+ *    写明将改成什么样、有什么影响；关掉后可从输入框上方再打开。
+ *    助手定义的改动在助手管理页自己确认，不进这个窗口；
  *  - 流式渲染：一组工具调用先收成一句人话，展开才看明细；助手文本逐 delta 增长；
  *  - 成功的操作展开后仍可去对应管理页；
  *  - 输入区可以带上 Excel、CSV 或文本，用户说怎么处理，助手就怎么处理。
  */
+
+/** 已配置过的厂商，按第一次出现的顺序。名字用预设，没有预设就用保存时的称呼。 */
+function configuredVendors(profiles: AiProfilePublic[]): { vendorId: string; name: string }[] {
+  const seen = new Set<string>();
+  const out: { vendorId: string; name: string }[] = [];
+  for (const profile of profiles) {
+    if (seen.has(profile.vendorId)) continue;
+    seen.add(profile.vendorId);
+    out.push({ vendorId: profile.vendorId, name: findVendor(profile.vendorId)?.name ?? profile.label });
+  }
+  return out;
+}
+
+/** 这个厂商用来带地址和密钥的那一条：模型名对上优先，其次有密钥的，否则第一条。 */
+function credentialFor(profiles: AiProfilePublic[], vendorId: string, modelId: string): AiProfilePublic | undefined {
+  const saved = profiles.filter((item) => item.vendorId === vendorId);
+  return saved.find((item) => item.model === modelId) ?? saved.find((item) => item.apiKeySet) ?? saved[0];
+}
 
 /** 输入框底栏的可点控件：浅底圆角，悬停再深一点 */
 const ComposerChip = forwardRef<HTMLButtonElement, ButtonProps>(function ComposerChip(
@@ -69,7 +91,6 @@ export default function ChatPage() {
   const [files, setFiles] = useState<ChatAttachmentPayload[]>([]);
   const [readingFile, setReadingFile] = useState(false);
   const [agents, setAgents] = useState<AgentDef[]>([]);
-  const [remoteModels, setRemoteModels] = useState<string[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -96,9 +117,10 @@ export default function ChatPage() {
     if (proposeCount > 0) void refetchProposals.current?.();
   }, [proposeCount]);
 
-  // 还没弹过的提议马上打开。关掉或拍板后不再自动弹出同一条。
+  // 还没弹过的配置提议马上打开。助手定义不进这个窗口。关掉或拍板后不再自动弹出同一条。
+  const configProposals = proposalsForChat(proposals);
   useEffect(() => {
-    const pending = proposals ?? [];
+    const pending = proposalsForChat(proposals);
     if (openProposalId && pending.some((item) => item.proposalId === openProposalId)) return;
     const fresh = pending.find((item) => !promptedRef.current.has(item.proposalId));
     if (fresh) {
@@ -123,17 +145,21 @@ export default function ChatPage() {
     };
   }, []);
 
-  // 同一接入点上可选的模型（失败就只靠当前配置名）
+  const profiles = aiConfigQuery.data?.profiles ?? [];
+  const activeProfile = profiles.find((item) => item.active) ?? profiles[0];
+  const selectedProfile = profiles.find((item) => item.id === chat.profileId) ?? activeProfile;
+  const vendors = configuredVendors(profiles);
+  const shownVendorId = selectedProfile?.vendorId;
+
+  // 选中的那条被删掉了，或页面配置清空了：回到当前生效的模型，别再把过期 id 发出去。
+  // 依赖用查询结果本身，避免 profiles 缺省时每次渲染都是新数组。
+  const savedProfiles = aiConfigQuery.data?.profiles;
   useEffect(() => {
-    let alive = true;
-    api
-      .aiModels()
-      .then((listed) => alive && setRemoteModels(listed.models))
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [aiConfigQuery.data?.config?.model]);
+    if (!chat.profileId) return;
+    const list = savedProfiles ?? [];
+    if (list.some((item) => item.id === chat.profileId)) return;
+    chat.setProfileId(activeProfile?.id);
+  }, [activeProfile?.id, chat.profileId, chat.setProfileId, savedProfiles]);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: 1e9, behavior: 'smooth' });
@@ -175,13 +201,18 @@ export default function ChatPage() {
   };
 
   const agentName = agents.find((agent) => agent.id === chat.agentId)?.name;
-  const agentModel = agents.find((agent) => agent.id === chat.agentId)?.model;
   const configModel = aiConfigQuery.data?.config?.model;
-  const shownModel = chat.model ?? agentModel ?? configModel;
-  const modelOptions = [
-    ...new Set([shownModel, configModel, ...remoteModels, ...agents.map((agent) => agent.model)].filter((id): id is string => Boolean(id))),
-  ];
+  const shownVendorName = shownVendorId
+    ? (findVendor(shownVendorId)?.name ?? selectedProfile?.label)
+    : undefined;
+  const shownModel = chat.model ?? selectedProfile?.model ?? (profiles.length === 0 ? configModel : undefined);
   const acceptDrop = !chat.isStreaming && !readingFile;
+
+  const chooseModel = (vendorId: string, modelId: string) => {
+    const credential = credentialFor(profiles, vendorId, modelId);
+    if (!credential) return;
+    chat.setProfileId(credential.id, modelId === credential.model ? undefined : modelId);
+  };
 
   return (
     <div
@@ -261,10 +292,10 @@ export default function ChatPage() {
             {chat.isStreaming ? <Spin tip="思考中…" /> : null}
           </Space>
         </div>
-        {proposals && proposals.length > 0 && openProposalId === null ? (
+        {configProposals.length > 0 && openProposalId === null ? (
           <div style={{ marginTop: 12 }}>
-            <Button onClick={() => setOpenProposalId(proposals[0]!.proposalId)}>
-              有 {proposals.length} 项配置等你确认
+            <Button onClick={() => setOpenProposalId(configProposals[0]!.proposalId)}>
+              有 {configProposals.length} 项配置等你确认
             </Button>
           </div>
         ) : null}
@@ -356,17 +387,31 @@ export default function ChatPage() {
               </Dropdown>
               <Dropdown
                 trigger={['click']}
-                disabled={chat.isStreaming || modelOptions.length === 0}
+                disabled={chat.isStreaming || profiles.length === 0 || vendors.length === 0}
                 menu={{
                   selectable: true,
+                  triggerSubMenuAction: 'click',
                   selectedKeys: shownModel ? [shownModel] : [],
-                  style: { maxHeight: 280, overflow: 'auto' },
-                  items: modelOptions.map((id) => ({ key: id, label: id })),
-                  onClick: ({ key }) => chat.setModel(String(key)),
+                  style: { maxHeight: 320, overflow: 'auto' },
+                  items: vendors.map((item) => {
+                    const saved = profiles.filter((profile) => profile.vendorId === item.vendorId);
+                    return {
+                      key: item.vendorId,
+                      label: item.name,
+                      children: modelsForVendor(item.vendorId, saved.map((profile) => profile.model)).map(
+                        (modelId) => ({ key: modelId, label: modelId }),
+                      ),
+                    };
+                  }),
+                  onClick: ({ key, keyPath }) => {
+                    const vendorId = keyPath[keyPath.length - 1];
+                    if (vendorId) chooseModel(vendorId, String(key));
+                  },
                 }}
               >
-                <ComposerChip style={{ maxWidth: 240 }}>
-                  {shownModel ? `模型：${shownModel}` : '模型'} <DownOutlined aria-hidden />
+                <ComposerChip style={{ maxWidth: 320 }}>
+                  {shownVendorName ? `${shownVendorName} · ${shownModel ?? '模型'}` : (shownModel ?? '模型')}{' '}
+                  <DownOutlined aria-hidden />
                 </ComposerChip>
               </Dropdown>
               <div style={{ flex: 1 }} />

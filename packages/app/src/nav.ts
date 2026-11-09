@@ -1,6 +1,9 @@
 import type { ComponentType, CSSProperties } from 'react';
 import {
+  ApartmentOutlined,
+  ClusterOutlined,
   AppstoreOutlined,
+  BarcodeOutlined,
   BookOutlined,
   BulbOutlined,
   CarryOutOutlined,
@@ -11,6 +14,7 @@ import {
   DatabaseOutlined,
   EnvironmentOutlined,
   FieldTimeOutlined,
+  InboxOutlined,
   MessageOutlined,
   PieChartOutlined,
   ProfileOutlined,
@@ -33,6 +37,8 @@ export interface NavItem {
   page: Page;
   label: string;
   icon: NavIcon;
+  /** 设了就只在该模块 enabled === true 时出现在浮窗里 */
+  moduleId?: string;
 }
 
 /** 一级导航大类 */
@@ -49,8 +55,8 @@ export interface NavCategory {
  * 两级导航配置（左侧 rail 只放大类，悬停后浮窗列出该类下的功能）。
  * 分组原则：看板 = 只读分析视图（运营/效期，后续报表往这里挂）；作业 = 高频
  * 日常运营（出入库/库存/盘点）；档案 = 基础主数据（SKU，后续供应商/客户/库位
- * 等往这里挂）；智能助手 = AI 的使用与配置（对话/助手/记忆/模型）；系统 = 应
- * 用设置。
+ * 等往这里挂）；智能助手 = AI 的使用与配置（对话/助手/记忆/模型）；系统 = 流程、模块、
+ * 应用设置。
  * 新增功能：页面 key 加进 Page 联合类型 → 往对应大类 items 里加一项 →
  * App.tsx 的 PAGE_COMPONENTS 登记组件。
  */
@@ -74,6 +80,8 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
       { page: 'orders', label: '出入库单', icon: ProfileOutlined },
       { page: 'pickings', label: '拣货单', icon: ContainerOutlined },
       { page: 'inventory', label: '库存', icon: DatabaseOutlined },
+      { page: 'serials', label: '序列号', icon: BarcodeOutlined, moduleId: 'module.serial' },
+      { page: 'pallets', label: '托盘', icon: InboxOutlined, moduleId: 'module.lpn' },
       { page: 'stocktakes', label: '盘点', icon: ReconciliationOutlined },
     ],
   },
@@ -104,9 +112,13 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
   {
     key: 'sys',
     label: '系统',
-    description: '应用偏好与设置',
+    description: '收发流程、仓库能力与应用设置',
     icon: ControlOutlined,
-    items: [{ page: 'settings', label: '设置', icon: SettingOutlined }],
+    items: [
+      { page: 'flows', label: '流程', icon: ApartmentOutlined },
+      { page: 'modules', label: '模块', icon: ClusterOutlined },
+      { page: 'settings', label: '设置', icon: SettingOutlined },
+    ],
   },
 ];
 

@@ -1,4 +1,5 @@
 import type { ModuleManifest, ToolDefinition } from '@one/core';
+import { ORDER_REPLENISH_FIELD, extraRecord } from './builtin-records.js';
 
 /** 工具定义 → manifest 声明（剥离 handler；与 putaway 同款） */
 function detachHandler(t: ToolDefinition): Omit<ToolDefinition, 'handler'> {
@@ -22,6 +23,8 @@ export function replenishManifest(toolDefs: ToolDefinition[]): ModuleManifest {
     version: '0.1.0',
     capabilities: ['db.read', 'tools.register'],
     dependencies: { modules: ['core.wms'] },
+    aliases: ['补货单'],
+    records: [extraRecord('order', '单据', [ORDER_REPLENISH_FIELD])],
     tools: toolDefs.map((tool) => detachHandler(tool)),
   };
 }

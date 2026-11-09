@@ -16,6 +16,7 @@ import {
 import { readWmsSettings } from '../config/wms-settings.js';
 import { allocateFromBuckets } from '../state/allocation.js';
 import { assertOutboundBuckets } from '../state/outbound-guards.js';
+import { appendSerialPlans, planPickingSerials } from '../state/serial-policy.js';
 import { planReservationReleases } from '../state/reservation.js';
 import { assertNonNegativeQty, codeOfLocation, QTY_EPS, resolveLocation } from '../state/inventory-policy.js';
 import {
@@ -253,6 +254,8 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
           quantity: line.pickedQty,
         });
       }
+      // 序列号先对单据上的库位批次。错桶即使没货，也要说明必须从指定桶拣出，而不是先报库存不足。
+      const serialPlans = planPickingSerials(ws, lines);
       assertOutboundBuckets(ws, outbound, [...ordersById.keys()]);
 
       // 原子落账：拣货事件先于扣减事件的全序（每单 state → 逐行流水 → 拣货单 closed）
@@ -294,6 +297,7 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
             });
           }
         }
+        appendSerialPlans(ctx, serialPlans);
         ctx.appendEvent(WMS_EVENT_TYPES.pickingStateChanged, {
           pickingId: picking.id,
           pickingNo: picking.pickingNo,

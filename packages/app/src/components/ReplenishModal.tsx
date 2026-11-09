@@ -5,7 +5,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { api } from '../api/client';
 import type { ReplenishmentSuggestion } from '../api/client';
 import { fmtQty } from '../lib/format';
-import { monoCell, numCell } from './table-style';
+import { monoCell, numCell, TABLE_PAGINATION } from './table-style';
 
 /**
  * 按缺口生成一张普通入库单（module.replenish）。
@@ -113,11 +113,12 @@ export default function ReplenishModal({ open, onClose }: { open: boolean; onClo
         <Table<ReplenishmentSuggestion>
           rowKey="skuCode"
           size="small"
-          pagination={false}
+          pagination={TABLE_PAGINATION}
           columns={columns}
           dataSource={rows}
           rowSelection={{
             selectedRowKeys: selected,
+            preserveSelectedRowKeys: true,
             onChange: (keys) => setPicked(keys.map(String)),
           }}
         />

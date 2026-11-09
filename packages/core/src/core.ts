@@ -59,10 +59,16 @@ export class OneCore {
   /** 打开（或创建）一个内核实例。path 可为文件路径或 ':memory:'。 */
   static open(path: string): OneCore {
     const db = new Database(path);
-    db.pragma('journal_mode = WAL');
-    migrate(db);
-    const nodeId = ensureNodeId(db);
-    return new OneCore(db, nodeId);
+    try {
+      db.pragma('journal_mode = WAL');
+      migrate(db);
+      return new OneCore(db, ensureNodeId(db));
+    } catch (err) {
+      // 版本闸门（表结构过新/过旧）在这里抛错。连接必须关掉：漏出去的话
+      // Windows 会一直锁着文件，宿主连「提示用户后恢复备份」都做不到。
+      db.close();
+      throw err;
+    }
   }
 
   /**
@@ -111,6 +117,27 @@ export class OneCore {
 
   close(): void {
     this.#db.close();
+  }
+
+  /**
+   * 运行时元数据读取（meta 表）——node_id 与升级闸门的 app_version 打戳住在这里。
+   * 键不存在返回 null；不做命名空间校验（调用方自管前缀）。
+   */
+  getMeta(key: string): string | null {
+    const row = this.#db
+      .prepare<unknown[], { value: string }>(`SELECT value FROM meta WHERE key = ?`)
+      .get(key);
+    return row?.value ?? null;
+  }
+
+  /** 运行时元数据写入（UPSERT）。仅宿主装配期使用——业务数据一律走事件账本。 */
+  setMeta(key: string, value: string): void {
+    this.#db
+      .prepare(
+        `INSERT INTO meta (key, value) VALUES (?, ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(key, value);
   }
 }
 

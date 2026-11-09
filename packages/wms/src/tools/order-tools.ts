@@ -10,6 +10,7 @@ import {
   AsnWithReturnError,
   OrderAlreadyExistsError,
   OrderNotFoundError,
+  OrderReviseRejectedError,
   PartialNotOnPostError,
   PartnerKindMismatchError,
   PartnerNotFoundError,
@@ -32,12 +33,19 @@ import {
   resolveBatch,
   resolveLocation,
 } from '../state/inventory-policy.js';
+import { orderEditPolicy } from '../state/order-edit-policy.js';
 import {
   assertTransition,
   WORKFLOW_BY_DIRECTION,
   type OrderDirection,
 } from '../state/order-state-machine.js';
 import { withOrderLines } from '../queries/order-queries.js';
+import {
+  appendSerialPlans,
+  planOrderSerials,
+  prepareOrderLineSerials,
+  rejectSerialLinesWhenOff,
+} from '../state/serial-policy.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
 export interface OrderTransitionResult {
@@ -124,6 +132,7 @@ export function applyOrderTransition(
     !leavingCommitment && order.direction === 'out' && resolved.checkAvailability && !resolved.post
       ? planReservations(ws, order, lines)
       : [];
+  const serialPlans = resolved.post ? planOrderSerials(ws, order.id, resolved.post, lines, posted) : [];
 
   const fulfillments = posted
     .filter((line) => line.nextPosted !== undefined)
@@ -165,6 +174,7 @@ export function applyOrderTransition(
         });
         adjustedLines!.push({ skuCode, locationCode, batchNo: line.batchNo, delta });
       }
+      appendSerialPlans(ctx, serialPlans);
     }
     for (const release of releases) {
       ctx.appendEvent(WMS_EVENT_TYPES.inventoryReservationReleased, release);
@@ -224,6 +234,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
       locationCode?: string;
       batchNo?: string;
       batchExpiryDate?: string;
+      serials?: string[];
     }[];
     orderNo?: string;
     note?: string;
@@ -284,6 +295,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     handler: (params, ctx) => {
       const ws = resolveWorkspace(ctx.workspaceId);
       ws.sync();
+      rejectSerialLinesWhenOff(ws, params.lines);
 
       // 批次分配（M12 起，M13 优先级扩展）：单参数 allocation > 全局设置
       // settings.defaultAllocation > 代码缺省 strict（readWmsSettings 兜底后恒有值）。
@@ -309,10 +321,12 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
       const effective = returnOf
         ? 'strict'
         : (params.allocation ?? (params.direction === 'out' ? settings.defaultAllocation : 'strict'));
-      const resolvedLines =
+      prepareOrderLineSerials(ws, params.direction, params.lines, effective);
+      const resolvedLines = (
         effective !== 'strict'
           ? expandAllocatedLines(ws, params.lines, effective, settings.blockExpiredOutbound)
-          : params.lines;
+          : params.lines
+      ) as typeof params.lines;
 
       // 行级校验（schema 校验器不深入 object 内部，handler 手工补位）
       if (!Array.isArray(resolvedLines) || resolvedLines.length === 0) {
@@ -409,6 +423,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
             locationId: resolveLocation(ws, l.locationCode).locationId,
             batchNo: batch.batchNo,
             batchExpiryDate: batch.batchExpiryDate,
+            ...(l.serials && l.serials.length > 0 ? { serials: l.serials } : {}),
           };
         }),
         note: params.note,
@@ -523,7 +538,198 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     },
   };
 
-  return [def(orderCreate), def(orderTransition), def(orderQuery)];
+  const orderRevise: ToolDefinition<{
+    orderNo: string;
+    note?: string | null;
+    partnerCode?: string | null;
+    expectedAt?: string | null;
+    lines?: {
+      skuCode: string;
+      quantity: number;
+      locationCode?: string;
+      batchNo?: string;
+      batchExpiryDate?: string;
+      serials?: string[];
+    }[];
+  }> = {
+    id: 'wms.order.revise',
+    label: '修订出入库单',
+    description:
+      '修改一张出入库单的备注、往来单位或明细，已入账或已结束的字段会被拒绝。' +
+      '单号、方向、状态、原单号、补货标记不能改，状态只走 wms.order.transition。' +
+      '入库在 created 或 announced（到货预报还没收货）、出库在 created 时，可以改明细（SKU、数量、库位、批次、入库效期）、往来单位和备注。' +
+      '预计到货日只有到货预报能改。' +
+      '已经收货、上架、拣货、发货之后，明细和往来单位冻住（库存或占用量已经按这些行记过账），只剩备注可改。' +
+      '已完成和已取消整单不能改。有未裁决的状态冲突时先接受或驳回。' +
+      '退货单改明细时仍按原单可退数量校验，不能改指向的原单。' +
+      '出库明细按提交的行保存，不会重新做 fifo/fefo 拆分。' +
+      '只传要改的字段；note / partnerCode / expectedAt 传 null 表示清空。lines 在场则整份替换，不能为空。',
+    permission: 'write',
+    parameters: {
+      type: 'object',
+      properties: {
+        orderNo: { type: 'string', description: '单据号' },
+        note: { type: 'string', description: '备注。null 表示清空。不传表示不改' },
+        partnerCode: {
+          type: 'string',
+          description: '往来单位编码。入库单要供应商，出库单要客户。null 表示去掉。不传表示不改',
+        },
+        expectedAt: { type: 'string', description: '预计到货日 YYYY-MM-DD，仅到货预报。null 表示清空' },
+        lines: {
+          type: 'array',
+          description: '整份明细。在场则替换原明细。每行 { skuCode, quantity, locationCode?, batchNo?, batchExpiryDate?, serials? }',
+          items: { type: 'object' },
+        },
+      },
+      required: ['orderNo'],
+    },
+    handler: (params, ctx) => {
+      const ws = resolveWorkspace(ctx.workspaceId);
+      ws.sync();
+      const order = ws.orders.byNo(params.orderNo);
+      if (!order) throw new OrderNotFoundError(params.orderNo);
+      if (ws.orders.listConflicts('open').some((conflict) => conflict.orderId === order.id)) {
+        throw new OrderReviseRejectedError('这张单有未裁决的状态冲突，先接受或驳回再改内容');
+      }
+      const policy = orderEditPolicy(order);
+      const hasNote = Object.hasOwn(params, 'note');
+      const hasPartner = Object.hasOwn(params, 'partnerCode');
+      const hasExpected = Object.hasOwn(params, 'expectedAt');
+      const hasLines = Object.hasOwn(params, 'lines');
+      if (!hasNote && !hasPartner && !hasExpected && !hasLines) {
+        throw new OrderReviseRejectedError('没有要修改的内容');
+      }
+      if (hasLines && !policy.lines) throw new OrderReviseRejectedError(policy.reason);
+      if (hasPartner && !policy.partner) throw new OrderReviseRejectedError(policy.reason);
+      if (hasExpected && !policy.expectedAt) throw new OrderReviseRejectedError(policy.reason || '这张单不能改预计到货日');
+      if (hasNote && !policy.note) throw new OrderReviseRejectedError(policy.reason);
+
+      const payload: {
+        orderId: string;
+        orderNo: string;
+        partnerId?: string | null;
+        note?: string | null;
+        expectedAt?: string | null;
+        lines?: {
+          skuId: string;
+          quantity: number;
+          locationId: string;
+          batchNo: string;
+          batchExpiryDate?: string;
+          serials?: string[];
+        }[];
+      } = { orderId: order.id, orderNo: order.orderNo };
+
+      if (hasNote) {
+        const note = typeof params.note === 'string' ? params.note.trim() : '';
+        payload.note = note || null;
+      }
+      if (hasPartner) {
+        const code = typeof params.partnerCode === 'string' ? params.partnerCode.trim() : '';
+        if (!code) {
+          payload.partnerId = null;
+        } else {
+          const partner = ws.partners.byCode(code);
+          if (!partner) throw new PartnerNotFoundError(code);
+          const expectedKind = order.direction === 'in' ? 'supplier' : 'customer';
+          if (partner.kind !== expectedKind) {
+            throw new PartnerKindMismatchError(partner.partnerCode, partner.kind, order.direction);
+          }
+          payload.partnerId = partner.id;
+        }
+      }
+      if (hasExpected) {
+        const expectedAt = typeof params.expectedAt === 'string' ? params.expectedAt.trim() : '';
+        if (expectedAt) assertExpectedAt(expectedAt);
+        payload.expectedAt = expectedAt || null;
+      }
+      if (hasLines) {
+        const lines = params.lines;
+        if (!Array.isArray(lines) || lines.length === 0) {
+          throw new OrderReviseRejectedError('明细不能为空');
+        }
+        rejectSerialLinesWhenOff(ws, lines);
+        const existing = ws.orders.lines(order.id).map((line) => ({
+          skuCode: ws.skus.byId(line.skuId)?.skuCode,
+          locationCode: codeOfLocation(ws, line.locationId),
+          batchNo: line.batchNo,
+          serials: line.serials ? [...line.serials] : undefined,
+        }));
+        for (const line of lines) {
+          if (!line || Object.hasOwn(line, 'serials')) continue;
+          const batch = resolveBatch(line.batchNo, line.batchExpiryDate);
+          const location = resolveLocation(ws, line.locationCode);
+          const hit = existing.find(
+            (row) => row.skuCode === line.skuCode && row.locationCode === location.locationCode && row.batchNo === batch.batchNo,
+          );
+          if (hit?.serials) line.serials = hit.serials;
+        }
+        prepareOrderLineSerials(ws, order.direction, lines, 'strict');
+        const seenKeys = new Set<string>();
+        const resolved: NonNullable<typeof payload.lines> = [];
+        for (const [i, line] of lines.entries()) {
+          if (typeof line?.skuCode !== 'string' || !line.skuCode) {
+            throw new Error(`TOOL_REJECTED: 第 ${i + 1} 行缺少 skuCode`);
+          }
+          assertPositiveQty(line.quantity, `第 ${i + 1} 行数量`);
+          const sku = ws.skus.byCode(line.skuCode);
+          if (!sku) throw new SkuNotFoundError(line.skuCode);
+          if (order.direction === 'out' && line.batchExpiryDate) {
+            throw new Error(`TOOL_REJECTED: 第 ${i + 1} 行出库行不支持批次效期（效期随入库声明）`);
+          }
+          const loc = resolveLocation(ws, line.locationCode);
+          const batch = resolveBatch(line.batchNo, line.batchExpiryDate);
+          if (batch.batchExpiryDate) {
+            assertExpiryConsistent(ws, sku.id, sku.skuCode, batch.batchNo, batch.batchExpiryDate);
+          }
+          const key = `${line.skuCode}@${loc.locationId}@${batch.batchNo}`;
+          if (seenKeys.has(key)) {
+            throw new Error(
+              `TOOL_REJECTED: 第 ${i + 1} 行 SKU ${line.skuCode} 在库位 ${loc.locationCode} 批次 ${batch.batchNo} 与前行重复——同单同 SKU 同库位同批次请合并数量`,
+            );
+          }
+          seenKeys.add(key);
+          resolved.push({
+            skuId: sku.id,
+            quantity: quantizeQty(line.quantity),
+            locationId: loc.locationId,
+            batchNo: batch.batchNo,
+            batchExpiryDate: batch.batchExpiryDate,
+            ...(line.serials && line.serials.length > 0 ? { serials: line.serials } : {}),
+          });
+        }
+        if (order.returnOfOrderId) {
+          const source = ws.orders.byId(order.returnOfOrderId);
+          assertReturnLines({
+            moduleEnabled: ws.profile.getSnapshot().modules['module.return']?.enabled === true,
+            returnOf: source?.orderNo ?? order.returnOfOrderId,
+            direction: order.direction,
+            source,
+            sourceLines: source ? ws.orders.lines(source.id) : [],
+            priorReturns: source
+              ? ws.orders
+                  .returnsOf(source.id)
+                  .filter((ret) => ret.id !== order.id)
+                  .map((ret) => ({ state: ret.state, lines: ws.orders.lines(ret.id) }))
+              : [],
+            lines: resolved.map((line) => ({
+              skuId: line.skuId,
+              skuCode: ws.skus.byId(line.skuId)?.skuCode ?? line.skuId,
+              batchNo: line.batchNo,
+              quantity: line.quantity,
+            })),
+          });
+        }
+        payload.lines = resolved;
+      }
+
+      ctx.appendEvent(WMS_EVENT_TYPES.orderRevised, payload);
+      ws.sync();
+      return { orderNo: order.orderNo, state: order.state };
+    },
+  };
+
+  return [def(orderCreate), def(orderTransition), def(orderRevise), def(orderQuery)];
 }
 
 /** 自动单号：IN-20261030-a1b2c3d4（方向 + 日期 + uuid 片段） */

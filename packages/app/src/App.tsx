@@ -8,12 +8,16 @@ import OrdersPage from './pages/OrdersPage';
 import PickingsPage from './pages/PickingsPage';
 import DashboardPage from './pages/DashboardPage';
 import InventoryPage from './pages/InventoryPage';
+import SerialsPage from './pages/SerialsPage';
+import PalletsPage from './pages/PalletsPage';
 import StocktakePage from './pages/StocktakePage';
 import ExpiryPage from './pages/ExpiryPage';
 import ChatPage from './pages/ChatPage';
 import AgentsPage from './pages/AgentsPage';
 import MemoryPage from './pages/MemoryPage';
 import AiConfigPage from './pages/AiConfigPage';
+import FlowsPage from './pages/FlowsPage';
+import ModulesPage from './pages/ModulesPage';
 import SettingsPage from './pages/SettingsPage';
 import { ChatProvider } from './chat/ChatProvider';
 import { AppNavProvider, useAppNav } from './app-nav';
@@ -34,12 +38,16 @@ const PAGE_COMPONENTS: Record<Page, ComponentType> = {
   orders: OrdersPage,
   pickings: PickingsPage,
   inventory: InventoryPage,
+  serials: SerialsPage,
+  pallets: PalletsPage,
   stocktakes: StocktakePage,
   expiry: ExpiryPage,
   chat: ChatPage,
   agents: AgentsPage,
   memory: MemoryPage,
   'ai-config': AiConfigPage,
+  flows: FlowsPage,
+  modules: ModulesPage,
   settings: SettingsPage,
 };
 
@@ -49,7 +57,7 @@ const PAGE_COMPONENTS: Record<Page, ComponentType> = {
  * 当前页所属大类由 page 推出并高亮。
  * 分组原则见 nav.ts：看板 = 只读分析视图（运营/效期）；作业 = 高频日常运营；
  * 档案 = 基础主数据（供应商等后续挂这里）；
- * 智能助手 = AI 使用与配置；系统 = 应用设置。默认仍落 SKU 管理——「无 AI 也能用」。
+ * 智能助手 = AI 使用与配置；系统 = 流程、模块、应用设置。默认仍落 SKU 管理——「无 AI 也能用」。
  * 不引路由库：state 切页够用，等页面再多再上 react-router。
  * AppNavProvider 最外层提供 navigate——AI 聊天的后置动作可从任意页面跳到
  * 目标管理页（携带一次性 initialFilter）。

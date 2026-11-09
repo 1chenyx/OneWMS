@@ -314,9 +314,18 @@ function HoldModal({ row, onClose }: { row: InventoryRow | null; onClose: () => 
   );
 }
 
+function splitSerialText(text: string | undefined): string[] {
+  if (!text) return [];
+  return text
+    .split(/[\s,，]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
 /**
  * 手工调整表单：delta 正数入库、负数出库；库存不可为负由服务端护栏兜底。
  * preset = 从行内进入（SKU 锁定）；null = 从顶部进入（SKU 下拉自选——空库存可录期初）。
+ * module.serial 开启时可以填写序列号；关掉时不出现，空着也不下发。
  */
 function AdjustModal({
   open,
@@ -331,13 +340,17 @@ function AdjustModal({
   const [form] = Form.useForm();
   const adjust = useAdjustInventory();
   const { data: skus } = useSkus();
+  const snapshot = useProfileSnapshot();
+  const serialOn = snapshot.data?.modules['module.serial']?.enabled === true;
 
-  const submit = async (values: { skuCode: string; delta: number; reason?: string }) => {
+  const submit = async (values: { skuCode: string; delta: number; reason?: string; serials?: string }) => {
+    const serials = splitSerialText(values.serials);
     try {
       const r = await adjust.mutateAsync({
         skuCode: values.skuCode,
         delta: values.delta,
         reason: values.reason || undefined,
+        ...(serials.length > 0 ? { serials } : {}),
       });
       message.success(`${r.skuCode} 调整后余量：${r.quantity}`);
       onClose();
@@ -391,6 +404,11 @@ function AdjustModal({
         <Form.Item name="reason" label="原因（可选，如 盘点 / 报损 / 期初）">
           <Input />
         </Form.Item>
+        {serialOn ? (
+          <Form.Item name="serials" label="序列号（按件管理时必填，逗号、空格或换行分开）">
+            <Input.TextArea rows={3} placeholder="如 SN-001, SN-002" />
+          </Form.Item>
+        ) : null}
       </Form>
     </Modal>
   );

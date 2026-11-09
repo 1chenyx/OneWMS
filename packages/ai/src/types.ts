@@ -46,14 +46,44 @@ export type AgentMessage =
   | { role: 'tool-results'; results: ToolCallResult[] };
 
 /**
- * 注入对话上下文的记忆条目（结构化类型：@one/memory 的 MemoryRecord 天然满足，
+ * 注入对话上下文的记忆（结构化类型：@one/memory 的渲染结果天然满足，
  * 不引入包依赖——@one/ai 保持纯编排层）。
- * id 必须携带：模型需要它调用 memory.forget 遗忘过时记忆。
+ *
+ * 三层注入：
+ *  - T0 常驻 `resident`：personal 全文 + project 章节目录（已渲染的 markdown）；
+ *  - T1 按需：模型自己调 memory.read（走工具总线，不在这里）；
+ *  - T2 预取 `prefetched`：本轮用户消息命中关键词的 0–2 节全文
+ *    （server 侧确定性字符串匹配，零 LLM 成本）。
  */
-export interface AgentMemoryRef {
-  id: string;
+export interface AgentMemoryContext {
+  /** T0 常驻段；空串 = 无记忆（整段不注入） */
+  resident: string;
+  /** T2 预取命中的章节全文 */
+  prefetched?: readonly AgentMemorySectionText[];
+}
+
+/** 预取章节的注入形状（标题 + 全文） */
+export interface AgentMemorySectionText {
+  title: string;
+  bodyMd: string;
+}
+
+/**
+ * 章节目录项（记忆提取的输入）：只要「有哪些章节、各自讲什么」，不含正文——
+ * 省 token，同时给模型足够的落点信息。
+ */
+export interface MemorySectionBrief {
   scope: 'personal' | 'project';
-  content: string;
+  sectionKey: string;
+  title: string;
+  summary: string;
+  keywords: readonly string[];
+}
+
+/** 章节快照（记忆归并的输入/输出）：完整正文 + 乐观并发令牌 */
+export interface MemorySectionSnapshot extends MemorySectionBrief {
+  bodyMd: string;
+  baseLamport: number;
 }
 
 /** 单轮补全请求：完整消息历史 + 工具清单（function calling 通道） */

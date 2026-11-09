@@ -13,6 +13,8 @@ function baseModule(): ModuleManifest {
     description: '提供入库流程骨架。',
     version: '1.0.0',
     capabilities: ['db.read'],
+    aliases: ['基础'],
+    workflowAliases: { inbound: ['入库'] },
     workflows: {
       base: {
         inbound: {
@@ -118,6 +120,10 @@ describe('profile 实况查询', () => {
     };
     expect(closed.workflows[0].transitions.find((t) => t.to === 'inspecting')?.active).toBe(false);
     await expect(ws.tools.invoke('profile.workflow.query', { workflowId: 'nope' })).rejects.toThrow(ToolValidationError);
+    const byName = (await ws.tools.invoke('profile.workflow.query', { workflowId: '入库' })) as {
+      workflows: { id: string; label: string }[];
+    };
+    expect(byName.workflows[0]).toMatchObject({ id: 'inbound', label: '入库' });
     core.close();
   });
 
@@ -148,6 +154,33 @@ describe('profile 实况查询', () => {
     expect(detail.modules[0].fields.map((f) => f.key)).toEqual(['expiry_date']);
     expect(detail.modules[0].tools).toEqual([]);
     await expect(ws.tools.invoke('profile.module.query', { moduleId: 'module.missing' })).rejects.toThrow(/没有模块/);
+    const byName = (await ws.tools.invoke('profile.module.query', { moduleId: '保质期' })) as {
+      modules: { id: string }[];
+    };
+    expect(byName.modules[0].id).toBe('module.expiry');
+    core.close();
+  });
+
+  it('概况分出现在生效的和还能改的', async () => {
+    const { core, ws } = setup();
+    const overview = (await ws.tools.invoke('profile.overview', {})) as {
+      shape: {
+        enabled: { id: string }[];
+        disabled: { id: string }[];
+        notInstalled: { id: string }[];
+        canChange: { toggleModule: string; fields: string; notInstalled: string };
+        objects: { entity: string; visibleExtensions: number; fixed: number }[];
+      };
+    };
+    expect(overview.shape.enabled.map((item) => item.id)).toEqual(['module.base', 'module.expiry']);
+    expect(overview.shape.disabled).toEqual([]);
+    expect(overview.shape.notInstalled).toEqual([]);
+    expect(overview.shape.canChange.toggleModule).toContain('/modules/');
+    expect(overview.shape.canChange.fields).toContain('扩展字段');
+    expect(overview.shape.canChange.notInstalled).toContain('不能安装');
+    expect(overview.shape.objects).toEqual([
+      expect.objectContaining({ entity: 'sku', visibleExtensions: 1, fixed: 0 }),
+    ]);
     core.close();
   });
 
@@ -165,6 +198,62 @@ describe('profile 实况查询', () => {
       },
     ]);
     await expect(ws.tools.invoke('profile.field.query', { entity: 'ghost' })).rejects.toThrow(/没有实体/);
+    core.close();
+  });
+
+  it('固定列按中文别名能查到，未安装模块的列不出现', async () => {
+    const { core, ws } = setup();
+    const stock: ModuleManifest = {
+      id: 'module.stock',
+      name: '库存列',
+      description: '声明库存固定列。',
+      version: '1.0.0',
+      capabilities: ['db.read'],
+      records: [
+        {
+          id: 'inventory',
+          label: '库存',
+          aliases: ['stock'],
+          note: '固定列',
+          fields: [{ key: 'quantity', label: '当前余量', description: '实物数量' }],
+        },
+      ],
+    };
+    const parked: ModuleManifest = {
+      id: 'module.parked',
+      name: '未安装',
+      description: '不该出现。',
+      version: '1.0.0',
+      capabilities: ['db.read'],
+      records: [{ id: 'ghostrec', label: '幽灵', fields: [{ key: 'x', label: 'X' }] }],
+    };
+    const registry = core.exposeModuleRegistry();
+    registry.registerManifest(stock);
+    registry.registerManifest(parked);
+    ws.modules.install(stock);
+
+    const byAlias = (await ws.tools.invoke('profile.field.query', { entity: '库存' })) as {
+      entities: { entity: string; label: string; note: string; fixed: { key: string }[]; fields: unknown[] }[];
+    };
+    expect(byAlias.entities).toEqual([
+      {
+        entity: 'inventory',
+        label: '库存',
+        note: '固定列',
+        fixed: [{ key: 'quantity', label: '当前余量', description: '实物数量' }],
+        fields: [],
+      },
+    ]);
+    const byId = (await ws.tools.invoke('profile.field.query', { entity: 'Inventory' })) as {
+      entities: { entity: string }[];
+    };
+    expect(byId.entities[0].entity).toBe('inventory');
+
+    const all = (await ws.tools.invoke('profile.field.query', {})) as { entities: { entity: string }[] };
+    expect(all.entities.map((item) => item.entity)).toEqual(['inventory', 'sku']);
+
+    await expect(ws.tools.invoke('profile.field.query', { entity: '幽灵' })).rejects.toThrow(/没有实体/);
+    await expect(ws.tools.invoke('profile.field.query', { entity: 'nope' })).rejects.toThrow(/inventory（库存）/);
     core.close();
   });
 });

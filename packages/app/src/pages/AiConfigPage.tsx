@@ -166,10 +166,11 @@ function endpointOf(url: string): string {
 }
 
 function chosenModels(vendor: AiVendor, selected: string[], custom: string): string[] {
-  const extra = custom.trim();
   const fromChips = vendor.models.map((item) => item.id).filter((id) => selected.includes(id));
-  const merged = extra && !fromChips.includes(extra) ? [...fromChips, extra] : fromChips;
-  return merged;
+  if (!vendor.modelFromUser) return fromChips;
+  const extra = custom.trim();
+  if (!extra || fromChips.includes(extra)) return fromChips;
+  return [...fromChips, extra];
 }
 
 export default function AiConfigPage() {
@@ -449,25 +450,21 @@ export default function AiConfigPage() {
                   </div>
                 )}
 
-                <div>
-                  <Typography.Text type="secondary">
-                    {vendor.modelFromUser && vendor.models.length === 0 ? '模型 ID' : '其他模型 ID（可选）'}
-                  </Typography.Text>
-                  <Input
-                    style={{ marginTop: 4 }}
-                    aria-label={vendor.modelFromUser && vendor.models.length === 0 ? '模型 ID' : '其他模型 ID'}
-                    placeholder={
-                      vendor.modelFromUser
-                        ? '填写接入点上的模型 ID'
-                        : '列表里没有的，直接填模型 ID'
-                    }
-                    value={customModel}
-                    onChange={(event) => {
-                      setCustomModel(event.target.value);
-                      setFormError('');
-                    }}
-                  />
-                </div>
+                {vendor.modelFromUser && (
+                  <div>
+                    <Typography.Text type="secondary">模型 ID</Typography.Text>
+                    <Input
+                      style={{ marginTop: 4 }}
+                      aria-label="模型 ID"
+                      placeholder="填写接入点上的模型 ID"
+                      value={customModel}
+                      onChange={(event) => {
+                        setCustomModel(event.target.value);
+                        setFormError('');
+                      }}
+                    />
+                  </div>
+                )}
 
                 {showKey && (
                   <div>
@@ -564,12 +561,12 @@ export default function AiConfigPage() {
                     <Popconfirm
                       title="移除这个模型"
                       description={profile.active ? '这是当前正在用的。移除后会改用剩下的第一条。' : '只移除这一条。'}
-                      okText="移除"
+                      okText="确认移除"
                       cancelText="取消"
                       onConfirm={() => onRemove(profile)}
                     >
                       <Button size="small" danger loading={remove.isPending}>
-                        移除
+                        移除这条
                       </Button>
                     </Popconfirm>
                   </Space>

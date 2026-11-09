@@ -1,4 +1,5 @@
 import type { ModuleManifest } from '@one/core';
+import { ORDER_ASN_FIELD, extraRecord } from './builtin-records.js';
 
 /**
  * module.asn —— 到货预报。
@@ -18,6 +19,8 @@ export function asnManifest(): ModuleManifest {
     version: '0.1.0',
     capabilities: ['db.read', 'events.subscribe'],
     dependencies: { modules: ['core.wms'] },
+    aliases: ['预报', 'asn'],
+    records: [extraRecord('order', '单据', [ORDER_ASN_FIELD])],
     workflows: {
       contributes: {
         inbound: {

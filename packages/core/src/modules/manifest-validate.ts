@@ -9,6 +9,7 @@ import type {
   ManifestContribution,
   ManifestFieldProvide,
   ManifestFieldRequire,
+  ManifestRecord,
   ManifestTool,
   ModuleManifest,
 } from './manifest-types.js';
@@ -18,6 +19,10 @@ import type { ValidationIssue } from '../profile/validate.js';
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'date', 'json'] as const;
 const SHARINGS = ['shared', 'private'] as const;
+/** 固定列主体 id：小写字母开头，只含小写字母、数字、下划线 */
+const RECORD_ID_RE = /^[a-z][a-z0-9_]*$/;
+/** 流程 id：小写字母开头，允许数字、下划线、连字符 */
+const WORKFLOW_ID_RE = /^[a-z][a-z0-9_-]*$/;
 /** 模块 id：命名空间风格（字母开头，允许字母/数字/点/下划线/连字符；禁空格与 @——后者是 actor 后缀分隔符） */
 const MODULE_ID_RE = /^[A-Za-z][A-Za-z0-9._-]*$/;
 const SEMVER_RE = /^\d+\.\d+\.\d+$/;
@@ -107,6 +112,10 @@ export function validateManifest(manifest: ModuleManifest): { errors: Validation
       validateRequire(f, errors);
     }
   }
+
+  validateRecords(manifest.records, errors);
+  validateAliases(manifest.aliases, manifest.id, errors);
+  validateWorkflowAliases(manifest.workflowAliases, errors);
 
   // ── 工具分区（§6 命名空间规则）─────────────────────────
   const tools = manifest.tools ?? [];
@@ -198,6 +207,113 @@ function validateProvide(f: ManifestFieldProvide, errors: ValidationIssue[], see
   }
   if (f?.sharing !== undefined && !(SHARINGS as readonly string[]).includes(f.sharing)) {
     errors.push(err('MANIFEST_FIELD', `字段 ${dupKey} sharing 非法: "${String(f.sharing)}"`, at));
+  }
+}
+
+function validateAliases(aliases: string[] | undefined, moduleId: string, errors: ValidationIssue[]): void {
+  if (aliases === undefined) return;
+  if (!Array.isArray(aliases) || aliases.some((name) => !isNonEmptyString(name))) {
+    errors.push(err('MANIFEST_ALIAS', 'aliases 的每项须为非空字符串', '/aliases'));
+    return;
+  }
+  const seen = new Set<string>();
+  for (const name of aliases) {
+    const key = name.trim().toLowerCase();
+    if (key === moduleId.trim().toLowerCase()) {
+      errors.push(err('MANIFEST_ALIAS', `别名「${name}」与模块 id 重复`, '/aliases'));
+    }
+    if (seen.has(key)) {
+      errors.push(err('MANIFEST_ALIAS', `别名重复: ${name}`, '/aliases'));
+    }
+    seen.add(key);
+  }
+}
+
+function validateWorkflowAliases(
+  aliases: Record<string, string[]> | undefined,
+  errors: ValidationIssue[],
+): void {
+  if (aliases === undefined) return;
+  if (typeof aliases !== 'object' || aliases === null || Array.isArray(aliases)) {
+    errors.push(err('MANIFEST_WORKFLOW_ALIAS', 'workflowAliases 必须是对象', '/workflowAliases'));
+    return;
+  }
+  const seen = new Set<string>();
+  for (const [id, names] of Object.entries(aliases)) {
+    const at = `/workflowAliases/${id}`;
+    if (!WORKFLOW_ID_RE.test(id)) {
+      errors.push(err('MANIFEST_WORKFLOW_ALIAS', `流程 id 非法: "${id}"`, at));
+    }
+    if (!Array.isArray(names) || names.length === 0 || names.some((name) => !isNonEmptyString(name))) {
+      errors.push(err('MANIFEST_WORKFLOW_ALIAS', `流程 ${id} 的别名须为非空字符串数组`, at));
+      continue;
+    }
+    for (const name of names) {
+      const key = name.trim().toLowerCase();
+      if (key === id) {
+        errors.push(err('MANIFEST_WORKFLOW_ALIAS', `流程别名「${name}」与 id 重复`, at));
+      }
+      if (seen.has(key)) {
+        errors.push(err('MANIFEST_WORKFLOW_ALIAS', `流程别名重复: ${name}`, at));
+      }
+      seen.add(key);
+    }
+  }
+}
+
+function validateRecords(records: ManifestRecord[] | undefined, errors: ValidationIssue[]): void {
+  if (records === undefined) return;
+  if (!Array.isArray(records)) {
+    errors.push(err('MANIFEST_RECORDS', 'records 必须是数组', '/records'));
+    return;
+  }
+  const ids = new Set<string>();
+  for (const record of records) {
+    if (!isNonEmptyString(record?.id) || !RECORD_ID_RE.test(record.id)) continue;
+    if (ids.has(record.id)) {
+      errors.push(err('MANIFEST_RECORDS', `固定列 id 重复: ${record.id}`, `/records/${record.id}`));
+    }
+    ids.add(record.id);
+  }
+  const aliases = new Set<string>();
+  for (const record of records) {
+    const at = `/records/${String(record?.id)}`;
+    if (!isNonEmptyString(record?.id) || !RECORD_ID_RE.test(record.id)) {
+      errors.push(err('MANIFEST_RECORDS', `固定列 id 非法: "${String(record?.id)}"（须小写字母开头，仅含小写字母/数字/_）`, at));
+    }
+    if (!isNonEmptyString(record?.label)) {
+      errors.push(err('MANIFEST_RECORDS', `固定列 ${String(record?.id)} 缺少 label`, at));
+    }
+    const names = record?.aliases;
+    if (names !== undefined && (!Array.isArray(names) || names.some((name) => !isNonEmptyString(name)))) {
+      errors.push(err('MANIFEST_RECORDS', `固定列 ${String(record?.id)} 的 aliases 每项须为非空字符串`, `${at}/aliases`));
+    } else {
+      for (const name of names ?? []) {
+        const key = name.trim().toLowerCase();
+        if (ids.has(key)) {
+          errors.push(err('MANIFEST_RECORDS', `固定列别名「${name}」与 id 重复`, `${at}/aliases`));
+        }
+        if (aliases.has(key)) {
+          errors.push(err('MANIFEST_RECORDS', `固定列别名重复: ${name}`, `${at}/aliases`));
+        }
+        aliases.add(key);
+      }
+    }
+    if (!Array.isArray(record?.fields) || record.fields.length === 0) {
+      errors.push(err('MANIFEST_RECORDS', `固定列 ${String(record?.id)} 至少要有一列`, `${at}/fields`));
+      continue;
+    }
+    const keys = new Set<string>();
+    for (const field of record.fields) {
+      if (!isNonEmptyString(field?.key) || !isNonEmptyString(field?.label)) {
+        errors.push(err('MANIFEST_RECORDS', `固定列 ${String(record?.id)} 的列缺少 key 或 label`, `${at}/fields`));
+        continue;
+      }
+      if (keys.has(field.key)) {
+        errors.push(err('MANIFEST_RECORDS', `固定列 ${record.id}.${field.key} 重复`, `${at}/fields`));
+      }
+      keys.add(field.key);
+    }
   }
 }
 

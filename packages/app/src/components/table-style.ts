@@ -2,10 +2,11 @@ import type { CSSProperties } from 'react';
 import type { TablePaginationConfig } from 'antd';
 
 /**
- * 表格视觉规范（P1 界面优化）——五张清单页共用：
+ * 表格视觉规范——清单页共用：
  *  - 编码/单号/条码/批次/库位等机器标识列用等宽字体（字符对齐，扫读不易错位）；
  *  - 数量类列右对齐 + tabular-nums（等宽数字，纵向可比）；
- *  - 分页 50/页、单页隐藏。主清单走服务端（serverPagination）；其余表数据已在手里，用 TABLE_PAGINATION。
+ *  - 分页 50/页，分页条始终在（共 N 条，可以翻页）。
+ * 主清单走服务端（serverPagination）；数据已经在手里的表用 TABLE_PAGINATION。
  * 用法：列上 onCell: monoCell / onCell: numCell。
  */
 
@@ -20,13 +21,18 @@ export const NUM_STYLE: CSSProperties = { fontVariantNumeric: 'tabular-nums' };
 /** 清单页每页条数。服务端分页和仍走全量的表共用这一个数。 */
 export const LIST_PAGE_SIZE = 50;
 
-/** 统一分页配置（数据已经在手里时的客户端分页：盘点、拣货、效期、导入预览） */
-export const TABLE_PAGINATION: TablePaginationConfig = {
+const pageShared = {
   pageSize: LIST_PAGE_SIZE,
-  hideOnSinglePage: true,
+  hideOnSinglePage: false,
   showSizeChanger: false,
-  showTotal: (total) => `共 ${total} 条`,
+  showTotal: (total: number) => `共 ${total} 条`,
 };
+
+/** 数据已经在手里时的客户端分页（盘点、拣货、效期、导入预览、聊天结果等）。 */
+export const TABLE_PAGINATION: TablePaginationConfig = pageShared;
+
+/** antd List 的分页类型和 Table 不通用，字段与 TABLE_PAGINATION 相同。 */
+export const LIST_PAGINATION = pageShared;
 
 /** 服务端已经按页返回时用。total 大于当前页行数时，表格不再自行切片。 */
 export function serverPagination(opts: {
@@ -38,7 +44,7 @@ export function serverPagination(opts: {
     current: opts.current,
     pageSize: LIST_PAGE_SIZE,
     total: opts.total,
-    hideOnSinglePage: true,
+    hideOnSinglePage: false,
     showSizeChanger: false,
     showTotal: (total) => `共 ${total} 条`,
     onChange: opts.onChange,

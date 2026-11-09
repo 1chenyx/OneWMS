@@ -1047,4 +1047,80 @@ describe('多仓端点（module.warehouse）', () => {
     expect(missing.status).toBe(400);
     expect(((await missing.json()) as { code: string }).code).toBe('WMS_WAREHOUSE_NOT_FOUND');
   });
+
+  it('库位清单按仓库或未分仓筛选，未知仓库不是空清单', async () => {
+    const app = setup();
+    await post(app, '/api/warehouses', { warehouseCode: 'WH-1', name: '一号仓' });
+    await post(app, '/api/locations', { locationCode: 'A-01', name: '一号架', warehouseCode: 'WH-1' });
+    await post(app, '/api/locations', { locationCode: 'Z-01', name: '散货' });
+
+    const inWh = await app.request('/api/locations?warehouseCode=WH-1&limit=50');
+    expect(inWh.status).toBe(200);
+    const inWhBody = (await inWh.json()) as { total: number; rows: { locationCode: string }[] };
+    expect(inWhBody.total).toBe(1);
+    expect(inWhBody.rows.map((row) => row.locationCode)).toEqual(['A-01']);
+
+    const loose = await app.request('/api/locations?unassigned=1');
+    expect(loose.status).toBe(200);
+    const looseBody = (await loose.json()) as { locationCode: string }[];
+    expect(looseBody.map((row) => row.locationCode)).toEqual(['Z-01']);
+
+    const all = (await (await app.request('/api/locations')).json()) as { locationCode: string }[];
+    expect(all.map((row) => row.locationCode)).toEqual(['A-01', 'Z-01']);
+
+    const missing = await app.request('/api/locations?warehouseCode=NOPE&limit=50');
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { code: string }).code).toBe('BAD_QUERY');
+
+    const both = await app.request('/api/locations?warehouseCode=WH-1&unassigned=1&limit=50');
+    expect(both.status).toBe(400);
+    expect(((await both.json()) as { code: string }).code).toBe('BAD_QUERY');
+  });
+});
+
+describe('序列号端点（module.serial）', () => {
+  it('按序列号调整后可以查到在库号', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝', serialTracked: true });
+    const adjusted = await post(app, '/api/inventory/adjust', {
+      skuCode: 'A-1',
+      delta: 1,
+      reason: '期初',
+      serials: ['S-1'],
+    });
+    expect(adjusted.status).toBe(200);
+
+    const list = (await (await app.request('/api/serials?skuCode=A-1')).json()) as { serialNo: string; status: string }[];
+    expect(list).toEqual([expect.objectContaining({ serialNo: 'S-1', skuCode: 'A-1', status: 'in' })]);
+    const one = await app.request('/api/serials/S-1');
+    expect(one.status).toBe(200);
+    expect(((await one.json()) as { serialNo: string }).serialNo).toBe('S-1');
+  });
+});
+
+describe('托盘端点（module.lpn）', () => {
+  it('建托盘、装上、按托盘看库存、整托移库', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/locations', { locationCode: 'A-01', name: '一号架' });
+    await post(app, '/api/locations', { locationCode: 'B-02', name: '二号架' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 4, reason: '期初', locationCode: 'A-01' });
+
+    const created = await post(app, '/api/lpns', { lpnCode: 'P-1', locationCode: 'A-01' });
+    expect(created.status).toBe(201);
+    const packed = await post(app, '/api/lpns/P-1/pack', { skuCode: 'A-1', quantity: 2 });
+    expect(packed.status).toBe(200);
+
+    const stock = (await (await app.request('/api/lpns/P-1/stock')).json()) as {
+      locationCode: string;
+      lines: { skuCode: string; quantity: number }[];
+    };
+    expect(stock.locationCode).toBe('A-01');
+    expect(stock.lines).toEqual([expect.objectContaining({ skuCode: 'A-1', quantity: 2 })]);
+
+    const moved = await post(app, '/api/lpns/P-1/move', { toLocationCode: 'B-02' });
+    expect(moved.status).toBe(200);
+    const after = (await (await app.request('/api/lpns/P-1/stock')).json()) as { locationCode: string };
+    expect(after.locationCode).toBe('B-02');
+  });
 });

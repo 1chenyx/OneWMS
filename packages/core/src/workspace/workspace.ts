@@ -9,6 +9,16 @@ import { FieldsView } from './fields-view.js';
 import { ProfileView } from './profile-view.js';
 import { ToolsView } from './tools-view.js';
 import { ModulesView } from './modules-view.js';
+import { ensureProjectionVersion } from '../projection/projection-version.js';
+
+/**
+ * 内核投影组的版本号（field_registry / field_usage / profile_state）。
+ *
+ * **改了下面任何一处的派生语义就把它 +1**：字段归属规则（owner/usedBy 怎么算）、
+ * 可见性/共享的默认值、config.change 合并成 profile 的口径、registry 事件的应用顺序。
+ * 只加表、只加列、只改查询性能 → 不用动。启动时会自动整组重建（见 projection-version.ts）。
+ */
+export const CORE_PROJECTION_VERSION = 1;
 
 /**
  * 工作区门面（WorkspaceFacade）：组合五个 View 并提供 replay()。
@@ -40,6 +50,14 @@ export class WorkspaceFacade {
     this.modules = new ModulesView(workspaceId, nodeId, moduleRegistry);
     this.#registry = registry;
     this.#profileService = profileService;
+    // 内核投影没有「构造期追账」这条路（registry/profile 是写入时即时应用的），
+    // 所以版本落后时必须显式 replay()——清空 + 按全序重放，重建完再打戳。
+    ensureProjectionVersion(db, {
+      group: 'core',
+      workspaceId,
+      codeVersion: CORE_PROJECTION_VERSION,
+      rebuild: () => this.replay(),
+    });
   }
 
   #registry: FieldRegistry;

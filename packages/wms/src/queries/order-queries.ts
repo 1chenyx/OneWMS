@@ -19,6 +19,8 @@ export interface OrderWithLines extends OrderRecord {
     batchNo: string;
     /** 行批次效期（A1 打印凭据用）：null = 未声明（OrderLineRecord 有但此前未映射） */
     batchExpiryDate: string | null;
+    /** 序列号。没有时不出现 */
+    serials?: readonly string[];
   }[];
   /** 往来单位展示（M21）：null = 未关联 */
   partnerCode: string | null;
@@ -41,6 +43,7 @@ export function withOrderLines(ws: WmsWorkspace, order: OrderRecord): OrderWithL
       locationCode: location?.locationCode ?? line.locationId,
       batchNo: line.batchNo,
       batchExpiryDate: line.batchExpiryDate ?? null,
+      ...(line.serials && line.serials.length > 0 ? { serials: line.serials } : {}),
     };
   });
   const partner = order.partnerId ? ws.partners.byId(order.partnerId) : undefined;

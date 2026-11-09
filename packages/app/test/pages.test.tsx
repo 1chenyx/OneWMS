@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App as AntApp, ConfigProvider } from 'antd';
 import ProposalDetail from '../src/components/ProposalDetail';
 import ChatPage from '../src/pages/ChatPage';
 import { ChatProvider } from '../src/chat/ChatProvider';
 import { AppNavProvider, useAppNav } from '../src/app-nav';
+import { AGENT_DEFS_PATH } from '../src/pages/agent-proposal';
 import { ApiError } from '../src/api/client';
-import type { ChatStreamEvent } from '../src/api/client';
+import type { AiConfigStatus, ChatStreamEvent } from '../src/api/client';
 import type { Proposal } from '@one/core';
 
 /**
@@ -23,7 +24,10 @@ const answerMock = vi.fn();
 const agentsMock = vi.fn();
 const modelsMock = vi.fn();
 // 默认已配置（不弹引导卡）；未配置引导用例内覆盖返回值
-const aiConfigMock = vi.fn(() => ({ isLoading: false, data: { configured: true, source: 'file' } }));
+const aiConfigMock = vi.fn((): { isLoading: boolean; data: AiConfigStatus } => ({
+  isLoading: false,
+  data: { configured: true, source: 'file' },
+}));
 const proposalsMock = vi.fn(() => ({ isLoading: false, data: [] as Proposal[], refetch: vi.fn() }));
 
 const proposalFixture = {
@@ -270,7 +274,42 @@ describe('ChatPage：SSE 流式', () => {
     expect(sids[0]).not.toBe(sids[1]); // 切换 = 换新会话（历史按助手隔离）
   });
 
-  it('切换模型不换会话，下一条消息带上模型名', async () => {
+  it('切换模型不换会话，下一条消息带上已保存的那一条', async () => {
+    aiConfigMock.mockReturnValue({
+      isLoading: false,
+      data: {
+        configured: true,
+        source: 'file',
+        config: {
+          kind: 'openai-compatible',
+          model: 'deepseek-chat',
+          baseUrl: 'https://api.deepseek.com/v1',
+          apiKeySet: true,
+        },
+        profiles: [
+          {
+            id: 'p-deepseek',
+            vendorId: 'deepseek',
+            label: 'DeepSeek',
+            kind: 'openai-compatible',
+            model: 'deepseek-chat',
+            baseUrl: 'https://api.deepseek.com/v1',
+            apiKeySet: true,
+            active: true,
+          },
+          {
+            id: 'p-ollama',
+            vendorId: 'ollama',
+            label: 'Ollama',
+            kind: 'ollama',
+            model: 'qwen3:8b',
+            baseUrl: 'http://localhost:11434/v1',
+            apiKeySet: false,
+            active: false,
+          },
+        ],
+      },
+    });
     streamMock.mockImplementation(async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
       onEvent({ type: 'text-delta', text: '好的。' });
       onEvent({ type: 'turn-done', steps: 1 });
@@ -281,22 +320,58 @@ describe('ChatPage：SSE 流式', () => {
     await user.keyboard('先说一句');
     await user.click(screen.getByRole('button', { name: /发送/ }));
     expect(await screen.findByText('好的。')).toBeInTheDocument();
+    expect(streamMock).toHaveBeenLastCalledWith(
+      expect.any(String),
+      '先说一句',
+      'general',
+      expect.any(Function),
+      undefined,
+    );
 
-    await user.click(screen.getByRole('button', { name: '模型' }));
+    await user.click(screen.getByRole('button', { name: 'DeepSeek · deepseek-chat' }));
+    expect(screen.queryByRole('menuitem', { name: 'test-model' })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('menuitem', { name: /^Ollama/ }));
     await user.click(await screen.findByRole('menuitem', { name: 'qwen3:8b' }));
+    expect(screen.getByRole('button', { name: 'Ollama · qwen3:8b' })).toBeInTheDocument();
     expect(screen.getByText('先说一句')).toBeInTheDocument();
 
     await user.click(screen.getByRole('textbox'));
     await user.keyboard('换模型再问');
     await user.click(screen.getByRole('button', { name: /发送/ }));
-    expect(streamMock).toHaveBeenLastCalledWith(
-      expect.any(String),
-      '换模型再问',
-      'general',
-      expect.any(Function),
-      undefined,
-      'qwen3:8b',
-    );
+    await waitFor(() => {
+      expect(streamMock).toHaveBeenLastCalledWith(
+        expect.any(String),
+        '换模型再问',
+        'general',
+        expect.any(Function),
+        undefined,
+        'p-ollama',
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Ollama · qwen3:8b' })).toBeEnabled();
+    });
+    await user.click(screen.getByRole('button', { name: 'Ollama · qwen3:8b' }));
+    expect(screen.queryByRole('menuitem', { name: 'test-model' })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('menuitem', { name: /^Ollama/ }));
+    await user.click(await screen.findByRole('menuitem', { name: 'llama3.1:8b' }));
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('再换一个模型');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+    await waitFor(() => {
+      expect(streamMock).toHaveBeenLastCalledWith(
+        expect.any(String),
+        '再换一个模型',
+        'general',
+        expect.any(Function),
+        undefined,
+        'p-ollama',
+        'llama3.1:8b',
+      );
+    });
+    expect(screen.getByText('先说一句')).toBeInTheDocument();
+    aiConfigMock.mockImplementation(() => ({ isLoading: false, data: { configured: true, source: 'file' } }));
   });
 
   it('未配置 AI（503）→ 友好错误提示落卡片', async () => {
@@ -430,6 +505,31 @@ describe('ChatPage：SSE 流式', () => {
     await user.click(screen.getByRole('button', { name: '确认应用' }));
     expect(confirmMock).toHaveBeenCalledWith({ id: 'p-1' });
     expect(await screen.findByText(/已应用/)).toBeInTheDocument();
+  });
+
+  it('助手定义提议不进对话页的配置确认窗', async () => {
+    proposalsMock.mockReturnValue({
+      isLoading: false,
+      data: [
+        {
+          ...proposalFixture,
+          proposalId: 'p-agents',
+          note: '更新 AI 助手定义',
+          paths: [AGENT_DEFS_PATH],
+        } as Proposal,
+        proposalFixture,
+      ],
+      refetch: vi.fn(),
+    });
+    const user = userEvent.setup();
+    render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+
+    const dialog = await screen.findByRole('dialog', { name: '请确认配置变更' });
+    expect(dialog).toHaveTextContent('隐藏规格字段');
+    expect(dialog).not.toHaveTextContent('更新 AI 助手定义');
+
+    await user.click(screen.getByRole('button', { name: '先放着' }));
+    expect(screen.getByRole('button', { name: '有 1 项配置等你确认' })).toBeInTheDocument();
   });
 });
 

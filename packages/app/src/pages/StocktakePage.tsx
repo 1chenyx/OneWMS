@@ -445,7 +445,7 @@ function StocktakeDetailModal({ no, onClose }: { no: string | null; onClose: () 
             rowKey={(l) => `${l.skuCode}@${l.locationCode}@${l.batchNo}`}
             columns={columns}
             dataSource={scanFilter ? d.lines.filter((l) => l.skuCode === scanFilter) : d.lines}
-            pagination={false}
+            pagination={TABLE_PAGINATION}
             size="small"
             locale={{ emptyText: scanFilter ? `没有 ${scanFilter} 的待盘行` : '范围内没有待盘的库存桶' }}
           />

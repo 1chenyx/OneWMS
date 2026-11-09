@@ -3,7 +3,7 @@ import { App as AntApp, Modal, Select, Table, Typography } from 'antd';
 import { usePutawayOrder, useLocations } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { Order } from '../api/client';
-import { monoCell, numCell } from './table-style';
+import { monoCell, numCell, TABLE_PAGINATION } from './table-style';
 
 /**
  * 上架确认弹窗（M21，module.putaway）：
@@ -75,9 +75,12 @@ export default function PutawayModal({
       </Typography.Paragraph>
       <Table
         size="small"
-        rowKey={(_, i) => String(i)}
+        rowKey={(line) => {
+          const i = order?.lines.indexOf(line) ?? 0;
+          return `${i}:${line.skuCode}:${line.locationCode ?? ''}:${line.batchNo ?? ''}`;
+        }}
         dataSource={order?.lines ?? []}
-        pagination={false}
+        pagination={TABLE_PAGINATION}
         columns={[
           { title: 'SKU', dataIndex: 'skuCode', onCell: monoCell, width: 140 },
           { title: '名称', dataIndex: 'name' },
@@ -88,20 +91,21 @@ export default function PutawayModal({
             title: '归位到（可选）',
             key: 'target',
             width: 200,
-            render: (_, __, i) => (
-              <Select
-                allowClear
-                showSearch
-                optionFilterProp="label"
-                placeholder="留在收货库位"
-                style={{ width: '100%' }}
-                options={locationOptions.filter(
-                  (o) => o.value !== (order?.lines[i]?.locationCode ?? ''),
-                )}
-                value={targets[i]}
-                onChange={(v) => setTargets((prev) => ({ ...prev, [i]: v }))}
-              />
-            ),
+            render: (_, line) => {
+              const i = order?.lines.indexOf(line) ?? -1;
+              return (
+                <Select
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="留在收货库位"
+                  style={{ width: '100%' }}
+                  options={locationOptions.filter((o) => o.value !== (line.locationCode ?? ''))}
+                  value={targets[i]}
+                  onChange={(v) => setTargets((prev) => ({ ...prev, [i]: v }))}
+                />
+              );
+            },
           },
         ]}
       />

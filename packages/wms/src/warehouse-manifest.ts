@@ -1,4 +1,5 @@
 import type { ModuleManifest, ToolDefinition } from '@one/core';
+import { LOCATION_WAREHOUSE_FIELD, WAREHOUSE_RECORD, extraRecord } from './builtin-records.js';
 
 function detachHandler(t: ToolDefinition): Omit<ToolDefinition, 'handler'> {
   const { handler: _handler, ...meta } = t;
@@ -21,6 +22,8 @@ export function warehouseManifest(toolDefs: ToolDefinition[]): ModuleManifest {
     version: '0.1.0',
     capabilities: ['db.read', 'tools.register'],
     dependencies: { modules: ['core.wms'] },
+    aliases: ['分仓'],
+    records: [WAREHOUSE_RECORD, extraRecord('location', '库位', [LOCATION_WAREHOUSE_FIELD])],
     tools: toolDefs.map((tool) => detachHandler(tool)),
   };
 }

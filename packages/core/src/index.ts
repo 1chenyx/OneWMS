@@ -11,7 +11,16 @@
  * 分层规则与每文件职责见 docs/ARCHITECTURE.md；系统设计见 docs/DESIGN.md。
  */
 export { OneCore } from './core.js';
-export { WorkspaceFacade } from './workspace/workspace.js';
+export { CORE_PROJECTION_VERSION, WorkspaceFacade } from './workspace/workspace.js';
+// 投影版本戳（层 1）：机制在 core，各组版本号由拥有该投影的包自己声明
+export {
+  decideProjectionVersion,
+  ensureProjectionVersion,
+  projectionAheadMessage,
+  projectionMetaKey,
+  PROJECTION_META_PREFIX,
+} from './projection/projection-version.js';
+export type { ProjectionVersionDecision } from './projection/projection-version.js';
 export { EventsView } from './workspace/events-view.js';
 export { FieldsView } from './workspace/fields-view.js';
 export { ToolsView } from './workspace/tools-view.js';
@@ -64,7 +73,11 @@ export type { ActorWatermark, PullRange, SyncHandshake, Watermarks } from './syn
 
 // 迁移（M7）：迁移服务经 OneCore.migration 提供
 // （出口纪律与 SyncService 一致——实例唯一入口是 OneCore）
-export { MIGRATION_BUNDLE_KIND, MIGRATION_BUNDLE_VERSION } from './migration/migration-service.js';
+export {
+  MIGRATION_BUNDLE_KIND,
+  MIGRATION_BUNDLE_MIN_VERSION,
+  MIGRATION_BUNDLE_VERSION,
+} from './migration/migration-service.js';
 export type { MigrationBundle } from './migration/migration-service.js';
 
 // 模块系统（M6）：manifest 类型族 + 校验纯函数；ModuleRegistry 类不导出——
@@ -74,6 +87,8 @@ export type {
   InstalledModule,
   ManifestContribution,
   ManifestFieldProvide,
+  ManifestRecord,
+  ManifestRecordField,
   ManifestWorkflowTransition,
   ManifestFieldRequire,
   ManifestTool,
@@ -84,10 +99,11 @@ export type {
 export { compareSemver, validateManifest } from './modules/manifest-validate.js';
 export type { ModuleUninstallReport } from './modules/module-registry.js';
 
-export { migrate, SCHEMA_VERSION } from './db/migrations.js';
+export { migrate, MIN_SCHEMA_VERSION, SCHEMA_VERSION } from './db/migrations.js';
 
 export {
   CoreError,
+  DataVersionError,
   EventError,
   FieldConflictError,
   FieldNotFoundError,

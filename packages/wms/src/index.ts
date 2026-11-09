@@ -13,6 +13,8 @@ export { WmsDomain, WmsWorkspace } from './wms.js';
 export { SkuView, type SkuRecord } from './views/sku-view.js';
 export { LocationView, type LocationRecord } from './views/location-view.js';
 export { WarehouseView, type WarehouseRecord } from './views/warehouse-view.js';
+export { SerialView, type SerialRecord } from './views/serial-view.js';
+export { LpnView, type LpnRecord, type LpnLineRecord } from './views/lpn-view.js';
 export {
   OrderView,
   type OrderRecord,
@@ -65,7 +67,14 @@ export type {
   LocationUpdatedPayload,
   WarehouseCreatedPayload,
   WarehouseUpdatedPayload,
+  SerialReceivedPayload,
+  SerialMovedPayload,
+  SerialIssuedPayload,
+  LpnCreatedPayload,
+  LpnMovedPayload,
+  LpnPackedPayload,
   OrderCreatedPayload,
+  OrderRevisedPayload,
   OrderStateChangedPayload,
   OrderConflictResolvedPayload,
   OrderLinePayload,
@@ -84,6 +93,8 @@ export type {
 } from './events/catalog.js';
 
 export { migrateWms } from './db/migrations.js';
+/** 投影组版本号：改派生语义时 +1，用户下次启动自动整组重建（机制见 @one/core） */
+export { WMS_PROJECTION_VERSION } from './views/wms-projections.js';
 
 export { createWmsTools } from './tools/wms-tools.js';
 export { readWmsSettings } from './config/wms-settings.js';
@@ -94,6 +105,10 @@ export { getReturnable } from './queries/return-queries.js';
 export { getReplenishment } from './queries/replenish-queries.js';
 export type { ReplenishmentSuggestion } from './queries/replenish-queries.js';
 export { listWarehouses, listWarehouseStock, presentLocation } from './queries/warehouse-queries.js';
+export { listSerials, querySerial } from './queries/serial-queries.js';
+export type { SerialRowView } from './queries/serial-queries.js';
+export { listLpns, lpnStock } from './queries/lpn-queries.js';
+export type { LpnListRow, LpnStockView, LpnStockLine } from './queries/lpn-queries.js';
 export type { WarehouseListRow, WarehouseStock, WarehouseStockRow } from './queries/warehouse-queries.js';
 export type { ReturnableLine, ReturnableView } from './queries/return-queries.js';
 export type { OrderWithLines } from './queries/order-queries.js';
@@ -149,6 +164,7 @@ export {
   SkuBarcodeExistsError,
   OrderAlreadyExistsError,
   OrderNotFoundError,
+  OrderReviseRejectedError,
   LocationAlreadyExistsError,
   LocationNotFoundError,
   BatchExpiryMismatchError,
@@ -196,6 +212,18 @@ export {
   WarehouseDisabledError,
   WarehouseAlreadyExistsError,
   WarehouseNotFoundError,
+  SerialDisabledError,
+  SerialRequiredError,
+  SerialNotTrackedError,
+  SerialCountError,
+  SerialNotFoundError,
+  SerialAlreadyInStockError,
+  SerialDuplicateError,
+  SerialStockError,
+  LpnDisabledError,
+  LpnAlreadyExistsError,
+  LpnNotFoundError,
+  LpnPackedError,
   PickingNotFoundError,
   PickingExistsError,
   PickingNotOpenError,

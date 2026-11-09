@@ -10,8 +10,8 @@ import type { ChatAttachmentChip, ChatAttachmentPayload, ChatInvocation, ChatStr
  *  - sessionId 页面生命周期唯一（server 内存会话的 key，刷新即新会话）；
  *  - agentId（M16）：当前助手；切换 = 换新 sessionId + 清空 turns——
  *    server 侧每条消息按 agentId 现场装配，历史按助手隔离；
- *  - model：这一次对话选用的模型名。没选时不传，服务端用助手或当前配置；
- *    切换模型不换会话；
+ *  - profileId：这一次对话选用的已保存接入点（地址和密钥）。没选时不传，服务端用当前配置；
+ *    model：只在同一条上改模型名时才传。切换厂商或模型都不换会话；
  *  - send() 消费 SSE 流，事件归约到最后一个 turn（单在途流，靠 isStreaming 串行）；
  *  - ui.ask 挂起（步骤3）：ask 事件落一张问卡，answerAsk 提交回答后
  *    tool-result 事件沿原 SSE 流回填卡片（会话仍 isStreaming，输入区锁定）；
@@ -39,10 +39,15 @@ interface ChatSessionValue {
   agentId: string;
   /** 切换助手：换新会话 + 清空历史（每条消息由 server 按定义现场装配） */
   setAgentId(agentId: string): void;
-  /** 用户在输入框里选定的模型；未选为 undefined（沿用助手或当前配置） */
+  /** 用户在输入框里选定的已保存接入点；未选为 undefined（沿用当前配置） */
+  profileId?: string;
+  /** 同一接入点上改用的模型名。和这条保存的模型名相同时不传。 */
   model?: string;
-  /** 切换模型：下一轮用这个名字，对话历史保留 */
-  setModel(model: string): void;
+  /**
+   * 切换厂商或模型：下一轮用这一条的地址和密钥，对话历史保留。
+   * model 只在和这条保存的模型名不同时传入。profileId 传空表示回到当前配置。
+   */
+  setProfileId(profileId: string | undefined, model?: string): void;
   send(text: string, attachments?: ChatAttachmentPayload[]): Promise<void>;
   /** 回答挂起中的 ui.ask（answer 传 null 表示跳过） */
   answerAsk(callId: string, answer: string | null): Promise<void>;
@@ -98,9 +103,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [agentId, setAgentIdState] = useState('general');
+  const [profileId, setProfileState] = useState<string | undefined>(undefined);
   const [model, setModelState] = useState<string | undefined>(undefined);
   const sessionIdRef = useRef<string>(newSessionId());
   const agentIdRef = useRef('general');
+  const profileRef = useRef<string | undefined>(undefined);
   const modelRef = useRef<string | undefined>(undefined);
   const streamingRef = useRef(false);
 
@@ -113,12 +120,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setTurns([]);
   }, []);
 
-  /** 切换模型不换会话。流式中锁定，避免同一轮中途改通道。 */
-  const setModel = useCallback((next: string) => {
-    const name = next.trim();
-    if (!name || name === modelRef.current || streamingRef.current) return;
-    modelRef.current = name;
-    setModelState(name);
+  /** 切换已保存的接入点，或同一条上的模型名。不换会话。流式中锁定。 */
+  const setProfileId = useCallback((next: string | undefined, nextModel?: string) => {
+    if (streamingRef.current) return;
+    const id = next?.trim() || undefined;
+    const picked = id && nextModel?.trim() ? nextModel.trim() : undefined;
+    if (id === profileRef.current && picked === modelRef.current) return;
+    profileRef.current = id;
+    modelRef.current = picked;
+    setProfileState(id);
+    setModelState(picked);
   }, []);
 
   const send = useCallback(
@@ -148,8 +159,19 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const onEvent = (ev: ChatStreamEvent) => {
           setTurns((prev) => applyEvent(prev, ev));
         };
-        const chosen = modelRef.current;
-        if (chosen) {
+        const chosen = profileRef.current;
+        const override = modelRef.current;
+        if (chosen && override) {
+          await streamChatMessage(
+            sessionIdRef.current,
+            trimmed,
+            agentIdRef.current,
+            onEvent,
+            files,
+            chosen,
+            override,
+          );
+        } else if (chosen) {
           await streamChatMessage(sessionIdRef.current, trimmed, agentIdRef.current, onEvent, files, chosen);
         } else {
           await streamChatMessage(sessionIdRef.current, trimmed, agentIdRef.current, onEvent, files);
@@ -187,8 +209,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ turns, isStreaming, agentId, setAgentId, model, setModel, send, answerAsk }),
-    [turns, isStreaming, agentId, setAgentId, model, setModel, send, answerAsk],
+    () => ({ turns, isStreaming, agentId, setAgentId, profileId, model, setProfileId, send, answerAsk }),
+    [turns, isStreaming, agentId, setAgentId, profileId, model, setProfileId, send, answerAsk],
   );
   return <ChatSessionContext.Provider value={value}>{children}</ChatSessionContext.Provider>;
 }

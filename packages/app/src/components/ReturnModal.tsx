@@ -5,7 +5,7 @@ import { useCreateOrder, useLocations } from '../api/hooks';
 import { api, ApiError } from '../api/client';
 import type { Order, ReturnableLine } from '../api/client';
 import { fmtQty } from '../lib/format';
-import { monoCell, numCell } from './table-style';
+import { monoCell, numCell, TABLE_PAGINATION } from './table-style';
 
 /**
  * 退货开单（module.return）。不新增状态：客退开入库单，退供开出库单，
@@ -117,7 +117,7 @@ export default function ReturnModal({
           rowKey={(line) => `${line.skuCode}\u0000${line.batchNo}`}
           dataSource={view?.lines ?? []}
           loading={returnable.isLoading}
-          pagination={false}
+          pagination={TABLE_PAGINATION}
           locale={{ emptyText: '没有可退数量' }}
           columns={[
             { title: 'SKU', dataIndex: 'skuCode', width: 120, onCell: monoCell },
@@ -135,23 +135,27 @@ export default function ReturnModal({
               title: '本次数量',
               key: 'qty',
               width: 130,
-              render: (_, line, i) => (
-                <InputNumber
-                  aria-label={`${line.skuCode} 退货数量`}
-                  min={0}
-                  max={line.remaining}
-                  precision={3}
-                  value={qty[i] ?? line.remaining}
-                  onChange={(v) => setQty((prev) => ({ ...prev, [i]: typeof v === 'number' ? v : 0 }))}
-                  style={{ width: '100%' }}
-                />
-              ),
+              render: (_, line) => {
+                const i = view?.lines.indexOf(line) ?? -1;
+                return (
+                  <InputNumber
+                    aria-label={`${line.skuCode} 退货数量`}
+                    min={0}
+                    max={line.remaining}
+                    precision={3}
+                    value={qty[i] ?? line.remaining}
+                    onChange={(v) => setQty((prev) => ({ ...prev, [i]: typeof v === 'number' ? v : 0 }))}
+                    style={{ width: '100%' }}
+                  />
+                );
+              },
             },
             {
               title: direction === 'out' ? '出库库位' : '退回库位',
               key: 'location',
               width: 180,
-              render: (_, line, i) => {
+              render: (_, line) => {
+                const i = view?.lines.indexOf(line) ?? -1;
                 const value = locs[i] || line.locationCode;
                 const options = locationOptions.some((o) => o.value === value)
                   ? locationOptions

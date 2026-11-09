@@ -6,11 +6,9 @@ import {
   Card,
   Descriptions,
   Input,
-  Modal,
   Popconfirm,
   QRCode,
   Space,
-  Switch,
   Table,
   Tabs,
   Tag,
@@ -19,11 +17,9 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd';
-import type { ModuleConfig, ProfileSnapshot } from '@one/core';
 import {
   DownloadOutlined,
   LinkOutlined,
-  NodeIndexOutlined,
   SaveOutlined,
   SyncOutlined,
   UploadOutlined,
@@ -38,33 +34,52 @@ import {
   useLanAddress,
   useMigrationImport,
   useNodeHello,
-  useProfileSnapshot,
-  useProposeProfile,
-  useConfirmProposal,
   useRemoveSyncPeer,
   useRestoreBackup,
   useSyncPeers,
   useSyncRun,
 } from '../api/hooks';
 import PageHeader from '../components/PageHeader';
+import { TABLE_PAGINATION } from '../components/table-style';
 
 /**
- * 设置页（M8/M21）——同步/迁移/备份的用户面收口 + 流程与模块配置。
+ * 设置页——设备（本机身份 + 局域网配对）、数据（本机备份 + 导出导入）。
+ * 收发做法在「流程」页，仓库能力在「模块」页，不放在这里。
  * 定位：触发器 + 状态显示器（节点清单与备份清单都由服务端持久化，页面只读写它）。
  */
 
 export default function SettingsPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
-      <PageHeader title="设置" subtitle="节点身份、局域网同步、数据备份与迁移、流程模块配置" />
+      <PageHeader title="设置" subtitle="多台设备一起用，以及本机备份和导出" />
       <Tabs
-        defaultActiveKey="node"
+        defaultActiveKey="devices"
         items={[
-          { key: 'node', icon: <NodeIndexOutlined />, label: '节点', children: <NodeTab /> },
-          { key: 'sync', icon: <LinkOutlined />, label: '局域网同步', children: <SyncTab /> },
-          { key: 'backup', icon: <SaveOutlined />, label: '备份', children: <BackupTab /> },
-          { key: 'migration', icon: <SyncOutlined />, label: '迁移', children: <MigrationTab /> },
-          { key: 'flow', icon: <NodeIndexOutlined />, label: '流程与模块', children: <FlowModulesPanel /> },
+          {
+            key: 'devices',
+            icon: <LinkOutlined />,
+            label: '设备',
+            children: (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <NodeTab />
+                <SyncTab />
+              </div>
+            ),
+          },
+          {
+            key: 'data',
+            icon: <SaveOutlined />,
+            label: '数据',
+            children: (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                  自动备份留在这台机器上，并且带上 AI 配置，出错可以从清单里恢复。导出的是同一份全量账本，文件由你自己保管，用来换电脑或另存。
+                </Typography.Paragraph>
+                <BackupTab />
+                <MigrationTab />
+              </div>
+            ),
+          },
         ]}
       />
     </div>
@@ -101,7 +116,7 @@ function NodeTab() {
             {lan.url}
           </Typography.Text>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            两台设备要连同一个 Wi-Fi / 网线局域网。在对方的 OneWMS 里打开「设置 → 局域网同步」，
+            两台设备要连同一个 Wi-Fi 或网线局域网。在对方的 OneWMS 里打开「设置 → 设备」，
             把上面这个地址填进「添加节点」（仓库里的扫码枪扫这个码也能直接填进去）。
           </Typography.Paragraph>
         </Space>
@@ -129,7 +144,7 @@ function SyncTab() {
   const doAdd = async () => {
     const url = urlText.trim();
     if (!url) {
-      message.warning('请先填写对端地址（在对方的「设置 → 节点」页上能看到）');
+      message.warning('请先填写对端地址（在对方的「设置 → 设备」页上能看到）');
       return;
     }
     try {
@@ -195,7 +210,7 @@ function SyncTab() {
 
   return (
     <Card
-      title="局域网同步（拉模型回合）"
+      title="已配对的设备"
       extra={
         <Button type="primary" icon={<SyncOutlined />} loading={run.isPending} onClick={doRun}>
           立即同步
@@ -204,7 +219,7 @@ function SyncTab() {
     >
       <Space.Compact style={{ width: '100%', marginBottom: 12 }}>
         <Input
-          placeholder="对端地址，如 http://192.168.1.20:3000（在对方的「设置 → 节点」页上）"
+          placeholder="对端地址，如 http://192.168.1.20:3000（在对方的「设置 → 设备」页上）"
           value={urlText}
           onChange={(e) => setUrlText(e.target.value)}
           onPressEnter={doAdd}
@@ -219,7 +234,7 @@ function SyncTab() {
         loading={isLoading}
         columns={columns}
         dataSource={data?.peers ?? []}
-        pagination={false}
+        pagination={TABLE_PAGINATION}
         locale={{ emptyText: '还没有配对节点——把对方的地址填进上面的「添加节点」' }}
       />
       {data && !data.persisted && (
@@ -374,7 +389,7 @@ function BackupTab() {
             ? `自动备份已关闭（只能手动备份），保留最新 ${data.keep} 份。`
             : `每 ${formatInterval(data.intervalMs)}自动备份一次，滚动保留最新 ${data.keep} 份。`}
           最近一次：{data.lastBackupAt ? new Date(data.lastBackupAt).toLocaleString() : '还没有备份'}。
-          备份内容 = 全部业务数据 + AI 模型配置，文件在服务端数据目录里，可以整个拷走另存。
+          备份内容是全部业务数据加上 AI 配置，留在这台机器上。要换电脑或自己留一份文件，用下面的导出。
         </Typography.Paragraph>
       )}
       <Table
@@ -383,7 +398,7 @@ function BackupTab() {
         loading={isLoading}
         columns={columns}
         dataSource={data?.backups ?? []}
-        pagination={false}
+        pagination={TABLE_PAGINATION}
         locale={{ emptyText: data?.enabled ? '还没有备份——点右上角「立即备份」' : '当前宿主不支持备份' }}
       />
     </Card>
@@ -406,7 +421,7 @@ function MigrationTab() {
       a.download = `onewms-migration-${(bundle as { workspaceId?: string }).workspaceId ?? 'workspace'}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      message.success('迁移包已导出（含全部事件，明文文件请妥善保管）');
+      message.success('已导出一份全量账本（明文文件，请妥善保管）');
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : `导出失败：${String(e)}`);
     }
@@ -415,7 +430,7 @@ function MigrationTab() {
   const doImport = async () => {
     const file = fileList[0]?.originFileObj;
     if (!file) {
-      message.warning('请先选择迁移包文件');
+      message.warning('请先选择要导入的文件');
       return;
     }
     try {
@@ -429,18 +444,18 @@ function MigrationTab() {
   };
 
   return (
-    <Card title="迁移（整工作区搬家）">
+    <Card title="导出与导入">
       <Space direction="vertical" style={{ width: '100%' }} size="large">
         <div>
           <Typography.Paragraph>
-            导出 = 全部事件按全序打包（Profile 与库存等投影是事件的派生，导入重放后自动恢复）。
+            导出一份文件带走。库存和配置会在导入后按事件重新生成。文件是明文，请妥善保管。
           </Typography.Paragraph>
           <Button type="primary" icon={<DownloadOutlined />} onClick={doExport}>
-            导出迁移包
+            导出一份
           </Button>
         </div>
         <div>
-          <Typography.Paragraph>导入 = 事件幂等落账（重复导入零新事件）+ 投影全量重建。</Typography.Paragraph>
+          <Typography.Paragraph>从文件导入。已经有的事件会自动跳过，不会记重。</Typography.Paragraph>
           <Space>
             <Upload
               accept=".json"
@@ -449,7 +464,7 @@ function MigrationTab() {
               beforeUpload={() => false}
               onChange={({ fileList: fl }) => setFileList(fl)}
             >
-              <Button icon={<UploadOutlined />}>选择迁移包文件</Button>
+              <Button icon={<UploadOutlined />}>选择文件</Button>
             </Upload>
             <Button type="primary" loading={importBundle.isPending} onClick={doImport}>
               导入
@@ -458,192 +473,5 @@ function MigrationTab() {
         </div>
       </Space>
     </Card>
-  );
-}
-
-/** ⑤ 流程与模块（M21）——「流程可配置」的运营入口
- *  模块启停走慢通道三段：propose（影响报告）→ 人工确认 → 生效；与 AI 的
- *  配置提议同一队列（确认权在用户，永不委托）。流程视图只读：状态（含模块
- *  贡献徽标）+ 转移表（when 条件列）。 */
-function FlowModulesPanel() {
-  const { message, modal } = AntApp.useApp();
-  const snapshot = useProfileSnapshot();
-  const propose = useProposeProfile();
-  const confirm = useConfirmProposal();
-  const [pending, setPending] = useState<{
-    id: string;
-    summary: string;
-    items: { severity: string; description: string }[];
-  } | null>(null);
-
-  const modules = Object.entries(snapshot.data?.modules ?? {});
-  const bizModules = modules.filter(([id]) => id.startsWith('module.'));
-  const sysModules = modules.filter(([id]) => id.startsWith('core.'));
-
-  const toggleModule = (moduleId: string, enabled: boolean) => {
-    propose.mutate(
-      {
-        patch: [{ op: 'replace', path: `/modules/${moduleId}/enabled`, value: enabled }],
-        note: `设置页：${enabled ? '启用' : '停用'} ${moduleId}`,
-      },
-      {
-        onSuccess: (r) => {
-          setPending({ id: r.proposalId, summary: r.report.summary, items: r.report.items });
-        },
-        onError: (e) => message.error(e instanceof ApiError ? e.message : `提议失败：${String(e)}`),
-      },
-    );
-  };
-
-  const doConfirm = () => {
-    if (!pending) return;
-    confirm.mutate(
-      { id: pending.id },
-      {
-        onSuccess: (r) => {
-          message.success(`配置已生效（v${r.newVersion}，${r.appliedOps} 项变更）`);
-          setPending(null);
-        },
-        onError: (e) => message.error(e instanceof ApiError ? e.message : `确认失败：${String(e)}`),
-      },
-    );
-  };
-
-  const moduleColumns: ColumnsType<[string, ModuleConfig]> = [
-    { title: '模块', key: 'id', render: (_, r) => <Typography.Text code>{r[0]}</Typography.Text> },
-    { title: '版本', key: 'version', width: 90, render: (_, r) => `v${r[1].version ?? '-'}` },
-    {
-      title: '启用',
-      key: 'enabled',
-      width: 110,
-      render: (_, r) => (
-        <Switch
-          checked={r[1].enabled}
-          loading={propose.isPending}
-          onChange={(v) =>
-            modal.confirm({
-              title: `${v ? '启用' : '停用'} ${r[0]}？`,
-              content: v
-                ? '启用后其贡献的流程步骤立即生效。'
-                : '停用后其贡献的流程转移被掐掉（历史数据不受影响）。',
-              onOk: () => toggleModule(r[0], v),
-            })
-          }
-        />
-      ),
-    },
-  ];
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div>
-        <Typography.Title level={5} style={{ marginTop: 0 }}>
-          业务模块
-        </Typography.Title>
-        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-          启停走慢通道（提议 → 影响报告 → 确认生效），与 AI 的配置提议同一队列——确认权在用户。
-          停用 module.putaway 回到「收货即完成」。停用 module.reversal 后，已收货和已发货不能再取消。停用 module.partial 后，收货和发货按订单数量整单入账，不能改少。停用 module.reservation 后，新的拣货不再占用可用量，库存仍在发货时扣减；已经占用的数量保留到发货或取消。停用 module.return 后，不能再按原单号开新的退货单；已经开出的退货单和历史记录保留，仍可按普通单据继续流转。停用 module.asn 后，不能再开到货预报；已经预报的单仍可收货或取消，直接入库不受影响。停用 module.replenish 后，不能再按缺口生成补货单；低库存预警仍在；已经开出的补货入库单仍可按普通入库收货。停用 module.warehouse 后，不能再新建仓库或把库位划进仓库；已有库位和库存仍按原来的方式使用；已经划过仓的库位保留归属。历史单据不受影响。
-        </Typography.Paragraph>
-        <Table
-          rowKey={(r) => r[0]}
-          size="small"
-          columns={moduleColumns}
-          dataSource={bizModules}
-          pagination={false}
-          locale={{ emptyText: '暂无业务模块' }}
-        />
-      </div>
-      <div>
-        <Typography.Title level={5} style={{ marginTop: 0 }}>
-          系统模块（只读）
-        </Typography.Title>
-        <Table
-          rowKey={(r) => r[0]}
-          size="small"
-          columns={moduleColumns.slice(0, 2)}
-          dataSource={sysModules}
-          pagination={false}
-        />
-      </div>
-      <WorkflowCard snapshot={snapshot.data} workflowKey="inbound" title="入库流程（inbound）" />
-      <WorkflowCard snapshot={snapshot.data} workflowKey="outbound" title="出库流程（outbound）" />
-
-      <Modal
-        title="确认应用配置变更？"
-        open={pending !== null}
-        onCancel={() => setPending(null)}
-        onOk={doConfirm}
-        confirmLoading={confirm.isPending}
-        okText="确认生效"
-      >
-        <Typography.Paragraph>{pending?.summary}</Typography.Paragraph>
-        <ul style={{ paddingLeft: 20, margin: 0 }}>
-          {(pending?.items ?? []).map((it, i) => (
-            <li key={i}>
-              <Tag color={it.severity === 'warning' ? 'orange' : 'blue'} style={{ marginRight: 6 }}>
-                {it.severity === 'warning' ? '注意' : '变更'}
-              </Tag>
-              {it.description}
-            </li>
-          ))}
-        </ul>
-      </Modal>
-    </div>
-  );
-}
-
-/** 流程只读视图：状态（含模块贡献徽标）+ 转移表（from → to，when 条件列） */
-function WorkflowCard({
-  snapshot,
-  workflowKey,
-  title,
-}: {
-  snapshot: ProfileSnapshot | undefined;
-  workflowKey: 'inbound' | 'outbound';
-  title: string;
-}) {
-  const wf = snapshot?.workflows[workflowKey];
-  if (!wf) return null;
-  return (
-    <div>
-      <Typography.Title level={5} style={{ marginTop: 0 }}>
-        {title}
-      </Typography.Title>
-      <div style={{ marginBottom: 12 }}>
-        {wf.states.map((s) => (
-          <Tag key={s.id} color={s.id === 'created' ? 'default' : 'processing'}>
-            {s.label ?? s.id}
-            {s.providedBy ? (
-              <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
-                （{s.providedBy}）
-              </Typography.Text>
-            ) : null}
-          </Tag>
-        ))}
-      </div>
-      <Table
-        rowKey={(t) => `${t.from}->${t.to}`}
-        size="small"
-        pagination={false}
-        dataSource={wf.transitions}
-        columns={[
-          { title: '从', dataIndex: 'from', width: 120 },
-          { title: '到', dataIndex: 'to', width: 120 },
-          {
-            title: '条件（when）',
-            dataIndex: 'when',
-            render: (v: string | undefined) =>
-              v ? <Typography.Text code>{v}</Typography.Text> : <Typography.Text type="secondary">—</Typography.Text>,
-          },
-          {
-            title: '库存效应',
-            dataIndex: 'effect',
-            width: 110,
-            render: (v: string | undefined) =>
-              v ? <Typography.Text code>{v}</Typography.Text> : <Typography.Text type="secondary">约定</Typography.Text>,
-          },
-        ]}
-      />
-    </div>
   );
 }

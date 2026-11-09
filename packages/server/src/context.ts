@@ -10,6 +10,7 @@ import {
   type LlmProvider,
 } from '@one/ai';
 import { DEFAULT_BACKUP_INTERVAL_MS, DEFAULT_BACKUP_KEEP } from './backup/backup-service.js';
+import { runUpgradeGate, resolveAppVersion, type UpgradeGateReport } from './upgrade/upgrade-gate.js';
 import {
   deleteAiConfigFile,
   EMPTY_AI_CATALOG,
@@ -68,6 +69,8 @@ export interface AppContext {
   readonly backupKeep: number;
   /** 已配对同步节点清单（扫码组网；path=null 时只在进程内有效） */
   readonly peers: PeerStore;
+  /** 本次启动的升级闸门结论（fresh/same/upgrade；downgrade 直接抛错，装不出 ctx） */
+  readonly upgradeGate: UpgradeGateReport;
   /** 实际监听端口（serve 回调写入；null = 未起端口的宿主，如测试 app.request） */
   listeningPort: number | null;
   /** 热更新：重建 provider + 切换来源（config=undefined 即关闭 AI） */
@@ -101,8 +104,25 @@ export function createAppContext(options: {
   backupKeep?: number;
   /** 缺省纯内存清单（测试宿主不落盘）；真实宿主传 resolvePeersPath(dbPath) */
   peersPath?: string | null;
+  /**
+   * 当前程序版本（升级闸门的比对基准）；传 null = 强制关闭闸门。
+   * 缺省 = resolveAppVersion()：ONE_APP_VERSION（桌面壳注入）> 本包 package.json。
+   * 测试注入固定值以复现「升级 / 同版本 / 降级 / 关闭」四态。
+   */
+  appVersion?: string | null;
 }): AppContext {
   const core = OneCore.open(options.dbPath);
+  const backupDir = options.backupDir ?? null;
+  // 升级闸门必须抢在领域装配之前：此刻的账本水位就是「旧版本的最后状态」，
+  // 新代码（含 modules.install）一条事件都还没落。降级在这里抛错 → 进程起不来。
+  const upgradeGate = runUpgradeGate({
+    core,
+    workspaceId: options.workspaceId,
+    appVersion: options.appVersion ?? resolveAppVersion(),
+    backupDir,
+    ...(options.aiConfig ? { aiConfig: options.aiConfig } : {}),
+    ...(options.aiCatalog ? { aiCatalog: options.aiCatalog } : {}),
+  });
   const ws = WmsDomain.attach(core).workspace(options.workspaceId);
   // 记忆域装配（manifest 登记 + 工具注册 + 模块种子安装都在域内完成）
   const memory = MemoryDomain.attach(core).workspace(options.workspaceId);
@@ -124,10 +144,11 @@ export function createAppContext(options: {
     aiConfigPath: options.aiConfigPath ?? null,
     aiConfigEnv: options.aiConfigEnv ?? options.aiConfig,
     aiCatalog: options.aiCatalog ?? { ...EMPTY_AI_CATALOG, profiles: [] },
-    backupDir: options.backupDir ?? null,
+    backupDir,
     backupIntervalMs: options.backupIntervalMs ?? DEFAULT_BACKUP_INTERVAL_MS,
     backupKeep: options.backupKeep ?? DEFAULT_BACKUP_KEEP,
     peers: createPeerStore(options.peersPath ?? null),
+    upgradeGate,
     listeningPort: null,
     applyAiConfig(config, source) {
       ctx.provider = config ? createVercelLlmProvider(resolveLanguageModel(config)) : undefined;

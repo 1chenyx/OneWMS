@@ -1,19 +1,22 @@
-import { useState } from 'react';
-import { DownOutlined, PlusOutlined, PrinterOutlined, RollbackOutlined, VerticalAlignTopOutlined } from '@ant-design/icons';
+import { useEffect, useState } from 'react';
+import { DownOutlined, PlusOutlined, RollbackOutlined, VerticalAlignTopOutlined } from '@ant-design/icons';
 import { Alert, App as AntApp, Button, Card, Dropdown, Input, InputNumber, Segmented, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ProfileSnapshot } from '@one/core';
 import { evalWhenCondition } from '@one/core/when';
 import { useAcceptConflict, useDismissConflict, useOrderConflicts, useOrders, useProfileSnapshot, useTransitionOrder } from '../api/hooks';
 import { ApiError } from '../api/client';
-import type { Order, OrderLine } from '../api/client';
+import type { Order } from '../api/client';
 import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
+import OrderDetailDrawer from '../components/OrderDetailDrawer';
 import OrderFormModal from '../components/OrderFormModal';
 import PutawayModal from '../components/PutawayModal';
 import ReturnModal from '../components/ReturnModal';
 import PageHeader from '../components/PageHeader';
 import { OrderSheetPort } from '../components/sheet-specs';
-import { serverPagination, monoCell, numCell, printTd, printTh } from '../components/table-style';
+import { PrintRoot, PrintSelectionBar, PrintStyle, usePrintSession } from '../components/print-preview';
+import { OrderPrintSheet } from '../components/print-sheets';
+import { serverPagination, monoCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
 import { useAppNav } from '../app-nav';
 
@@ -24,9 +27,10 @@ import { useAppNav } from '../app-nav';
  * 行为权威仍是服务端状态机：非法转移被 400 WMS_INVALID_TRANSITION 兜底。
  * 上架（M21）：入库单 received 态且 module.putaway 启用时出现「上架」按钮
  * （弹窗可选归位目标库位；服务端工具 wms.order.putaway 是行为权威）。
- * P1 表格规范：单号等宽列；明细收进展开行（主表只留主干）；流转按钮收进
+ * P1 表格规范：单号等宽列；明细在详情里看，主表只留主干；流转按钮收进
  * Dropdown（点选目标态 → modal.confirm 二次确认——出入库动库存，不裸点）；
- * 清单按页向服务端要，单号过滤走 q。打印仍用当前页里的那张单据。
+ * 清单按页向服务端要，单号过滤走 q。点单号或「详情」打开抽屉。
+ * 详情只看单据。右上角「打印预览」再看纸样。勾选当前页可以一次打出多页，不经过预览。
  * AI 跳转携带的 orderNo 预填过滤框（M12 步骤4，挂载时一次性消费）。
  */
 export default function OrdersPage() {
@@ -54,8 +58,21 @@ export default function OrdersPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [putawayOrder, setPutawayOrder] = useState<Order | null>(null);
   const [returnOrder, setReturnOrder] = useState<Order | null>(null);
-  /** A1 打印：正在打印的单据（非空 = 打印区已挂载，可拉起系统打印） */
-  const [printOrder, setPrintOrder] = useState<Order | null>(null);
+  const session = usePrintSession<Order>();
+  /** 勾选范围是当前页。翻页或改筛选后清空，避免打出已经不在列表里的单。 */
+  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  useEffect(() => {
+    setSelectedOrderIds([]);
+  }, [direction, noKw, list.page]);
+  const selectedOrders = visibleOrders.filter((o) => selectedOrderIds.includes(o.id));
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [pinnedDetail, setPinnedDetail] = useState<Order | null>(null);
+  const listedDetail = detailId ? visibleOrders.find((o) => o.id === detailId) : undefined;
+  const detailOrder = listedDetail ?? (pinnedDetail?.id === detailId ? pinnedDetail : null);
+  const openDetail = (order: Order) => {
+    setDetailId(order.id);
+    setPinnedDetail(order);
+  };
 
   const doTransition = async (
     orderNo: string,
@@ -115,37 +132,26 @@ export default function OrdersPage() {
     });
   };
 
-  /** 打印出入库单（A1）：先挂打印区（纸质单据含效期/批次/库位与签收栏），
-   *  绘完最后一帧再拉起系统打印对话框；打完（afterprint）卸掉打印区。 */
-  const doPrint = (r: Order) => {
-    setPrintOrder(r);
-    const cleanup = () => {
-      setPrintOrder(null);
-      window.removeEventListener('afterprint', cleanup);
-    };
-    window.addEventListener('afterprint', cleanup);
-    window.setTimeout(() => window.print(), 60);
-  };
-
   const columns: ColumnsType<Order> = [
     {
       title: '单号',
       dataIndex: 'orderNo',
       key: 'orderNo',
       onCell: monoCell,
-      render: (v: string, r) =>
-        r.returnOfOrderNo ? (
-          <span>
+      render: (v: string, r) => (
+        <span>
+          <Button type="link" size="small" style={{ padding: 0, height: 'auto' }} onClick={() => openDetail(r)}>
             {v}
+          </Button>
+          {r.returnOfOrderNo ? (
             <div>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 原单 {r.returnOfOrderNo}
               </Typography.Text>
             </div>
-          </span>
-        ) : (
-          v
-        ),
+          ) : null}
+        </span>
+      ),
     },
     {
       title: '方向',
@@ -216,18 +222,13 @@ export default function OrdersPage() {
       sorter: (a, b) => a.createdAt.localeCompare(b.createdAt),
     },
     {
-      title: '打印',
-      key: 'print',
-      width: 64,
+      title: '详情',
+      key: 'detail',
+      width: 72,
       render: (_, r) => (
-        <Tooltip title="打印单据（A1）">
-          <Button
-            size="small"
-            icon={<PrinterOutlined />}
-            aria-label="打印单据"
-            onClick={() => doPrint(r)}
-          />
-        </Tooltip>
+        <Button size="small" onClick={() => openDetail(r)}>
+          详情
+        </Button>
       ),
     },
     {
@@ -367,8 +368,13 @@ export default function OrdersPage() {
         />
       ) : null}
       <Card>
+        <PrintSelectionBar count={selectedOrders.length} onPrint={() => session.printNow(selectedOrders)} />
         <Table<Order>
           rowKey="id"
+          rowSelection={{
+            selectedRowKeys: selectedOrders.map((o) => o.id),
+            onChange: (keys) => setSelectedOrderIds(keys.map(String)),
+          }}
           columns={columns}
           dataSource={visibleOrders}
           loading={isLoading}
@@ -378,113 +384,27 @@ export default function OrdersPage() {
             onChange: list.setPage,
           })}
           locale={{ emptyText: '还没有单据' }}
-          expandable={{
-            rowExpandable: (r) => r.lines.length > 0,
-            expandedRowRender: (r) => (
-              <Table<OrderLine>
-                size="small"
-                rowKey={(l, i) => `${l.skuCode}#${i}`}
-                columns={[
-                  { title: 'SKU', dataIndex: 'skuCode', key: 'skuCode', width: 180, onCell: monoCell },
-                  { title: '名称', dataIndex: 'name', key: 'name' },
-                  {
-                    title: '数量',
-                    dataIndex: 'quantity',
-                    key: 'quantity',
-                    align: 'right',
-                    width: 120,
-                    onCell: numCell,
-                    render: (v: number, l) => fmtQty(v, l.unit),
-                  },
-                  {
-                    title: '已入账',
-                    dataIndex: 'fulfilledQty',
-                    key: 'fulfilledQty',
-                    align: 'right',
-                    width: 120,
-                    onCell: numCell,
-                    render: (v: number | null | undefined, l) =>
-                      v == null ? (
-                        <Typography.Text type="secondary">—</Typography.Text>
-                      ) : (
-                        fmtQty(Math.abs(v), l.unit)
-                      ),
-                  },
-                  { title: '批次', dataIndex: 'batchNo', key: 'batchNo', width: 110, onCell: monoCell },
-                  {
-                    title: '目标库位',
-                    dataIndex: 'locationCode',
-                    key: 'locationCode',
-                    width: 110,
-                    onCell: monoCell,
-                  },
-                ]}
-                dataSource={r.lines}
-                pagination={false}
-                style={{ maxWidth: 640 }}
-              />
-            ),
-          }}
         />
         <OrderFormModal open={formOpen} onClose={() => setFormOpen(false)} />
         <PutawayModal open={putawayOrder !== null} order={putawayOrder} onClose={() => setPutawayOrder(null)} />
         <ReturnModal open={returnOrder !== null} order={returnOrder} onClose={() => setReturnOrder(null)} />
       </Card>
 
-      {printOrder ? (
-        <Card title={`打印预览：${printOrder.direction === 'in' ? '入库单' : '出库单'} ${printOrder.orderNo}`}>
-          <div id="order-print-area" style={{ maxWidth: 720 }}>
-            <Typography.Title level={4} style={{ marginTop: 0 }}>
-              {printOrder.direction === 'in' ? '入库单' : '出库单'} {printOrder.orderNo}
-            </Typography.Title>
-            <div style={{ fontSize: 12, color: '#444', marginBottom: 8 }}>
-              创建时间：{printOrder.createdAt.slice(0, 19).replace('T', ' ')}
-              {printOrder.returnOfOrderNo ? `　原单号：${printOrder.returnOfOrderNo}` : ''}
-              {printOrder.expectedAt ? `　预计到货：${printOrder.expectedAt}` : ''}
-              {printOrder.partnerName ? `　往来单位：${printOrder.partnerName}` : ''}
-              {printOrder.note ? `　备注：${printOrder.note}` : ''}
-            </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr>
-                  <th style={printTh}>SKU</th>
-                  <th style={printTh}>名称</th>
-                  <th style={printTh}>数量</th>
-                  <th style={printTh}>批次</th>
-                  {printOrder.direction === 'in' ? <th style={printTh}>效期</th> : null}
-                  <th style={printTh}>{printOrder.direction === 'in' ? '目标库位' : '库位'}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {printOrder.lines.map((l, i) => (
-                  <tr key={`${l.skuCode}#${i}`}>
-                    <td style={printTd}>{l.skuCode}</td>
-                    <td style={printTd}>{l.name}</td>
-                    <td style={{ ...printTd, textAlign: 'right' }}>{fmtQty(l.quantity, l.unit)}</td>
-                    <td style={printTd}>{l.batchNo ?? '-'}</td>
-                    {printOrder.direction === 'in' ? (
-                      <td style={printTd}>{l.batchExpiryDate ?? '-'}</td>
-                    ) : null}
-                    <td style={printTd}>{l.locationCode ?? '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div style={{ marginTop: 32, fontSize: 12 }}>签收人签字：______________　　日期：______________</div>
-          </div>
-        </Card>
-      ) : null}
-
-      {/* 打印样式：只让单据可见，其余（侧边栏/工具条/卡片边框）全部隐藏 */}
-      <style>{`
-        @media print {
-          @page { margin: 12mm; }
-          body * { visibility: hidden !important; }
-          #order-print-area, #order-print-area * { visibility: visible !important; }
-          #order-print-area { position: absolute !important; left: 0; top: 0; width: 100%; }
-          #order-print-area tr { page-break-inside: avoid; break-inside: avoid; }
-        }
-      `}</style>
+      <OrderDetailDrawer
+        order={detailOrder}
+        onClose={() => {
+          setDetailId(null);
+          setPinnedDetail(null);
+        }}
+        stateLabel={(state, direction) => stateLabel(snapshot.data, state, direction)}
+        onPrint={(order) => session.printNow([order])}
+      />
+      <PrintRoot
+        id="order-print-area"
+        docs={session.printDocs}
+        renderDoc={(order) => <OrderPrintSheet order={order} />}
+      />
+      <PrintStyle rootId="order-print-area" />
     </div>
   );
 }

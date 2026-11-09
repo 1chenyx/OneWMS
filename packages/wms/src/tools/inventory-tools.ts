@@ -18,6 +18,8 @@ import {
   resolveBatch,
   resolveLocation,
 } from '../state/inventory-policy.js';
+import { assertLooseEnough } from '../state/lpn-policy.js';
+import { appendSerialPlans, planQuantitySerials, rejectSerialKeyWhenOff } from '../state/serial-policy.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
 export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
@@ -29,6 +31,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
     locationCode?: string;
     batchNo?: string;
     batchExpiryDate?: string;
+    serials?: string[];
   }> = {
     id: 'wms.inventory.adjust',
     label: '库存调整',
@@ -45,12 +48,18 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         locationCode: { type: 'string', description: '库位编码（可选，缺省为默认库位 DEFAULT）' },
         batchNo: { type: 'string', description: '批次号（可选，缺省为虚拟批次 DEFAULT；批次随首条入库流水诞生）' },
         batchExpiryDate: { type: 'string', description: '批次效期 YYYY-MM-DD（可选，仅入库；同批次后继必须一致）' },
+        serials: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '序列号（module.serial。SKU 按序列号管理时必填，个数等于本次件数；一件一个号）',
+        },
       },
       required: ['skuCode', 'delta'],
     },
     handler: (params, ctx) => {
       const ws = resolveWorkspace(ctx.workspaceId);
       ws.sync();
+      rejectSerialKeyWhenOff(ws, params);
       const sku = ws.skus.byCode(params.skuCode);
       if (!sku) throw new SkuNotFoundError(params.skuCode);
       const loc = resolveLocation(ws, params.locationCode);
@@ -70,25 +79,50 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
             available,
           );
         }
+        assertLooseEnough(ws, {
+          skuCode: sku.skuCode,
+          skuId: sku.id,
+          locationId: loc.locationId,
+          locationCode: loc.locationCode,
+          batchNo: batch.batchNo,
+          take: -delta,
+          onHand: available,
+        });
       }
+      const serialPlans = planQuantitySerials(ws, {
+        skuId: sku.id,
+        skuCode: sku.skuCode,
+        serialTracked: sku.serialTracked,
+        hasSerials: Object.hasOwn(params, 'serials'),
+        serials: params.serials,
+        quantity: delta,
+        locationId: loc.locationId,
+        batchNo: batch.batchNo,
+        direction: delta > 0 ? 'receive' : 'issue',
+      });
       let orderId: string | undefined;
       if (params.orderNo) {
         const order = ws.orders.byNo(params.orderNo);
         if (!order) throw new OrderNotFoundError(params.orderNo);
         orderId = order.id;
       }
-      ctx.appendEvent(WMS_EVENT_TYPES.inventoryAdjusted, {
-        skuId: sku.id,
-        skuCode: sku.skuCode,
-        delta,
-        reason: params.reason ?? (delta > 0 ? 'inbound' : 'outbound'),
-        locationId: loc.locationId,
-        locationCode: loc.locationCode,
-        batchNo: batch.batchNo,
-        batchExpiryDate: batch.batchExpiryDate,
-        orderId,
-        orderNo: params.orderNo,
-      });
+      const writeAdjust = () => {
+        ctx.appendEvent(WMS_EVENT_TYPES.inventoryAdjusted, {
+          skuId: sku.id,
+          skuCode: sku.skuCode,
+          delta,
+          reason: params.reason ?? (delta > 0 ? 'inbound' : 'outbound'),
+          locationId: loc.locationId,
+          locationCode: loc.locationCode,
+          batchNo: batch.batchNo,
+          batchExpiryDate: batch.batchExpiryDate,
+          orderId,
+          orderNo: params.orderNo,
+        });
+        appendSerialPlans(ctx, serialPlans);
+      };
+      if (serialPlans.length > 0) ws.runAtomic(writeAdjust);
+      else writeAdjust();
       ws.sync();
       return {
         skuId: sku.id,
@@ -106,6 +140,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
     toLocationCode?: string;
     quantity: number;
     batchNo?: string;
+    serials?: string[];
   }> = {
     id: 'wms.inventory.move',
     label: '移库',
@@ -120,12 +155,18 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
         toLocationCode: { type: 'string', description: '目标库位编码（可选，缺省 DEFAULT）' },
         quantity: { type: 'number', minimum: 0.001, maximum: 1000000000, description: '移库数量（正数，支持 3 位小数）' },
         batchNo: { type: 'string', description: '批次号（可选，缺省为虚拟批次 DEFAULT）' },
+        serials: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '序列号（module.serial。SKU 按序列号管理时必填，个数等于移库件数）',
+        },
       },
       required: ['skuCode', 'quantity'],
     },
     handler: (params, ctx) => {
       const ws = resolveWorkspace(ctx.workspaceId);
       ws.sync();
+      rejectSerialKeyWhenOff(ws, params);
       const sku = ws.skus.byCode(params.skuCode);
       if (!sku) throw new SkuNotFoundError(params.skuCode);
       const quantity = assertPositiveQty(params.quantity, 'quantity');
@@ -143,6 +184,28 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
           available,
         );
       }
+      assertLooseEnough(ws, {
+        skuCode: sku.skuCode,
+        skuId: sku.id,
+        locationId: from.locationId,
+        locationCode: from.locationCode,
+        batchNo: batch.batchNo,
+        take: quantity,
+        onHand: available,
+      });
+      const serialPlans = planQuantitySerials(ws, {
+        skuId: sku.id,
+        skuCode: sku.skuCode,
+        serialTracked: sku.serialTracked,
+        hasSerials: Object.hasOwn(params, 'serials'),
+        serials: params.serials,
+        quantity,
+        locationId: from.locationId,
+        batchNo: batch.batchNo,
+        direction: 'move',
+        toLocationId: to.locationId,
+        toBatchNo: batch.batchNo,
+      });
       // 原子落账（M9 runAtomic）：-源 / +目标 两条流水同生共死，杜绝「出旧库位
       // 了没进新库位」的半落账。零新事件类型——移库就是一对普通流水事实。
       ws.runAtomic(() => {
@@ -164,6 +227,7 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
           locationCode: to.locationCode,
           batchNo: batch.batchNo,
         });
+        appendSerialPlans(ctx, serialPlans);
       });
       ws.sync();
       return {

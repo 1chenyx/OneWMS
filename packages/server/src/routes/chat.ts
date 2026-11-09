@@ -1,14 +1,17 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import {
+  OLLAMA_DEFAULT_BASE_URL,
   createAgentFromDef,
   createVercelLlmProvider,
   readAgentDefs,
   resolveLanguageModel,
   type AgentMessage,
+  type AiProviderConfig,
   type AskReply,
   type LlmProvider,
 } from '@one/ai';
+import type { AiModelProfile } from '../ai-config-store.js';
 import type { AppContext } from '../context.js';
 import {
   attachmentSessionTools,
@@ -34,11 +37,16 @@ import { scheduleMemoryExtraction } from '../memory-hook.js';
  *    回答经生成器 next(reply) 续流；ui.ask 不穿工具总线，天然不落 oplog；
  *  - 事件 JSON 即协议（event 名与 data.type 一致，便于浏览器直连调试）。
  *
- *  记忆（自动记忆闭环）：
- *  - 装配时读记忆投影注入 System Prompt（memories 快照以消息为粒度）；
+ *  记忆（章节账本的三层注入）：
+ *  - T0 常驻：装配时把 personal 全文 + project 章节目录渲染进 System Prompt
+ *    （ctx.memory.sections.resident()，快照以消息为粒度）；
+ *  - T2 预取：本轮用户消息命中章节关键词/标题 → 直接注入 0–2 节全文
+ *    （matchSections 是确定性字符串匹配，零 LLM 成本）；
+ *  - T1 按需：细节由模型自己调 memory.read(sectionKey) 取，不在装配期塞；
  *  - turn-done 提交历史后 fire-and-forget 触发提取（scheduleMemoryExtraction
  *    ——不阻塞 SSE、失败静默、模块级串行；落账走工具总线 actor
- *    ai:memory-auto@{nodeId}，source='auto'）。中断/失败轮不提交也不提取。
+ *    ai:memory-auto@{nodeId}）。提取只做 memory.append 追加；整节归并只在
+ *    T0 超预算或管理页人工「整理」时发生。中断/失败轮不提交也不提取。
  */
 
 /** 空闲会话回收阈值（本地单机量级，内存护栏而非精确策略） */
@@ -65,8 +73,10 @@ interface ChatSession {
   pendingAsk?: PendingAsk;
 }
 
-/** 对话里点选的模型名：空着表示沿用助手或当前配置 */
+/** 对话里点选的模型名：空着表示沿用助手或当前配置（旧客户端，同一接入点换名字） */
 const MODEL_NAME = /^[\w.:/+@-]{1,80}$/;
+/** 已保存模型的 id（随机十六进制，或旧文件升级来的 legacy） */
+const PROFILE_ID = /^[\w-]{1,64}$/;
 
 function readRequestedModel(raw: unknown): { ok: true; model?: string } | { ok: false; message: string } {
   if (raw === undefined || raw === null || raw === '') return { ok: true };
@@ -76,9 +86,21 @@ function readRequestedModel(raw: unknown): { ok: true; model?: string } | { ok: 
   return { ok: true, model: raw.trim() };
 }
 
+function readProfileId(raw: unknown): { ok: true; profileId?: string } | { ok: false; message: string } {
+  if (raw === undefined || raw === null || raw === '') return { ok: true };
+  if (typeof raw !== 'string' || !PROFILE_ID.test(raw.trim())) {
+    return { ok: false, message: '模型无效' };
+  }
+  return { ok: true, profileId: raw.trim() };
+}
+
+function endpointOf(kind: AiProviderConfig['kind'], baseUrl: string | undefined): string {
+  return (baseUrl ?? (kind === 'ollama' ? OLLAMA_DEFAULT_BASE_URL : '')).trim().replace(/\/$/, '');
+}
+
 /**
- * 解析本条消息的 LLM 通道：指定了 model 且异于进程配置 → 现场重建
- * 轻量 provider（同一接入点换模型）；否则用进程级通道。
+ * 旧客户端只传模型名：还在当前接入点上换名字。
+ * 没传、或和进程配置相同 → 用进程级通道。
  */
 function providerFor(ctx: AppContext, base: LlmProvider, model: string | undefined): LlmProvider {
   const cfg = ctx.aiConfig;
@@ -86,6 +108,36 @@ function providerFor(ctx: AppContext, base: LlmProvider, model: string | undefin
     return createVercelLlmProvider(resolveLanguageModel({ ...cfg, model }));
   }
   return base;
+}
+
+/**
+ * 对话里点的是用户保存的那一条。地址和密钥跟那一条走。
+ * 请求里再带了别的模型名，就在这一条上换名字，不把别的厂商的名字套到当前接入点。
+ * 换完和进程里正在用的是同一条时直接复用，避免无谓重建。
+ */
+function providerForProfile(
+  ctx: AppContext,
+  base: LlmProvider,
+  profile: AiModelProfile,
+  model?: string,
+): LlmProvider {
+  const chosen = model && model !== profile.model ? model : profile.model;
+  const cfg = ctx.aiConfig;
+  const same =
+    cfg !== undefined &&
+    cfg.kind === profile.kind &&
+    cfg.model === chosen &&
+    endpointOf(cfg.kind, cfg.baseUrl) === endpointOf(profile.kind, profile.baseUrl) &&
+    (cfg.apiKey ?? '') === (profile.apiKey ?? '');
+  if (same) return base;
+  return createVercelLlmProvider(
+    resolveLanguageModel({
+      kind: profile.kind,
+      model: chosen,
+      baseUrl: profile.baseUrl,
+      apiKey: profile.apiKey,
+    }),
+  );
 }
 
 export function chatRoutes(ctx: AppContext): Hono {
@@ -127,11 +179,22 @@ export function chatRoutes(ctx: AppContext): Hono {
         agentId?: unknown;
         attachments?: unknown;
         model?: unknown;
+        profileId?: unknown;
       });
       const message = typeof body.message === 'string' ? body.message.trim() : '';
+      const picked = readProfileId(body.profileId);
+      if (!picked.ok) {
+        return c.json({ code: 'BAD_REQUEST', message: picked.message }, 400);
+      }
       const requested = readRequestedModel(body.model);
       if (!requested.ok) {
         return c.json({ code: 'BAD_REQUEST', message: requested.message }, 400);
+      }
+      const profile = picked.profileId
+        ? ctx.aiCatalog.profiles.find((item) => item.id === picked.profileId)
+        : undefined;
+      if (picked.profileId && !profile) {
+        return c.json({ code: 'BAD_REQUEST', message: '没有这条已配置的模型' }, 400);
       }
       const taken = takeAttachments(body.attachments);
       if (!taken.ok) {
@@ -161,8 +224,18 @@ export function chatRoutes(ctx: AppContext): Hono {
       // 现场装配（M16）：定义 → 工具授权 + 人设 prompt + 模型覆盖 + actor；
       // 记忆注入（快照以消息为粒度——上轮提取结果下一轮对话即生效）
       // 本会话有附件时才挂查看/落库工具。只读助手没有业务写权限，不能落库。
-      const agentProvider = providerFor(ctx, base, requested.model ?? def.model);
+      // 点了已保存的厂商就用那一条的地址和密钥；请求里的模型名只在这一条上换。
+      // 没点已保存的，仍是当前配置，模型名可被助手定义覆盖。
+      const agentProvider = profile
+        ? providerForProfile(ctx, base, profile, requested.model)
+        : providerFor(ctx, base, requested.model ?? def.model);
       ctx.memory.sync();
+      // T0 常驻段（personal 全文 + project 目录）：装配期取一次快照，随消息发给模型
+      const resident = ctx.memory.sections.resident();
+      // T2 预取：本轮用户消息命中的 project 章节直接带全文（确定性匹配，零 LLM 成本）
+      const prefetched = ctx.memory.sections
+        .matchSections(userText, 2)
+        .map((s) => ({ title: s.title, bodyMd: s.bodyMd }));
       const catalog = ctx.ws.tools.list();
       const allowApply = def.tools.some((id) => {
         const tool = catalog.find((item) => item.id === id);
@@ -170,7 +243,7 @@ export function chatRoutes(ctx: AppContext): Hono {
       });
       const agent = createAgentFromDef(ctx.ws, agentProvider, def, {
         nodeId: ctx.core.nodeId,
-        memories: ctx.memory.memory.list(),
+        memory: { resident: resident.text, prefetched },
         sessionTools:
           session.attachments.length > 0
             ? attachmentSessionTools({

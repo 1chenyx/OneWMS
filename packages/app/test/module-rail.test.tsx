@@ -3,6 +3,7 @@ import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App as AntApp, ConfigProvider } from 'antd';
+import type { ProfileSnapshot } from '@one/core';
 import App from '../src/App';
 import { AppNavProvider, useAppNav } from '../src/app-nav';
 import ModuleRail from '../src/components/ModuleRail';
@@ -26,12 +27,18 @@ function Probe() {
   );
 }
 
-function renderRail() {
+function renderRail(profile?: ProfileSnapshot) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  if (profile) client.setQueryData(['profile'], profile);
   return render(
     <ConfigProvider>
-      <AppNavProvider>
-        <Probe />
-      </AppNavProvider>
+      <QueryClientProvider client={client}>
+        <AppNavProvider>
+          <Probe />
+        </AppNavProvider>
+      </QueryClientProvider>
     </ConfigProvider>,
   );
 }
@@ -65,6 +72,8 @@ describe('ModuleRail：悬停浮出功能网格', () => {
     await user.click(screen.getByRole('button', { name: '作业' }));
     expect(screen.getByText('出入库单')).toBeInTheDocument();
     expect(screen.getByText('拣货单')).toBeInTheDocument();
+    expect(screen.queryByText('序列号')).not.toBeInTheDocument();
+    expect(screen.queryByText('托盘')).not.toBeInTheDocument();
     expect(screen.getByTestId('module-flyout-grid').style.gridTemplateColumns).toBe('1fr 1fr');
     expect(screen.getByTestId('page').textContent).toBe('skus');
   });
@@ -82,10 +91,46 @@ describe('ModuleRail：悬停浮出功能网格', () => {
     expect(screen.getByTestId('module-flyout-grid').style.gridTemplateColumns).toBe('1fr 1fr');
     expect(order.closest('[role="dialog"]')).toHaveAccessibleName('作业功能');
 
+    expect(screen.queryByText('序列号')).not.toBeInTheDocument();
     await user.click(screen.getByText('库存'));
     expect(screen.getByTestId('page').textContent).toBe('inventory');
     await waitFor(() => {
       expect(screen.queryByText('出入库单')).not.toBeInTheDocument();
     });
+  });
+
+  it('模块开启后，作业里出现序列号和托盘，并可以进入', async () => {
+    const user = userEvent.setup();
+    const profile: ProfileSnapshot = {
+      workspaceId: 'ws',
+      version: 1,
+      schema: { entities: {} },
+      workflows: {},
+      modules: {
+        'module.serial': { enabled: true, version: '0.1.0' },
+        'module.lpn': { enabled: true, version: '0.1.0' },
+      },
+      roles: {},
+    };
+    renderRail(profile);
+    await user.click(screen.getByRole('button', { name: '作业' }));
+    expect(screen.getByText('序列号')).toBeInTheDocument();
+    expect(screen.getByText('托盘')).toBeInTheDocument();
+    await user.click(screen.getByText('托盘'));
+    expect(screen.getByTestId('page').textContent).toBe('pallets');
+  });
+
+  it('系统里可以进入流程和模块', async () => {
+    const user = userEvent.setup();
+    renderRail();
+    await user.click(screen.getByRole('button', { name: '系统' }));
+    expect(screen.getByText('流程')).toBeInTheDocument();
+    expect(screen.getByText('模块')).toBeInTheDocument();
+    expect(screen.getByText('设置')).toBeInTheDocument();
+    await user.click(screen.getByText('流程'));
+    expect(screen.getByTestId('page').textContent).toBe('flows');
+    await user.click(screen.getByRole('button', { name: '系统' }));
+    await user.click(screen.getByText('模块'));
+    expect(screen.getByTestId('page').textContent).toBe('modules');
   });
 });

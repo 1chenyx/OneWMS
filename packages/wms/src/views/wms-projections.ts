@@ -8,6 +8,22 @@ import { PickingView } from './picking-view.js';
 import { SkuView } from './sku-view.js';
 import { StocktakeView } from './stocktake-view.js';
 import { WarehouseView } from './warehouse-view.js';
+import { SerialView } from './serial-view.js';
+import { LpnView } from './lpn-view.js';
+
+/**
+ * WMS 投影组的版本号（sku / location / partner / order / inventory /
+ * stocktake / picking / warehouse / serial / lpn 十张派生表）。
+ *
+ * **改了本文件或任何 *-view.ts 里的派生语义就把它 +1**：库存聚合口径、
+ * 单据状态机的投影结果、批次/序列号的分配规则、盘点快照的生成时机、
+ * 事件应用顺序（见下方 applyEvent 的注释）。只加表、只加列、只改查询 → 不用动。
+ *
+ * +1 之后不需要写迁移脚本：用户下次启动会自动清空这十张表并从 oplog 全量重放
+ * （见 core/projection/projection-version.ts）。这也是它替代「手写 table_info 探测
+ * + DROP」的地方——探测代码只能覆盖你想起来的那几种改动，版本号覆盖全部。
+ */
+export const WMS_PROJECTION_VERSION = 1;
 
 /** WMS 投影组：统一事件应用顺序与投影清理，供增量追账和全量重放共用。 */
 export class WmsProjections {
@@ -19,6 +35,8 @@ export class WmsProjections {
   readonly stocktakes: StocktakeView;
   readonly pickings: PickingView;
   readonly warehouses: WarehouseView;
+  readonly serials: SerialView;
+  readonly lpns: LpnView;
 
   constructor(
     private readonly db: Database.Database,
@@ -34,12 +52,16 @@ export class WmsProjections {
     // 拣货行展示联查 SKU（投影层互不依赖——联查走查询层；此处仅事件分发）。
     this.pickings = new PickingView(db, workspaceId);
     this.warehouses = new WarehouseView(db, workspaceId);
+    this.serials = new SerialView(db, workspaceId);
+    this.lpns = new LpnView(db, workspaceId);
   }
 
   applyEvent(envelope: EventEnvelope): void {
     this.skus.applyEvent(envelope);
     this.locations.applyEvent(envelope);
     this.warehouses.applyEvent(envelope);
+    this.serials.applyEvent(envelope);
+    this.lpns.applyEvent(envelope);
     this.partners.applyEvent(envelope);
     this.orders.applyEvent(envelope);
     this.inventory.applyEvent(envelope);
@@ -51,6 +73,9 @@ export class WmsProjections {
     this.db.prepare(`DELETE FROM wms_sku WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_location WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_warehouse WHERE workspace_id = ?`).run(this.workspaceId);
+    this.db.prepare(`DELETE FROM wms_serial WHERE workspace_id = ?`).run(this.workspaceId);
+    this.db.prepare(`DELETE FROM wms_lpn_line WHERE workspace_id = ?`).run(this.workspaceId);
+    this.db.prepare(`DELETE FROM wms_lpn WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_partner WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_order WHERE workspace_id = ?`).run(this.workspaceId);
     this.db.prepare(`DELETE FROM wms_order_line WHERE workspace_id = ?`).run(this.workspaceId);

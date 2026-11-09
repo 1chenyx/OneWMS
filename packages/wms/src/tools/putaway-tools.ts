@@ -9,6 +9,8 @@ import {
   WorkflowNotFoundError,
 } from '../errors.js';
 import { codeOfLocation, resolveBatch, resolveLocation } from '../state/inventory-policy.js';
+import { assertLooseEnough } from '../state/lpn-policy.js';
+import { appendSerialPlans, planPutawaySerials } from '../state/serial-policy.js';
 import {
   assertTransition,
   WORKFLOW_BY_DIRECTION,
@@ -105,6 +107,15 @@ export function createPutawayTools(resolveWorkspace: WorkspaceResolver): ToolDef
             available,
           );
         }
+        assertLooseEnough(ws, {
+          skuCode: sku.skuCode,
+          skuId: sku.id,
+          locationId: from.locationId,
+          locationCode: from.locationCode,
+          batchNo: batch.batchNo,
+          take: line.quantity,
+          onHand: available,
+        });
         if (to.locationId === from.locationId) continue; // 目标 = 源：无流水，纯确认
         moves.push({
           line,
@@ -116,6 +127,18 @@ export function createPutawayTools(resolveWorkspace: WorkspaceResolver): ToolDef
           batchExpiryDate: line.batchExpiryDate ?? ws.inventory.expiryOfBatch(sku.id, batch.batchNo) ?? undefined,
         });
       }
+      const serialPlans = planPutawaySerials(
+        ws,
+        moves.map((move) => ({
+          skuId: move.line.skuId,
+          skuCode: move.skuCode,
+          fromLocationId: move.fromLocationId,
+          toLocationId: move.toLocationId,
+          batchNo: move.batchNo,
+          quantity: move.line.quantity,
+          serials: move.line.serials,
+        })),
+      );
 
       // 原子落账：状态事实 + 每个归位行一对 ± 流水同生共死（savepoint）
       ws.runAtomic(() => {
@@ -152,6 +175,7 @@ export function createPutawayTools(resolveWorkspace: WorkspaceResolver): ToolDef
             orderNo: order.orderNo,
           });
         }
+        appendSerialPlans(ctx, serialPlans);
       });
       ws.sync();
       return {

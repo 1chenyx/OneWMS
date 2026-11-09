@@ -21,6 +21,7 @@ import {
   resolveBatch,
   resolveLocation,
 } from '../state/inventory-policy.js';
+import { assertStocktakeLines } from '../state/serial-policy.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
 export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
@@ -171,6 +172,18 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
       // delta = 实盘 − 现值，跳过零差行；共享查询已按编码/库位/批次稳定排序。
       const diffs = listStocktakeLineStates(ws, st.id).filter(
         (d): d is StocktakeLineState & { delta: number } => d.delta !== null && d.delta !== 0,
+      );
+      assertStocktakeLines(
+        ws,
+        diffs.map((d) => ({
+          skuId: d.line.skuId,
+          skuCode: d.skuCode,
+          locationId: d.line.locationId,
+          locationCode: d.locationCode,
+          batchNo: d.line.batchNo,
+          delta: d.delta,
+          bookQty: d.bookQty,
+        })),
       );
 
       // 原子落账：状态事实 + 每行差异流水同生共死（savepoint，杜绝半落账）。

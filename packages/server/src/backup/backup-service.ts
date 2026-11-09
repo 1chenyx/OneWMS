@@ -33,6 +33,26 @@ export const DEFAULT_BACKUP_INTERVAL_MS = 86_400_000;
 /** 缺省保留份数（ONE_BACKUP_KEEP，最小 1） */
 export const DEFAULT_BACKUP_KEEP = 7;
 
+/**
+ * 升级前备份的保留份数（独立于 7 份滚动窗口）。
+ *
+ * 升级前备份是「回滚的燃料」，不能被日常滚动清理挤掉；但也不能无限攒——
+ * 每次升级都覆盖上一次的回滚点，留最近几份足够（更早的升级点已被更新的覆盖）。
+ */
+export const PRE_UPGRADE_KEEP = 5;
+
+/** 升级点信息（写进信封，回滚时据此截断水位之后的事件） */
+export interface UpgradePoint {
+  /** 升级前的程序版本；全新库（此前没打过戳）为 null */
+  readonly fromVersion: string | null;
+  readonly toVersion: string;
+  /**
+   * 备份时刻各 actor 的水位（seq, lamport）。
+   * 回滚 = 截断水位之后的事件 + 重放——旧代码看到的世界完全自洽。
+   */
+  readonly watermarks: Record<string, { seq: number; lamport: number }>;
+}
+
 /** 单个备份文件（信封 = 元信息 + 迁移包 + 可选 AI 配置） */
 export interface BackupFile {
   kind: typeof BACKUP_KIND;
@@ -49,6 +69,8 @@ export interface BackupFile {
   aiConfig?: AiProviderConfig;
   /** 页面上保存的全部模型。没有则恢复端只看 aiConfig。 */
   aiCatalog?: AiConfigCatalog;
+  /** 有此字段 = 这是一份升级前备份（文件名也带 -pre-upgrade，两处互为冗余校验） */
+  upgrade?: UpgradePoint;
 }
 
 /** 列表项（不解析文件内容——全部信息来自文件名与 stat） */
@@ -58,10 +80,15 @@ export interface BackupEntry {
   createdAt: string;
   eventCount: number;
   sizeBytes: number;
+  /** true = 升级前备份（不参与日常滚动清理） */
+  preUpgrade: boolean;
 }
 
-/** 文件名正则：`onewms-backup-<YYYYMMDD>-<HHMMSS>-e<事件数>.json`（也是路径穿越的唯一防线） */
-const NAME_RE = /^onewms-backup-(\d{8})-(\d{6})-e(\d+)\.json$/;
+/**
+ * 文件名正则：`onewms-backup-<YYYYMMDD>-<HHMMSS>-e<事件数>[-pre-upgrade].json`
+ * （也是路径穿越的唯一防线）
+ */
+const NAME_RE = /^onewms-backup-(\d{8})-(\d{6})-e(\d+)(-pre-upgrade)?\.json$/;
 
 /** dbPath → 备份目录；:memory: 宿主无落盘位 → null（备份整体禁用） */
 export function resolveBackupDir(dbPath: string, env: NodeJS.ProcessEnv = process.env): string | null {
@@ -91,11 +118,11 @@ export function isValidBackupName(name: string): boolean {
 }
 
 /** Date → 文件名（UTC 紧凑时刻，字典序即时间序） */
-export function backupFileName(createdAt: Date, eventCount: number): string {
+export function backupFileName(createdAt: Date, eventCount: number, preUpgrade = false): string {
   const iso = createdAt.toISOString(); // 2026-11-06T15:34:18.123Z
   const day = iso.slice(0, 10).replace(/-/g, '');
   const time = iso.slice(11, 19).replace(/:/g, '');
-  return `onewms-backup-${day}-${time}-e${eventCount}.json`;
+  return `onewms-backup-${day}-${time}-e${eventCount}${preUpgrade ? '-pre-upgrade' : ''}.json`;
 }
 
 /** 文件名 → ISO 时刻；不合法 → undefined */
@@ -126,7 +153,7 @@ export function listBackups(dir: string): BackupEntry[] {
     } catch {
       continue; // 列目录与 stat 之间被删掉：跳过即可
     }
-    entries.push({ name, createdAt, eventCount: Number(m[3]), sizeBytes });
+    entries.push({ name, createdAt, eventCount: Number(m[3]), sizeBytes, preUpgrade: m[4] !== undefined });
   }
   // 文件名字典序 = 时间序；倒序即「新到旧」
   entries.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
@@ -145,9 +172,9 @@ export function lastBackupAtFromDir(dir: string): number {
  * 写一份备份（原子落盘：temp + rename）。
  * 同名（同一秒内两次备份）时 rename 覆盖——内容更新，不报错。
  */
-export function writeBackup(dir: string, file: BackupFile): string {
+export function writeBackup(dir: string, file: BackupFile, preUpgrade = false): string {
   mkdirSync(dir, { recursive: true });
-  const name = backupFileName(new Date(file.createdAt), file.bundle.eventCount);
+  const name = backupFileName(new Date(file.createdAt), file.bundle.eventCount, preUpgrade);
   const finalPath = join(dir, name);
   const tmpPath = join(dir, `.tmp-${randomBytes(6).toString('hex')}`);
   writeFileSync(tmpPath, JSON.stringify(file, null, 2), 'utf-8');
@@ -163,23 +190,78 @@ export function performBackup(options: {
   aiCatalog?: AiConfigCatalog;
   keep: number;
 }): { name: string; removed: string[] } {
-  const createdAt = new Date().toISOString();
-  const name = writeBackup(options.dir, {
-    kind: BACKUP_KIND,
-    backupVersion: BACKUP_VERSION,
-    createdAt,
-    bundle: options.bundle,
-    ...(options.aiConfig ? { aiConfig: options.aiConfig } : {}),
-    ...(options.aiCatalog && options.aiCatalog.profiles.length > 0 ? { aiCatalog: options.aiCatalog } : {}),
-  });
+  const name = writeBackup(options.dir, buildEnvelope(options));
   return { name, removed: pruneBackups(options.dir, options.keep) };
 }
 
 /**
- * 滚动清理：只留最新 keep 份；顺带删掉 `.tmp-*` 孤儿（硬杀残留）。
+ * 升级前备份（升级闸门专用）：带 -pre-upgrade 标记与 actor 水位，
+ * **不进日常 7 份滚动窗口**，只按 PRE_UPGRADE_KEEP 单独限份。
+ *
+ * 存在的理由是回滚：升级出问题时，这份包 + 水位就是「退回上一个版本」的
+ * 全部原料，不依赖用户当时有没有手动导出。
+ */
+export function performPreUpgradeBackup(options: {
+  dir: string;
+  bundle: MigrationBundle;
+  aiConfig?: AiProviderConfig;
+  aiCatalog?: AiConfigCatalog;
+  upgrade: UpgradePoint;
+}): { name: string; removed: string[] } {
+  const name = writeBackup(options.dir, { ...buildEnvelope(options), upgrade: options.upgrade }, true);
+  return { name, removed: prunePreUpgradeBackups(options.dir, PRE_UPGRADE_KEEP) };
+}
+
+function buildEnvelope(options: {
+  bundle: MigrationBundle;
+  aiConfig?: AiProviderConfig;
+  aiCatalog?: AiConfigCatalog;
+}): BackupFile {
+  return {
+    kind: BACKUP_KIND,
+    backupVersion: BACKUP_VERSION,
+    createdAt: new Date().toISOString(),
+    bundle: options.bundle,
+    ...(options.aiConfig ? { aiConfig: options.aiConfig } : {}),
+    ...(options.aiCatalog && options.aiCatalog.profiles.length > 0 ? { aiCatalog: options.aiCatalog } : {}),
+  };
+}
+
+/**
+ * 滚动清理：日常备份只留最新 keep 份；顺带删掉 `.tmp-*` 孤儿（硬杀残留）。
+ * 升级前备份不在此窗口内——它由 prunePreUpgradeBackups 单独限份。
  * 返回被删的文件名（日志与测试用）。
  */
 export function pruneBackups(dir: string, keep: number): string[] {
+  const removed = sweepTempFiles(dir);
+  const keepCount = Math.max(1, keep);
+  for (const entry of listBackups(dir).filter((e) => !e.preUpgrade).slice(keepCount)) {
+    try {
+      rmSync(join(dir, entry.name));
+      removed.push(entry.name);
+    } catch {
+      // 已被外部删除等：忽略
+    }
+  }
+  return removed;
+}
+
+/** 升级前备份的独立限份（listBackups 已按新到旧排序） */
+export function prunePreUpgradeBackups(dir: string, keep = PRE_UPGRADE_KEEP): string[] {
+  const removed: string[] = [];
+  const keepCount = Math.max(1, keep);
+  for (const entry of listBackups(dir).filter((e) => e.preUpgrade).slice(keepCount)) {
+    try {
+      rmSync(join(dir, entry.name));
+      removed.push(entry.name);
+    } catch {
+      // 同上：删不掉不影响正确性
+    }
+  }
+  return removed;
+}
+
+function sweepTempFiles(dir: string): string[] {
   const removed: string[] = [];
   let names: string[];
   try {
@@ -188,22 +270,12 @@ export function pruneBackups(dir: string, keep: number): string[] {
     return removed;
   }
   for (const name of names) {
-    if (name.startsWith('.tmp-')) {
-      try {
-        rmSync(join(dir, name));
-        removed.push(name);
-      } catch {
-        // 删不掉不影响备份正确性
-      }
-    }
-  }
-  const keepCount = Math.max(1, keep);
-  for (const entry of listBackups(dir).slice(keepCount)) {
+    if (!name.startsWith('.tmp-')) continue;
     try {
-      rmSync(join(dir, entry.name));
-      removed.push(entry.name);
+      rmSync(join(dir, name));
+      removed.push(name);
     } catch {
-      // 已被外部删除等：忽略
+      // 删不掉不影响备份正确性
     }
   }
   return removed;

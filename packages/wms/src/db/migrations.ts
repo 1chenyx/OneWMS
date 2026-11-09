@@ -136,6 +136,55 @@ export function migrateWms(db: SqliteDatabase): void {
       CREATE INDEX IF NOT EXISTS idx_wms_warehouse_ws ON wms_warehouse (workspace_id);
     `);
 
+    // ── 序列号（module.serial）：一件一个号。不是库存主键。
+    //    出库后行还在（status=out），再入库更新同一行。──
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_serial (
+        id           TEXT NOT NULL PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        serial_no    TEXT NOT NULL,
+        sku_id       TEXT NOT NULL,
+        location_id  TEXT NOT NULL,
+        batch_no     TEXT NOT NULL,
+        lpn_id       TEXT,
+        status       TEXT NOT NULL CHECK (status IN ('in', 'out')),
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        UNIQUE (workspace_id, serial_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_serial_sku
+        ON wms_serial (workspace_id, sku_id, status);
+      CREATE INDEX IF NOT EXISTS idx_wms_serial_loc
+        ON wms_serial (workspace_id, location_id, status);
+    `);
+
+    // ── 托盘（module.lpn）：库位上的搬运单元。行数量是装完后的绝对件数，
+    //    占用的是已有库位+批次桶，不另开库存键。location_id 可以是虚拟 DEFAULT。──
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_lpn (
+        id           TEXT NOT NULL PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        lpn_code     TEXT NOT NULL,
+        location_id  TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        UNIQUE (workspace_id, lpn_code)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_lpn_ws ON wms_lpn (workspace_id);
+      CREATE INDEX IF NOT EXISTS idx_wms_lpn_loc ON wms_lpn (workspace_id, location_id);
+
+      CREATE TABLE IF NOT EXISTS wms_lpn_line (
+        id           TEXT NOT NULL PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        lpn_id       TEXT NOT NULL,
+        sku_id       TEXT NOT NULL,
+        batch_no     TEXT NOT NULL,
+        quantity     REAL NOT NULL,
+        UNIQUE (workspace_id, lpn_id, sku_id, batch_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_lpn_line_lpn ON wms_lpn_line (workspace_id, lpn_id);
+    `);
+
     // ── 往来单位主数据（M21：供应商/客户统一实体，kind 区分；
     //    业务键：workspace + partner_code；引用完整性靠工具层守卫（无外键声明））──
     db.exec(`
@@ -258,6 +307,7 @@ export function migrateWms(db: SqliteDatabase): void {
     } else {
       const types = [
         WMS_EVENT_TYPES.orderCreated,
+        WMS_EVENT_TYPES.orderRevised,
         WMS_EVENT_TYPES.orderStateChanged,
         WMS_EVENT_TYPES.orderConflictAccepted,
         WMS_EVENT_TYPES.orderConflictDismissed,

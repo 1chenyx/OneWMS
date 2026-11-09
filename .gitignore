@@ -14,6 +14,10 @@ data/
 # 测试
 .vitest/
 
+# updater 签名私钥：泄露 = 任何人都能给用户推「合法签名」的更新包。
+# 公钥已内联在 tauri.conf.json，私钥永不入库；发布机/CI 各自持有（CI 用 secret）。
+packages/desktop/src-tauri/.updater/
+
 # 运行/测试日志输出
 *.log
 *-out.txt

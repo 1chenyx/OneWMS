@@ -183,6 +183,32 @@ describe('validateManifest（结构校验纯函数）', () => {
     expect(fieldErrors).toContain('重复');
     expect(fieldErrors).toContain('类型非法');
 
+    const badRecords = makeManifest({
+      records: [
+        { id: 'Inventory', label: '库存', fields: [{ key: 'quantity', label: '余量' }] },
+        {
+          id: 'inventory',
+          label: '',
+          aliases: ['inventory'],
+          fields: [
+            { key: 'quantity', label: '余量' },
+            { key: 'quantity', label: '重复' },
+          ],
+        },
+      ],
+    });
+    const recordErrors = validateManifest(badRecords).errors.map((e) => e.message).join();
+    expect(recordErrors).toContain('id 非法');
+    expect(recordErrors).toContain('缺少 label');
+    expect(recordErrors).toContain('别名');
+    expect(recordErrors).toContain('重复');
+
+    const badAlias = makeManifest({ aliases: ['module.expiry', '预报', '预报'], workflowAliases: { Inbound: ['入库'] } });
+    const aliasErrors = validateManifest(badAlias).errors.map((e) => e.message).join();
+    expect(aliasErrors).toContain('模块 id');
+    expect(aliasErrors).toContain('别名重复');
+    expect(aliasErrors).toContain('流程 id 非法');
+
     const badTool = makeManifest({
       tools: [{
         id: 'no-namespace', // 无命名空间

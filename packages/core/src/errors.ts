@@ -131,3 +131,17 @@ export class MigrationError extends CoreError {
     super('MIGRATION_ERROR', message);
   }
 }
+
+// ── 升级闸门 ───────────────────────────────────────────
+
+/**
+ * 数据目录比当前程序新（降级启动被拒）。
+ *
+ * message 是给最终用户看的人话，不是给开发者的堆栈——旧程序打开新数据
+ * 只会静默写坏投影（表在、语义变了），所以宁可拒绝启动。
+ */
+export class DataVersionError extends CoreError {
+  constructor(message: string) {
+    super('DATA_VERSION_DOWNGRADE', message);
+  }
+}

@@ -1,4 +1,5 @@
 import type { ModuleManifest } from '@one/core';
+import { ORDER_RETURN_FIELD, extraRecord } from './builtin-records.js';
 
 /**
  * module.return —— 退货。
@@ -16,5 +17,7 @@ export function returnManifest(): ModuleManifest {
     version: '0.1.0',
     capabilities: ['db.read', 'events.subscribe'],
     dependencies: { modules: ['core.wms'] },
+    aliases: ['客退', '退供'],
+    records: [extraRecord('order', '单据', [ORDER_RETURN_FIELD])],
   };
 }

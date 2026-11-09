@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
 import type { InventoryListPage, InventoryRow, Location, Order, Partner, Sku } from './client';
 import type { ListPage } from './page';
@@ -6,6 +6,15 @@ import type { ListPage } from './page';
 /** Profile 快照：动态列 / 流转按钮的数据源（切页挂载即刷新，提议确认后自然可见） */
 export function useProfileSnapshot() {
   return useQuery({ queryKey: ['profile'], queryFn: api.profileSnapshot });
+}
+
+/** 模块目录：名字和说明很少变，和快照的开关分开缓存 */
+export function useProfileCatalog() {
+  return useQuery({
+    queryKey: ['profile-catalog'],
+    queryFn: api.profileCatalog,
+    staleTime: 60_000,
+  });
 }
 
 // ── SKU ──────────────────────────────────────────────
@@ -34,6 +43,7 @@ export function useSkus(
       : ['skus', q ?? '', includeArchived ? 'all' : 'active'],
     queryFn: async (): Promise<Sku[] | ListPage<Sku>> =>
       page ? api.skus({ ...base, limit: page.limit, offset: page.offset }) : api.skus(base),
+    placeholderData: page ? keepPreviousData : undefined,
   }) as ReturnType<typeof useQuery<Sku[]>> | ReturnType<typeof useQuery<ListPage<Sku>>>;
 }
 
@@ -56,6 +66,7 @@ export function useUpdateSku() {
         barcode?: string;
         reorderPoint?: number;
         unit?: string;
+        serialTracked?: boolean;
         extData?: Record<string, unknown>;
       };
     }) => api.updateSku(params.skuCode, params.body),
@@ -120,6 +131,7 @@ export function usePartners(query?: {
       }
       return api.partners(query);
     },
+    placeholderData: paged ? keepPreviousData : undefined,
   }) as ReturnType<typeof useQuery<Partner[]>> | ReturnType<typeof useQuery<ListPage<Partner>>>;
 }
 
@@ -267,6 +279,7 @@ export function useOrders(
       : ['orders', direction ?? 'all'],
     queryFn: async (): Promise<Order[] | ListPage<Order>> =>
       page ? api.orders(direction, page) : api.orders(direction),
+    placeholderData: page ? keepPreviousData : undefined,
   }) as ReturnType<typeof useQuery<Order[]>> | ReturnType<typeof useQuery<ListPage<Order>>>;
 }
 
@@ -275,6 +288,17 @@ export function useCreateOrder() {
   return useMutation({
     mutationFn: api.createOrder,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['orders'] }),
+  });
+}
+
+export function useReviseOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { orderNo: string; body: Parameters<typeof api.reviseOrder>[1] }) =>
+      api.reviseOrder(params.orderNo, params.body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['orders'] });
+    },
   });
 }
 
@@ -334,6 +358,7 @@ export function useInventory(query?: {
       : ['inventory'],
     queryFn: async (): Promise<InventoryRow[] | InventoryListPage> =>
       query ? api.inventory(query) : api.inventory(),
+    placeholderData: query ? keepPreviousData : undefined,
   }) as ReturnType<typeof useQuery<InventoryRow[]>> | ReturnType<typeof useQuery<InventoryListPage>>;
 }
 
@@ -388,19 +413,48 @@ export function useExpiryBoard() {
 
 // ── 盘点（M17）────────────────────────────────────────
 
-/** 实体库位清单（盘点范围勾选的数据源；DEFAULT 虚拟桶不在列） */
+/** 实体库位清单。不传 page 时拉全量（盘点范围勾选）；传入时按页要。DEFAULT 虚拟桶不在列。 */
 export function useLocations(): ReturnType<typeof useQuery<Location[]>>;
-export function useLocations(page: { limit: number; offset: number }): ReturnType<
-  typeof useQuery<ListPage<Location>>
->;
-export function useLocations(page?: {
+export function useLocations(page: {
+  q?: string;
   limit: number;
   offset: number;
+  warehouseCode?: string;
+  unassigned?: boolean;
+}): ReturnType<typeof useQuery<ListPage<Location>>>;
+export function useLocations(page?: {
+  q?: string;
+  limit: number;
+  offset: number;
+  warehouseCode?: string;
+  unassigned?: boolean;
 }): ReturnType<typeof useQuery<Location[]>> | ReturnType<typeof useQuery<ListPage<Location>>> {
+  const paged = page?.limit != null;
+  const q = page?.q;
+  const limit = page?.limit;
+  const offset = page?.offset ?? 0;
+  const warehouseCode = page?.warehouseCode ?? '';
+  const unassigned = page?.unassigned === true;
+  const scopeKey = unassigned ? 'unassigned' : warehouseCode;
   return useQuery({
-    queryKey: page ? ['locations', page.limit, page.offset] : ['locations'],
+    queryKey: paged ? ['locations', q ?? '', limit, offset, scopeKey] : ['locations'],
     queryFn: async (): Promise<Location[] | ListPage<Location>> =>
-      page ? api.locations(page) : api.locations(),
+      limit != null
+        ? api.locations({
+            q,
+            limit,
+            offset,
+            ...(unassigned ? { unassigned: true } : warehouseCode ? { warehouseCode } : {}),
+          })
+        : api.locations(),
+    // 翻页时留着上一页，避免表格闪空。换了仓库或搜索词就丢掉，免得把别的仓库的库位闪在当前仓库下面。
+    placeholderData: paged
+      ? (previousData, previousQuery) => {
+          const prevKey = previousQuery?.queryKey;
+          if (!prevKey || prevKey[1] !== (q ?? '') || prevKey[4] !== scopeKey) return undefined;
+          return previousData;
+        }
+      : undefined,
   }) as ReturnType<typeof useQuery<Location[]>> | ReturnType<typeof useQuery<ListPage<Location>>>;
 }
 
@@ -532,7 +586,7 @@ export function useConfirmProposal() {
   });
 }
 
-/** 提议配置变更（M21 设置页「流程与模块」入口；AI 提议同一队列） */
+/** 提议配置变更（流程页、模块页入口；AI 提议同一队列） */
 export function useProposeProfile() {
   return useMutation({
     mutationFn: (params: {
@@ -569,7 +623,7 @@ export function useSyncRun() {
 
 // ── 已配对同步节点（扫码组网）──────────────────────────
 
-/** 本端局域网地址（NodeTab 二维码的值来源） */
+/** 本端局域网地址（设置 → 设备页二维码的值来源） */
 export function useLanAddress() {
   return useQuery({ queryKey: ['lan-address'], queryFn: api.lanAddress });
 }

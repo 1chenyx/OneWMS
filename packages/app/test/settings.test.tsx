@@ -8,10 +8,8 @@ import SettingsPage from '../src/pages/SettingsPage';
 /**
  * 设置页测试（M8）：mock 数据层 hooks。
  * 覆盖关键路径：
- *  - 节点名片：hello 数据渲染 + 局域网地址二维码；
- *  - 同步：已配对节点清单 + 添加（成功/失败原因）/ 移除 + 立即同步（peers 由服务端合并）+ 回合结果；
- *  - 备份：清单渲染 + 策略文案 + 立即备份 / 恢复（二次确认）/ 删除 + 禁用面；
- *  - 迁移：选文件 → 导入 → 结果提示。
+ *  - 设备页：hello 数据渲染 + 局域网地址二维码 + 已配对节点（添加/移除/立即同步）；
+ *  - 数据页：备份清单与恢复，以及导出导入。两段在同一页。
  */
 
 const syncRunMock = vi.fn();
@@ -115,6 +113,13 @@ describe('节点名片：hello 数据渲染', () => {
     expect(screen.getByText('v3')).toBeInTheDocument();
     expect(screen.getByText('12')).toBeInTheDocument();
     expect(screen.getByText('2 个')).toBeInTheDocument(); // 水位表 2 个写入通道
+    expect(screen.getByRole('tab', { name: /设备$/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /数据$/ })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: '节点' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: '局域网同步' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: '备份' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: '迁移' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: '流程与模块' })).not.toBeInTheDocument();
   });
 
   it('局域网地址可见 + 二维码绑定该地址（另一台设备照着填就能配对）', () => {
@@ -134,19 +139,22 @@ describe('节点名片：hello 数据渲染', () => {
   });
 });
 
-describe('局域网同步', () => {
-  /** 切到同步 tab（antd Tabs 惰性渲染——不点进去 SyncTab 根本不挂载） */
-  const openSyncTab = async (user: ReturnType<typeof userEvent.setup>) => {
+describe('设备页：局域网配对', () => {
+  /** 设备页是默认页，本机身份和配对清单一起挂上 */
+  const openDevices = async (user: ReturnType<typeof userEvent.setup>) => {
     render(wrap(<SettingsPage />));
-    await user.click(screen.getByText('局域网同步'));
+    await user.click(screen.getByRole('tab', { name: /设备$/ }));
   };
 
   it('已配对节点清单渲染：地址 / 对端节点 ID / 配对时间 / 持久化说明', async () => {
     const user = userEvent.setup();
-    await openSyncTab(user);
+    await openDevices(user);
 
     expect(screen.getByText('http://192.168.1.21:3000')).toBeInTheDocument();
     expect(screen.getByText('node-def-456')).toBeInTheDocument();
+    // 本机地址和配对清单在同一页
+    expect(screen.getByText('http://192.168.1.20:3000')).toBeInTheDocument();
+    expect(screen.getByText('node-abc-123')).toBeInTheDocument();
     expect(screen.getByText(/peers\.json 里，重启仍在/)).toBeInTheDocument();
     expect(screen.queryByText('当前宿主的配对不会保存')).not.toBeInTheDocument();
   });
@@ -154,7 +162,7 @@ describe('局域网同步', () => {
   it('内存库宿主：提示配对不会保存', async () => {
     peersResult = { persisted: false, path: null, peers: [] };
     const user = userEvent.setup();
-    await openSyncTab(user);
+    await openDevices(user);
 
     expect(screen.getByText('当前宿主的配对不会保存')).toBeInTheDocument();
     expect(screen.getByText('还没有配对节点——把对方的地址填进上面的「添加节点」')).toBeInTheDocument();
@@ -167,7 +175,7 @@ describe('局域网同步', () => {
       peers: [],
     });
     const user = userEvent.setup();
-    await openSyncTab(user);
+    await openDevices(user);
 
     await user.type(screen.getByPlaceholderText(/对端地址/), '  http://192.168.1.21:3000  ');
     await user.click(screen.getByRole('button', { name: '添加节点' }));
@@ -186,7 +194,7 @@ describe('局域网同步', () => {
       ),
     );
     const user = userEvent.setup();
-    await openSyncTab(user);
+    await openDevices(user);
 
     await user.type(screen.getByPlaceholderText(/对端地址/), 'http://192.168.1.21:3000');
     await user.click(screen.getByRole('button', { name: '添加节点' }));
@@ -196,7 +204,7 @@ describe('局域网同步', () => {
 
   it('添加节点：地址为空 → 提示先填，不发请求', async () => {
     const user = userEvent.setup();
-    await openSyncTab(user);
+    await openDevices(user);
 
     await user.click(screen.getByRole('button', { name: '添加节点' }));
     expect(await screen.findByText(/请先填写对端地址/)).toBeInTheDocument();
@@ -206,7 +214,7 @@ describe('局域网同步', () => {
   it('移除节点：Popconfirm 确认后按地址调 DELETE', async () => {
     removePeerMock.mockResolvedValueOnce({ removed: true, peers: [] });
     const user = userEvent.setup();
-    await openSyncTab(user);
+    await openDevices(user);
 
     await user.click(screen.getByRole('button', { name: '移除' }));
     expect(await screen.findByText(/只是不再和它同步，两边已有的数据都不受影响/)).toBeInTheDocument();
@@ -220,7 +228,7 @@ describe('局域网同步', () => {
   it('立即同步：不带 peers（服务端自己合并清单与环境变量）', async () => {
     syncRunMock.mockResolvedValueOnce({ results: [] });
     const user = userEvent.setup();
-    await openSyncTab(user);
+    await openDevices(user);
 
     await user.click(screen.getByRole('button', { name: /立即同步/ })); // 带图标 → 可及名含图标 aria-label
     expect(syncRunMock).toHaveBeenCalledWith();
@@ -228,7 +236,7 @@ describe('局域网同步', () => {
   });
 
   it('回合结果渲染：peer 标签 + 拉取/接受统计 + 错误消息', async () => {
-    // 地址避开 NodeTab 的本机地址与清单里的已配对地址（切 tab 后节点页仍挂着，同文案会撞）
+    // 地址避开本机地址和已配对地址（同一页上同文案会撞）
     syncRunResult = {
       results: [
         { peer: 'http://192.168.1.30:3000', status: 'synced', pulled: 3, accepted: 3, skipped: 0, replayed: true },
@@ -236,7 +244,7 @@ describe('局域网同步', () => {
       ],
     };
     const user = userEvent.setup();
-    await openSyncTab(user);
+    await openDevices(user);
 
     expect(screen.getByText('http://192.168.1.30:3000')).toBeInTheDocument(); // peer 作为行标签
     expect(screen.getByText('拉取 3 条 / 接受 3 / 跳过 0 / 已重建投影')).toBeInTheDocument();
@@ -246,15 +254,15 @@ describe('局域网同步', () => {
 });
 
 describe('备份', () => {
-  /** 切到备份 tab（antd Tabs 惰性渲染——不点进去 BackupTab 根本不挂载） */
-  const openBackupTab = async (user: ReturnType<typeof userEvent.setup>) => {
+  /** 切到数据页（antd Tabs 惰性渲染——不点进去备份和导出都不挂载） */
+  const openDataTab = async (user: ReturnType<typeof userEvent.setup>) => {
     render(wrap(<SettingsPage />));
-    await user.click(screen.getByText('备份'));
+    await user.click(screen.getByRole('tab', { name: /数据$/ }));
   };
 
   it('清单渲染：文件名/事件数/大小 + 最新标记 + 策略文案', async () => {
     const user = userEvent.setup();
-    await openBackupTab(user);
+    await openDataTab(user);
 
     expect(screen.getByText('onewms-backup-20261106-153418-e128.json')).toBeInTheDocument();
     expect(screen.getByText('onewms-backup-20261105-153418-e96.json')).toBeInTheDocument();
@@ -270,7 +278,7 @@ describe('备份', () => {
   it('立即备份：调 POST 并提示新文件名', async () => {
     backupCreateMock.mockResolvedValueOnce({ name: 'onewms-backup-20261106-160000-e128.json' });
     const user = userEvent.setup();
-    await openBackupTab(user);
+    await openDataTab(user);
 
     await user.click(screen.getByRole('button', { name: /立即备份/ })); // 带图标 → 可及名含图标 aria-label
     expect(backupCreateMock).toHaveBeenCalledTimes(1);
@@ -280,7 +288,7 @@ describe('备份', () => {
   it('恢复：二次确认后调 restore（带文件名），提示接受/跳过与 AI 配置', async () => {
     backupRestoreMock.mockResolvedValueOnce({ accepted: 5, skipped: 128, replayed: true, aiConfigRestored: true });
     const user = userEvent.setup();
-    await openBackupTab(user);
+    await openDataTab(user);
 
     const restores = screen.getAllByRole('button', { name: '恢复' });
     await user.click(restores[0]!);
@@ -295,7 +303,7 @@ describe('备份', () => {
   it('删除：Popconfirm 确认后调 remove', async () => {
     backupRemoveMock.mockResolvedValueOnce({ backups: [] });
     const user = userEvent.setup();
-    await openBackupTab(user);
+    await openDataTab(user);
 
     await user.click(screen.getAllByRole('button', { name: '删除' })[0]!);
     const confirmButtons = await screen.findAllByRole('button', { name: '删除' });
@@ -315,7 +323,7 @@ describe('备份', () => {
       reason: '当前宿主没有可写的数据目录（内存库），自动备份已关闭',
     };
     const user = userEvent.setup();
-    await openBackupTab(user);
+    await openDataTab(user);
 
     expect(screen.getByText('自动备份已关闭')).toBeInTheDocument();
     expect(screen.getByText(/当前宿主没有可写的数据目录/)).toBeInTheDocument();
@@ -334,7 +342,10 @@ describe('迁移', () => {
 
     const user = userEvent.setup();
     const { container } = render(wrap(<SettingsPage />));
-    await user.click(screen.getByText('迁移'));
+    await user.click(screen.getByRole('tab', { name: /数据$/ }));
+    // 备份清单和导出在同一页，不用再切一次
+    expect(screen.getByText('onewms-backup-20261106-153418-e128.json')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /导出一份/ })).toBeInTheDocument();
 
     // jsdom 下 antd Upload 的隐藏 input 用 fireEvent.change 直接触发（beforeUpload 返回 false → 只入 fileList）
     const fileInput = container.querySelector('input[type="file"]')!;

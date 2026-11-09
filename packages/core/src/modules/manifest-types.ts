@@ -42,6 +42,29 @@ export interface ManifestFieldRequire {
   expectType?: ProfileFieldType;
 }
 
+/** 固定列的一列。不是扩展字段，不能用 profile.propose 增删 */
+export interface ManifestRecordField {
+  key: string;
+  label: string;
+  description?: string;
+}
+
+/**
+ * 业务对象的固定列。
+ * profile.field.query 用它回答「某某有哪些字段」。
+ * 只从已安装模块收集；id、label、aliases 都能当作 entity 传入。
+ */
+export interface ManifestRecord {
+  /** 稳定 id，如 inventory。查询时大小写不敏感 */
+  id: string;
+  /** 中文名，如 库存。也可当作 entity 传入 */
+  label: string;
+  aliases?: string[];
+  /** 给模型的说明：这些列能不能配置、和扩展字段怎么区分 */
+  note?: string;
+  fields: ManifestRecordField[];
+}
+
 /** manifest 工具分区：暴露给 AI/界面的操作声明（handler 注册在代码装载期，安装期与总线事实比对） */
 export interface ManifestTool {
   /** 命名空间.动词.名词（owner 模块前缀，§6 事件/工具命名空间规则） */
@@ -99,6 +122,24 @@ export interface ModuleManifest {
     provides?: ManifestFieldProvide[];
     requires?: ManifestFieldRequire[];
   };
+
+  /**
+   * 固定列。不是扩展字段，不能用 profile.propose 增删。
+   * 用户问「某某有哪些字段」时，profile.field.query 从这里回答。
+   */
+  records?: ManifestRecord[];
+
+  /**
+   * profile.module.query 也能用这些词找到本模块。
+   * 中文名 name 本身已经能匹配，这里只放简称。
+   */
+  aliases?: string[];
+
+  /**
+   * 流程 id → 查询别名。不写入 Profile，不能用 patch 改。
+   * profile.workflow.query 用它认「入库」「出库」。
+   */
+  workflowAliases?: Record<string, string[]>;
 
   tools?: ManifestTool[];
 

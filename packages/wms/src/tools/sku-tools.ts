@@ -3,6 +3,7 @@ import type { ToolDefinition } from '@one/core';
 import { WMS_EVENT_TYPES } from '../events/catalog.js';
 import { SkuAlreadyExistsError, SkuNotFoundError } from '../errors.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
+import { assertCanTrack, rejectSerialTrackedWhenOff } from '../state/serial-policy.js';
 import { assertBarcodeFree, normalizeBarcode } from './tool-guards.js';
 
 export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
@@ -12,6 +13,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     barcode?: string;
     reorderPoint?: number;
     unit?: string;
+    serialTracked?: boolean;
     extData?: Record<string, unknown>;
   }> = {
     id: 'wms.sku.create',
@@ -35,6 +37,10 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
           description: '安全库存（可选，低库存预警阈值；可用量 < 此值时预警，0 或不传 = 不预警）',
         },
         unit: { type: 'string', description: '数量单位（可选，如 kg / 箱 / 件；不传 = 数量不带单位）' },
+        serialTracked: {
+          type: 'boolean',
+          description: '按序列号管理（可选，module.serial）。true = 之后收发必须写每一件的序列号。不传 = 否',
+        },
         extData: { type: 'object', description: '扩展字段键值对（字段注册表声明的自定义字段）' },
       },
       required: ['skuCode', 'name'],
@@ -42,6 +48,10 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     handler: (params, ctx) => {
       const ws = resolveWorkspace(ctx.workspaceId);
       ws.sync();
+      rejectSerialTrackedWhenOff(ws, params);
+      if (params.serialTracked !== undefined && typeof params.serialTracked !== 'boolean') {
+        throw new Error('TOOL_REJECTED: serialTracked 必须是布尔值');
+      }
       if (ws.skus.byCode(params.skuCode)) {
         throw new SkuAlreadyExistsError(params.skuCode);
       }
@@ -57,6 +67,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         barcode,
         reorderPoint: params.reorderPoint ?? 0,
         unit,
+        ...(params.serialTracked === true ? { serialTracked: true } : {}),
         extData: params.extData,
       });
       ws.sync();
@@ -77,6 +88,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     barcode?: string;
     reorderPoint?: number;
     unit?: string;
+    serialTracked?: boolean;
     extData?: Record<string, unknown>;
   }> = {
     id: 'wms.sku.update',
@@ -100,6 +112,10 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
           description: '新的安全库存（可选；不传保持不变，传 0 = 关闭低库存预警）',
         },
         unit: { type: 'string', description: '新的数量单位（可选；不传保持不变，传空串 = 清空）' },
+        serialTracked: {
+          type: 'boolean',
+          description: '按序列号管理（可选，module.serial）。不传 = 不改。已有库存不能改成按号管理；还有在库序列号不能取消',
+        },
         extData: { type: 'object', description: '新的扩展字段（可选，整体替换）' },
       },
       required: ['skuCode'],
@@ -109,6 +125,13 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
       ws.sync();
       const sku = ws.skus.byCode(params.skuCode);
       if (!sku) throw new SkuNotFoundError(params.skuCode);
+      rejectSerialTrackedWhenOff(ws, params);
+      if (Object.hasOwn(params, 'serialTracked')) {
+        if (typeof params.serialTracked !== 'boolean') {
+          throw new Error('TOOL_REJECTED: serialTracked 必须是布尔值');
+        }
+        assertCanTrack(ws, sku.id, sku.skuCode, params.serialTracked);
+      }
       const barcode = params.barcode === undefined ? undefined : normalizeBarcode(params.barcode);
       if (barcode) assertBarcodeFree(ws, barcode, sku.id);
       // 单位（A3）：undefined = 不改；trim 后空串 = 清空（存 ''，读取层归一成 null）
@@ -120,6 +143,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         barcode,
         reorderPoint: params.reorderPoint,
         unit,
+        ...(Object.hasOwn(params, 'serialTracked') ? { serialTracked: params.serialTracked } : {}),
         extData: params.extData,
       });
       ws.sync();

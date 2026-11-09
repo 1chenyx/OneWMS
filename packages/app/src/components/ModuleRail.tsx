@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Popover, theme } from 'antd';
+import { useProfileSnapshot } from '../api/hooks';
 import { useAppNav } from '../app-nav';
 import type { Page } from '../app-nav';
 import { NAV_CATEGORIES, categoryOfPage } from '../nav';
@@ -17,6 +18,7 @@ const FLYOUT_CLOSE_DELAY_S = 0.2;
  */
 export default function ModuleRail() {
   const { page, navigate } = useAppNav();
+  const snapshot = useProfileSnapshot();
   const { token } = theme.useToken();
   const [openKey, setOpenKey] = useState<CategoryKey | null>(null);
   const [hotKey, setHotKey] = useState<CategoryKey | null>(null);
@@ -63,7 +65,14 @@ export default function ModuleRail() {
                 return cur === category.key ? null : cur;
               });
             }}
-            content={<ModuleFlyout category={category} page={page} onPick={pick} />}
+            content={
+              <ModuleFlyout
+                category={category}
+                items={visibleNavItems(category, snapshot.data?.modules)}
+                page={page}
+                onPick={pick}
+              />
+            }
           >
             <button
               type="button"
@@ -101,17 +110,26 @@ export default function ModuleRail() {
 }
 
 /** 浮窗里的具体功能：两列格子（只有一个功能时单格），点一下进入页面 */
+function visibleNavItems<T extends { enabled?: boolean }>(
+  category: NavCategory,
+  modules: Record<string, T> | undefined,
+): NavItem[] {
+  return category.items.filter((item) => item.moduleId == null || modules?.[item.moduleId]?.enabled === true);
+}
+
 function ModuleFlyout({
   category,
+  items,
   page,
   onPick,
 }: {
   category: NavCategory;
+  items: NavItem[];
   page: Page;
   onPick: (page: Page) => void;
 }) {
   const { token } = theme.useToken();
-  const multi = category.items.length > 1;
+  const multi = items.length > 1;
 
   return (
     <div role="dialog" aria-label={`${category.label}功能`} style={{ width: multi ? 280 : 148 }}>
@@ -127,7 +145,7 @@ function ModuleFlyout({
           gap: 8,
         }}
       >
-        {category.items.map((item) => (
+        {items.map((item) => (
           <ModuleTile key={item.page} item={item} active={item.page === page} onPick={onPick} />
         ))}
       </div>

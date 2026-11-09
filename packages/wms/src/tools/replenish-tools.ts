@@ -8,12 +8,14 @@ import {
   ReplenishDisabledError,
   ReplenishEmptyError,
   ReplenishNotShortError,
+  SerialRequiredError,
   SkuNotFoundError,
 } from '../errors.js';
 import {
   listReplenishmentSuggestions,
   type ReplenishmentSuggestion,
 } from '../queries/replenish-queries.js';
+import { serialEnabled } from '../state/serial-policy.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
 /**
@@ -64,6 +66,12 @@ export function createReplenishTools(resolveWorkspace: WorkspaceResolver): ToolD
         }
       }
 
+      if (serialEnabled(ws) && skuCodes) {
+        for (const code of skuCodes) {
+          if (ws.skus.byCode(code)?.serialTracked) throw new SerialRequiredError(code);
+        }
+      }
+
       const suggestions = listReplenishmentSuggestions(ws);
       const byCode = new Map(suggestions.map((row) => [row.skuCode, row]));
       let chosen: ReplenishmentSuggestion[];
@@ -77,6 +85,9 @@ export function createReplenishTools(resolveWorkspace: WorkspaceResolver): ToolD
         chosen.sort((a, b) => b.suggestedQty - a.suggestedQty || a.skuCode.localeCompare(b.skuCode));
       } else {
         chosen = suggestions;
+      }
+      if (serialEnabled(ws)) {
+        chosen = chosen.filter((row) => !ws.skus.byCode(row.skuCode)?.serialTracked);
       }
       if (chosen.length === 0) throw new ReplenishEmptyError();
 

@@ -205,6 +205,13 @@ export class OrderNotFoundError extends CoreError {
   }
 }
 
+/** 修订碰到了已经入账、已结束，或这张单当前不允许的字段 */
+export class OrderReviseRejectedError extends CoreError {
+  constructor(message: string) {
+    super('WMS_ORDER_REVISE_REJECTED', message);
+  }
+}
+
 /** 状态机非法转移（命令侧拒绝——工具校验的第一道墙） */
 export class InvalidTransitionError extends CoreError {
   constructor(direction: string, from: string, to: string, legal: readonly string[]) {

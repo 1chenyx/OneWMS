@@ -197,6 +197,24 @@ describe('module.warehouse', () => {
     expect(buckets).not.toContain(ws.warehouses.byCode('WH-2')!.id);
   });
 
+  it('库位清单可以按仓库或未分仓收窄，不传范围时仍是全量', async () => {
+    await ws.tools.invoke('wms.warehouse.create', { warehouseCode: 'WH-1', name: '一号仓' });
+    await ws.tools.invoke('wms.warehouse.create', { warehouseCode: 'WH-2', name: '二号仓' });
+    await ws.tools.invoke('wms.location.create', { locationCode: 'A-01', name: '一号架', warehouseCode: 'WH-1' });
+    await ws.tools.invoke('wms.location.create', { locationCode: 'A-02', name: '高架', warehouseCode: 'WH-1' });
+    await ws.tools.invoke('wms.location.create', { locationCode: 'B-01', name: '二号架', warehouseCode: 'WH-2' });
+    await ws.tools.invoke('wms.location.create', { locationCode: 'Z-01', name: '散货' });
+
+    const wh1 = ws.warehouses.byCode('WH-1')!.id;
+    const inWh1 = ws.locations.listPage({ warehouseId: wh1, q: '一号', limit: 10, offset: 0 });
+    expect(inWh1.total).toBe(1);
+    expect(inWh1.rows.map((row) => row.locationCode)).toEqual(['A-01']);
+
+    const loose = ws.locations.list(undefined, null);
+    expect(loose.map((row) => row.locationCode)).toEqual(['Z-01']);
+    expect(ws.locations.list().map((row) => row.locationCode)).toEqual(['A-01', 'A-02', 'B-01', 'Z-01']);
+  });
+
   it('重放后仓库、库位归属和库存都还在', async () => {
     await ws.tools.invoke('wms.warehouse.create', { warehouseCode: 'WH-1', name: '一号仓' });
     await ws.tools.invoke('wms.location.create', { locationCode: 'A-01', name: '一号架', warehouseCode: 'WH-1' });

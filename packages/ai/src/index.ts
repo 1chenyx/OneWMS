@@ -4,8 +4,9 @@
  *  - runAgent             编排循环（纯逻辑，Provider 注入可单测）
  *  - createAgentFromDef   按 AgentDefinition 装配助手（M16 多实例 + 工具授权）
  *  - agent-defs           Agent 定义契约 + 内置三件套 + core.ai 模块 manifest
- *  - buildSystemPrompt    System Prompt 组装（v1：业务快照 + 行为规则 + 记忆）
- *  - memory-extract       记忆提取（自动记忆的纯逻辑核心，out-of-band）
+ *  - buildSystemPrompt    System Prompt 组装（业务快照 + 行为规则 + 记忆三层注入的 T0/T2）
+ *  - memory-extract       记忆提取（对话后自动追加要点，out-of-band）
+ *  - memory-consolidate   记忆归并（章节级压缩/纠错，管理页「整理」的纯逻辑核心）
  *  - provider/*           LLM 通信薄适配层（Vercel AI SDK；OpenAI 兼容 / Ollama）
  *
  * 分层纪律与每文件职责见 docs/ARCHITECTURE.md 的 @one/ai 章节。
@@ -37,17 +38,32 @@ export { buildSystemPrompt } from './system-prompt.js';
 export {
   extractMemoryPlan,
   parseMemoryPlan,
+  stripJsonFence,
   EMPTY_MEMORY_PLAN,
-  MAX_SAVES_PER_EXTRACTION,
+  MAX_APPENDS_PER_EXTRACTION,
+  MAX_APPEND_TEXT_LENGTH,
+  SECTION_KEY_PATTERN,
 } from './memory-extract.js';
-export type { MemoryExtractionInput, MemoryPlan } from './memory-extract.js';
+export type { MemoryAppendOp, MemoryExtractionInput, MemoryPlan } from './memory-extract.js';
+
+export {
+  planConsolidation,
+  parseConsolidationPlan,
+  EMPTY_CONSOLIDATION_PLAN,
+  MAX_BODY_LENGTH,
+  MAX_CONSOLIDATE_INPUT_SECTIONS,
+} from './memory-consolidate.js';
+export type { ConsolidationPlan, MemoryRewriteOp } from './memory-consolidate.js';
 
 export { createVercelLlmProvider } from './provider/vercel.js';
 export { resolveLanguageModel, OLLAMA_DEFAULT_BASE_URL } from './provider/config.js';
 export type { AiProviderConfig, AiProviderKind } from './provider/config.js';
 
 export type {
-  AgentMemoryRef,
+  AgentMemoryContext,
+  AgentMemorySectionText,
+  MemorySectionBrief,
+  MemorySectionSnapshot,
   AgentMessage,
   AgentToolMeta,
   LlmProvider,

@@ -5,11 +5,32 @@ import { useCreateOrder, usePartners, useProfileSnapshot, useSkus } from '../api
 import { ApiError } from '../api/client';
 import ScanInput from './ScanInput';
 
+/** 把自由文本拆成序列号。空则省略，模块关闭时调用方不走这里。 */
+function linesWithSerials(
+  lines: { skuCode: string; quantity: number; serialsText?: string }[],
+): { skuCode: string; quantity: number; serials?: string[] }[] {
+  return lines.map((line) => {
+    const serials = splitSerials(line.serialsText);
+    return serials.length > 0
+      ? { skuCode: line.skuCode, quantity: line.quantity, serials }
+      : { skuCode: line.skuCode, quantity: line.quantity };
+  });
+}
+
+function splitSerials(text: string | undefined): string[] {
+  if (!text) return [];
+  return text
+    .split(/[\s,，]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
 /**
  * 建单表单：方向 + 明细行（SKU 下拉来自投影，数量正整数）+ 备注。
  * 提交走 wms.order.create 工具（护栏在 handler：SKU 存在性 / 数量 / 单号唯一）。
  * 扫码录入（M18）：扫条码（或编码）= 已在单中的行数量 +1，未在单中追加一行
  * （数量 1）——逐件扫码累加是收货/拣货的常见节奏。
+ * module.serial 开启时，行上可以填写序列号；关掉时不出现这个输入，提交体与原来一致。
  */
 export default function OrderFormModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { message } = AntApp.useApp();
@@ -19,6 +40,7 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
   const create = useCreateOrder();
   const snapshot = useProfileSnapshot();
   const asnModule = snapshot.data?.modules['module.asn']?.enabled === true;
+  const serialOn = snapshot.data?.modules['module.serial']?.enabled === true;
   const [direction, setDirection] = useState<'in' | 'out'>('in');
   const [asn, setAsn] = useState(false);
 
@@ -50,7 +72,7 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
 
   const submit = async (values: {
     direction: 'in' | 'out';
-    lines: { skuCode: string; quantity: number }[];
+    lines: { skuCode: string; quantity: number; serialsText?: string }[];
     partnerCode?: string;
     note?: string;
     asn?: boolean;
@@ -64,7 +86,7 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
     try {
       const r = await create.mutateAsync({
         direction: values.direction,
-        lines: values.lines,
+        lines: serialOn ? linesWithSerials(values.lines) : values.lines,
         partnerCode: values.partnerCode || undefined,
         note: values.note || undefined,
         ...(values.asn ? { asn: true, ...(expectedAt ? { expectedAt } : {}) } : {}),
@@ -155,33 +177,40 @@ export default function OrderFormModal({ open, onClose }: { open: boolean; onClo
           {(fields, { add, remove }, { errors }) => (
             <>
               {fields.map((field) => (
-                <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 4 }}>
-                  <Form.Item
-                    name={[field.name, 'skuCode']}
-                    rules={[{ required: true, message: '选 SKU' }]}
-                    style={{ marginBottom: 8, minWidth: 260 }}
-                  >
-                    <Select
-                      showSearch
-                      optionFilterProp="label"
-                      placeholder="选择 SKU"
-                      options={(skus ?? []).map((s) => ({
-                        value: s.skuCode,
-                        label: `${s.skuCode} · ${s.name}`,
-                      }))}
-                    />
-                  </Form.Item>
-                  <Form.Item
-                    name={[field.name, 'quantity']}
-                    rules={[{ required: true, message: '数量' }]}
-                    style={{ marginBottom: 8 }}
-                  >
-                    <InputNumber min={0.001} precision={3} placeholder="数量" />
-                  </Form.Item>
-                  {fields.length > 1 ? (
-                    <MinusCircleOutlined onClick={() => remove(field.name)} />
+                <div key={field.key} style={{ marginBottom: 8 }}>
+                  <Space align="baseline" style={{ display: 'flex' }}>
+                    <Form.Item
+                      name={[field.name, 'skuCode']}
+                      rules={[{ required: true, message: '选 SKU' }]}
+                      style={{ marginBottom: 8, minWidth: 260 }}
+                    >
+                      <Select
+                        showSearch
+                        optionFilterProp="label"
+                        placeholder="选择 SKU"
+                        options={(skus ?? []).map((s) => ({
+                          value: s.skuCode,
+                          label: `${s.skuCode} · ${s.name}`,
+                        }))}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name={[field.name, 'quantity']}
+                      rules={[{ required: true, message: '数量' }]}
+                      style={{ marginBottom: 8 }}
+                    >
+                      <InputNumber min={0.001} precision={3} placeholder="数量" />
+                    </Form.Item>
+                    {fields.length > 1 ? (
+                      <MinusCircleOutlined onClick={() => remove(field.name)} />
+                    ) : null}
+                  </Space>
+                  {serialOn ? (
+                    <Form.Item name={[field.name, 'serialsText']} style={{ marginBottom: 0 }}>
+                      <Input.TextArea rows={2} placeholder="序列号，每行一个，或用逗号、空格分开。按件管理时每件一个" />
+                    </Form.Item>
                   ) : null}
-                </Space>
+                </div>
               ))}
               <Button
                 type="dashed"

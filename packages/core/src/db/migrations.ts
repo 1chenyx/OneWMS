@@ -1,4 +1,5 @@
 import type { Database as SqliteDatabase } from 'better-sqlite3';
+import { DataVersionError } from '../errors.js';
 
 /**
  * 内核表结构（领域无关；领域表由领域模块通过字段注册表声明）。
@@ -11,8 +12,32 @@ import type { Database as SqliteDatabase } from 'better-sqlite3';
  */
 export const SCHEMA_VERSION = 4;
 
+/**
+ * 本代码还能打开的最低表结构版本（读旧写新的下界）。
+ *
+ * 现状所有建表都是 CREATE TABLE IF NOT EXISTS，v1..v3 的老库跑一遍即补齐，
+ * 所以下界是 1。将来若某次变更真的无法从老结构前滚（改列语义、拆表），
+ * 就把这个值提到「必须先经过的中间版本」，逼用户走升级链而不是硬开。
+ */
+export const MIN_SCHEMA_VERSION = 1;
+
 export function migrate(db: SqliteDatabase): void {
   const current = db.pragma('user_version', { simple: true }) as number;
+  // 降级拒绝：库比程序新时，表都在但语义已变——静默通过等于让旧代码写坏投影。
+  if (current > SCHEMA_VERSION) {
+    throw new DataVersionError(
+      `此数据目录的表结构版本为 v${current}，当前程序最高只支持 v${SCHEMA_VERSION}——` +
+        `说明它曾被更新版本的 OneWMS 打开过。请安装新版本程序；` +
+        `若必须继续使用当前版本，请从升级前的备份恢复数据。`,
+    );
+  }
+  // current === 0 是全新库（SQLite 出厂值），不参与下界校验——否则新装即砖。
+  if (current !== 0 && current < MIN_SCHEMA_VERSION) {
+    throw new DataVersionError(
+      `此数据目录的表结构版本为 v${current}，过于陈旧（当前程序最低支持 v${MIN_SCHEMA_VERSION}）。` +
+        `请先用中间版本升级，或从备份恢复。`,
+    );
+  }
   if (current >= SCHEMA_VERSION) return;
 
   db.transaction(() => {

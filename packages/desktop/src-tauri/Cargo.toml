@@ -9,6 +9,14 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# 无感升级：updater 校验签名 + 下载 + 安装；dialog 出原生提示框。
+# 不需要 tauri-plugin-process —— Windows 上 install() 内部起完安装器就 exit(0)，
+# 重启由 NSIS 的 /R 负责，restart() 根本走不到（本壳也只编 Windows）
+tauri-plugin-updater = "2"
+tauri-plugin-dialog = "2"
+# generate_context! 在 tauri.conf.json 出现 plugins 段后会引用 ::serde_json
+# 来内联插件配置——不加就是编译期 "cannot find serde_json in the list of imported crates"
+serde_json = "1"
 
 [profile.release]
 strip = true
