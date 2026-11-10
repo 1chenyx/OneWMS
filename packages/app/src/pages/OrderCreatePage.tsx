@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { orderNumberPlace } from '@one/wms/numbering';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { App as AntApp, Button, Card, Input, InputNumber, Select, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -14,6 +15,7 @@ import {
   useSkus,
 } from '../api/hooks';
 import PageHeader from '../components/PageHeader';
+import { useDraftNumber } from '../components/use-seeded-code';
 import ScanInput from '../components/ScanInput';
 import { fmtQty } from '../lib/format';
 import { monoCell, numCell } from '../components/table-style';
@@ -28,7 +30,7 @@ import {
  * 新建入库单或出库单。方向由所在页面定死，这一页不再切换。
  * 出库选商品时摊开每一桶的库位、批次、效期和数量。点「用这桶」填上库位和批次。
  * 批次怎么扣、写了的批次和库位能不能换，在规则页配置。这张单只提示当前规则，不再另选。
- * 提交走 wms.order.create。单号由服务端生成。这一步不改库存。
+ * 提交走 wms.order.create。单号按规则预先填好，可以改；留空则保存时再生成。这一步不改库存。
  */
 
 type Direction = 'in' | 'out';
@@ -108,6 +110,8 @@ export default function OrderCreatePage({
   const { data: inventory } = useInventory();
   const bucketQuery = useInventoryBuckets(direction === 'out');
   const [asn, setAsn] = useState(false);
+  const inbound = direction === 'in';
+  const orderNoDraft = useDraftNumber(orderNumberPlace({ direction, asn: inbound && asn }));
   const [partnerCode, setPartnerCode] = useState('');
   const [note, setNote] = useState('');
   const [expectedAt, setExpectedAt] = useState('');
@@ -123,7 +127,6 @@ export default function OrderCreatePage({
   const blockExpired = readBlockExpired(wmsSettings);
   const batchRule = readSpecified(wmsSettings, 'specifiedBatchConstraint');
   const locationRule = readSpecified(wmsSettings, 'specifiedLocationConstraint');
-  const inbound = direction === 'in';
   const skuRows = (skus ?? []).filter((sku) => (sku.status ?? 'active') !== 'archived');
   const locationRows = (Array.isArray(locations) ? locations : []) as Location[];
   const stockRows = (Array.isArray(inventory) ? inventory : []) as InventoryRow[];
@@ -167,9 +170,11 @@ export default function OrderCreatePage({
       message.warning(problems[0]);
       return;
     }
+    const orderNo = orderNoDraft.value.trim();
     const body = {
       direction,
       lines: kept.map((line) => toPayloadLine(line, direction, serialOn)),
+      ...(orderNo ? { orderNo } : {}),
       ...(partnerCode ? { partnerCode } : {}),
       ...(note.trim() ? { note: note.trim() } : {}),
       ...(inbound && asn ? { asn: true as const, ...(expectedAt.trim() ? { expectedAt: expectedAt.trim() } : {}) } : {}),
@@ -336,11 +341,11 @@ export default function OrderCreatePage({
   const title = inbound ? '新建入库单' : '新建出库单';
   const subtitle = inbound
     ? asn
-      ? '单号在保存时生成。这是到货预报，收到货再收货，那时才加库存。'
-      : '单号在保存时生成。保存后待收货，收货才加库存。'
+      ? '单号已按预报规则填好，可以改。留空则保存时再生成。这是到货预报，收到货再收货，那时才加库存。'
+      : '单号已按入库规则填好，可以改。留空则保存时再生成。保存后待收货，收货才加库存。'
     : reservationOn
-      ? '单号在保存时生成。保存后待拣货，拣货占用可用量，发货才扣库存。'
-      : '单号在保存时生成。保存后待发货，发货才扣库存。';
+      ? '单号已按出库规则填好，可以改。留空则保存时再生成。保存后待拣货，拣货占用可用量，发货才扣库存。'
+      : '单号已按出库规则填好，可以改。留空则保存时再生成。保存后待发货，发货才扣库存。';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
@@ -357,6 +362,16 @@ export default function OrderCreatePage({
         }
       />
       <Card title="单据">
+        <div style={{ maxWidth: 360 }}>
+          <Typography.Text strong>单号</Typography.Text>
+          <Input
+            aria-label="单号"
+            style={{ marginTop: 4 }}
+            placeholder="留空则按编号规则生成"
+            value={orderNoDraft.value}
+            onChange={(event) => orderNoDraft.onChange(event.target.value)}
+          />
+        </div>
         {inbound && asnOn ? (
           <div style={{ marginTop: 16 }}>
             <Typography.Text strong>到货情况</Typography.Text>

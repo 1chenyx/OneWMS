@@ -3,6 +3,7 @@ import { App as AntApp, Form, Input, Modal } from 'antd';
 import { useCreatePartner, useUpdatePartner } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { Partner } from '../api/client';
+import { filledCode, useSeededField } from './use-seeded-code';
 
 /**
  * 往来单位表单（M21）：新建 / 编辑复用。
@@ -43,6 +44,8 @@ export default function PartnerFormModal({
     }
   }, [open, form, partner]);
 
+  useSeededField(form, 'partnerCode', open && !editing ? (kind === 'customer' ? 'partner.customer' : 'partner.supplier') : null);
+
   const submit = async (values: Record<string, unknown>) => {
     const body = {
       name: values.name as string,
@@ -56,12 +59,13 @@ export default function PartnerFormModal({
         await update.mutateAsync({ partnerCode: partner.partnerCode, body });
         message.success(`往来单位 ${partner.partnerCode} 已更新`);
       } else {
-        await create.mutateAsync({
-          partnerCode: (values.partnerCode as string).trim(),
+        const partnerCode = filledCode(values.partnerCode);
+        const created = await create.mutateAsync({
+          ...(partnerCode ? { partnerCode } : {}),
           kind,
           ...body,
         });
-        message.success(`往来单位 ${values.partnerCode} 已创建`);
+        message.success(`往来单位 ${created.partnerCode} 已创建`);
       }
       onClose();
     } catch (e) {
@@ -82,11 +86,7 @@ export default function PartnerFormModal({
     >
       <Form form={form} layout="vertical" onFinish={submit}>
         {!editing ? (
-          <Form.Item
-            name="partnerCode"
-            label="编码"
-            rules={[{ required: true, message: '请输入编码' }]}
-          >
+          <Form.Item name="partnerCode" label="编码" extra="已填入建议编号，可以改。留空则按编号规则生成。">
             <Input placeholder={kind === 'supplier' ? '如 SUP-001（全库唯一）' : '如 CUS-001（全库唯一）'} />
           </Form.Item>
         ) : null}

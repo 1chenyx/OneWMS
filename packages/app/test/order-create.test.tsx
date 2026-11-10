@@ -11,6 +11,9 @@ import { AppNavProvider } from '../src/app-nav';
  */
 
 const createMock = vi.fn();
+const numbering = vi.hoisted(() => ({
+  data: undefined as { place: string; value: string; pattern: string } | undefined,
+}));
 
 const snapshotFixture = {
   workspaceId: 'ws-test',
@@ -55,6 +58,7 @@ vi.mock('../src/api/hooks', () => ({
   useDismissConflict: () => ({ mutate: vi.fn(), isPending: false }),
   useTransitionOrder: () => ({ mutateAsync: vi.fn(), isPending: false, variables: undefined }),
   useCreateOrder: () => ({ mutateAsync: createMock, isPending: false }),
+  useNextNumber: () => ({ isLoading: false, data: numbering.data }),
   usePutawayOrder: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useReviseOrder: () => ({ mutateAsync: vi.fn(), isPending: false }),
   usePartners: () => ({
@@ -128,6 +132,7 @@ const wrap = (ui: React.ReactNode) => (
 );
 
 beforeEach(() => {
+  numbering.data = undefined;
   createMock.mockReset();
   createMock.mockResolvedValue({ orderId: 'o-new', orderNo: 'IN-1', state: 'created' });
 });
@@ -191,6 +196,30 @@ describe('新建出入库单', () => {
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
     expect(createMock).toHaveBeenCalledWith({
       direction: 'out',
+      lines: [{ skuCode: 'A-1', quantity: 1, locationCode: 'A-01', batchNo: 'B-9' }],
+    });
+  });
+
+  it('单号预先填好，改过再保存就用改过的', async () => {
+    numbering.data = { place: 'order.out', value: 'OUT-20261110-0001', pattern: 'OUT-{yyyyMMdd}-{seq:4}' };
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage direction="out" />));
+    await user.click(screen.getByRole('button', { name: /新建单据/ }));
+
+    const field = await screen.findByRole('textbox', { name: '单号' });
+    expect(field).toHaveValue('OUT-20261110-0001');
+    await user.clear(field);
+    await user.type(field, 'OUT-9');
+    await user.type(screen.getByPlaceholderText(/扫条码或编码/), '6901234567892{Enter}');
+    const bucketRow = (await screen.findByText('A-01')).closest('tr');
+    expect(bucketRow).not.toBeNull();
+    await user.click(within(bucketRow as HTMLElement).getByRole('button', { name: '用这桶' }));
+    await user.click(screen.getByRole('button', { name: '保存单据' }));
+
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    expect(createMock).toHaveBeenCalledWith({
+      direction: 'out',
+      orderNo: 'OUT-9',
       lines: [{ skuCode: 'A-1', quantity: 1, locationCode: 'A-01', batchNo: 'B-9' }],
     });
   });

@@ -4,11 +4,12 @@ import { WMS_EVENT_TYPES } from '../events/catalog.js';
 import { SkuAlreadyExistsError, SkuNotFoundError } from '../errors.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 import { assertCanTrack, rejectSerialTrackedWhenOff } from '../state/serial-policy.js';
+import { allocateCode } from '../numbering/allocate.js';
 import { assertBarcodeFree, normalizeBarcode } from './tool-guards.js';
 
 export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
   const skuCreate: ToolDefinition<{
-    skuCode: string;
+    skuCode?: string;
     name: string;
     barcode?: string;
     reorderPoint?: number;
@@ -19,12 +20,12 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     id: 'wms.sku.create',
     label: '创建 SKU',
     description:
-      '创建一个新的 SKU（库存商品）。skuCode 是全库唯一的商品编码，name 是商品名称；可选 barcode 条码（扫码枪识读用，同库唯一，多个 SKU 不可共用）；可选 reorderPoint 安全库存（低库存预警阈值，可用量低于它时进预警清单，0 或不传 = 不预警）；可选 unit 数量单位（如 kg / 箱 / 件，散装称重商品建议填写，单据与标签会跟随显示）；可选 extData 携带自定义扩展字段（如规格、保质期）。',
+      '创建一个新的 SKU（库存商品）。skuCode 是全库唯一的商品编码，不传或空着则按编号规则（sku）生成，传了就用传入的；name 是商品名称；可选 barcode 条码（扫码枪识读用，同库唯一，多个 SKU 不可共用）；可选 reorderPoint 安全库存（低库存预警阈值，可用量低于它时进预警清单，0 或不传 = 不预警）；可选 unit 数量单位（如 kg / 箱 / 件，散装称重商品建议填写，单据与标签会跟随显示）；可选 extData 携带自定义扩展字段（如规格、保质期）。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
-        skuCode: { type: 'string', description: 'SKU 唯一编码，如 A-1001' },
+        skuCode: { type: 'string', description: 'SKU 唯一编码（可选。不传或空着按编号规则生成，如 SKU-00001）' },
         name: { type: 'string', description: '商品名称' },
         barcode: {
           type: 'string',
@@ -43,7 +44,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         },
         extData: { type: 'object', description: '扩展字段键值对（字段注册表声明的自定义字段）' },
       },
-      required: ['skuCode', 'name'],
+      required: ['name'],
     },
     handler: (params, ctx) => {
       const ws = resolveWorkspace(ctx.workspaceId);
@@ -52,8 +53,9 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
       if (params.serialTracked !== undefined && typeof params.serialTracked !== 'boolean') {
         throw new Error('TOOL_REJECTED: serialTracked 必须是布尔值');
       }
-      if (ws.skus.byCode(params.skuCode)) {
-        throw new SkuAlreadyExistsError(params.skuCode);
+      const skuCode = allocateCode(ws, 'sku', params.skuCode);
+      if (ws.skus.byCode(skuCode)) {
+        throw new SkuAlreadyExistsError(skuCode);
       }
       const barcode = params.barcode === undefined ? undefined : normalizeBarcode(params.barcode);
       if (barcode) assertBarcodeFree(ws, barcode);
@@ -62,7 +64,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
       const skuId = randomUUID();
       ctx.appendEvent(WMS_EVENT_TYPES.skuCreated, {
         skuId,
-        skuCode: params.skuCode,
+        skuCode,
         name: params.name,
         barcode,
         reorderPoint: params.reorderPoint ?? 0,
@@ -73,7 +75,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
       ws.sync();
       return {
         skuId,
-        skuCode: params.skuCode,
+        skuCode,
         name: params.name,
         barcode,
         reorderPoint: params.reorderPoint ?? 0,

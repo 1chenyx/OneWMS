@@ -77,6 +77,8 @@ export type {
   LpnRow,
   LpnStock,
   LpnStockLine,
+  NumberingPlaceView,
+  NumberingView,
   Order,
   OrderLine,
   ReplenishmentSuggestion,

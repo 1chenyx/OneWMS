@@ -83,7 +83,7 @@ describe('module.warehouse', () => {
     expect(Object.hasOwn(list[1]!, 'warehouseCode')).toBe(false);
   });
 
-  it('未知仓库不建库位；空仓库编码拒绝；重复编码拒绝', async () => {
+  it('未知仓库不建库位；空仓库编码按规则生成；重复编码拒绝', async () => {
     const before = ws.events.count();
     await expect(
       ws.tools.invoke('wms.location.create', { locationCode: 'A-01', warehouseCode: 'NOPE' }),
@@ -91,8 +91,9 @@ describe('module.warehouse', () => {
     expect(ws.events.count()).toBe(before);
     expect(ws.locations.list()).toHaveLength(0);
 
-    await expect(ws.tools.invoke('wms.warehouse.create', { warehouseCode: '  ' })).rejects.toThrow(/不能为空/);
-    expect(ws.events.count()).toBe(before);
+    const blank = (await ws.tools.invoke('wms.warehouse.create', { warehouseCode: '  ' })) as { warehouseCode: string };
+    expect(blank.warehouseCode).toBe('WH-01');
+    expect(ws.events.count()).toBe(before + 1);
 
     await ws.tools.invoke('wms.warehouse.create', { warehouseCode: 'WH-1', name: '一号仓' });
     const after = ws.events.count();

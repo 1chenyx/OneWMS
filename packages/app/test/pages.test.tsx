@@ -174,6 +174,26 @@ describe('ChatPage：SSE 流式', () => {
     expect(streamMock).toHaveBeenCalledWith(expect.any(String), '建一个 SKU', 'general', expect.any(Function), undefined);
   });
 
+  it('助手回复按 Markdown 排版，HTML 只显示成文字', async () => {
+    streamMock.mockImplementationOnce(
+      async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
+        onEvent({ type: 'text-delta', text: '**已入库** A-1\n\n<script>alert(1)</script>' });
+        onEvent({ type: 'turn-done', steps: 1 });
+      },
+    );
+    const user = userEvent.setup();
+    const { container } = render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('看看格式');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+
+    const strong = await screen.findByText('已入库');
+    expect(strong.tagName).toBe('STRONG');
+    expect(screen.queryByText('**已入库**')).not.toBeInTheDocument();
+    expect(container.querySelector('script')).toBeNull();
+    expect(screen.getByText('<script>alert(1)</script>')).toBeInTheDocument();
+  });
+
   it('多条工具调用收成一句，展开后才看到每一条', async () => {
     streamMock.mockImplementationOnce(
       async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {

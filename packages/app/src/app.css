@@ -23,6 +23,138 @@ body {
   overflow: hidden;
 }
 
+/* 助手回复。antd reset 去掉了列表圆点，这里加回来。HTML 不进 innerHTML。 */
+.chat-md {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.chat-md p,
+.chat-md ul,
+.chat-md ol,
+.chat-md pre,
+.chat-md blockquote,
+.chat-md .chat-md-table {
+  margin: 0 0 8px;
+}
+
+.chat-md h1,
+.chat-md h2,
+.chat-md h3,
+.chat-md h4,
+.chat-md h5,
+.chat-md h6 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.chat-md h1 {
+  font-size: 18px;
+}
+
+.chat-md h2 {
+  font-size: 16px;
+}
+
+.chat-md h3,
+.chat-md h4,
+.chat-md h5,
+.chat-md h6 {
+  font-size: 14px;
+}
+
+.chat-md ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+
+.chat-md ol {
+  list-style: decimal;
+  padding-left: 1.4em;
+}
+
+.chat-md li {
+  margin: 2px 0;
+}
+
+.chat-md li > input[type='checkbox'] {
+  margin: 0 6px 0 0;
+  vertical-align: -1px;
+}
+
+.chat-md code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.92em;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+.chat-md pre {
+  padding: 8px 12px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.chat-md pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: 13px;
+}
+
+.chat-md blockquote {
+  padding-left: 10px;
+  border-left: 3px solid #d9d9d9;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.chat-md a {
+  color: #1677ff;
+}
+
+.chat-md hr {
+  border: 0;
+  border-top: 1px solid #f0f0f0;
+  margin: 8px 0;
+}
+
+.chat-md .chat-md-table {
+  overflow-x: auto;
+}
+
+.chat-md table {
+  border-collapse: collapse;
+  width: max-content;
+  max-width: 100%;
+}
+
+.chat-md th,
+.chat-md td {
+  border: 1px solid #f0f0f0;
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.chat-md th {
+  background: #fafafa;
+  font-weight: 600;
+}
+
+.chat-md > :first-child {
+  margin-top: 0;
+}
+
+.chat-md > :last-child {
+  margin-bottom: 0;
+}
+
 @media print {
   html,
   body,

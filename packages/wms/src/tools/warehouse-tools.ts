@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ToolDefinition } from '@one/core';
 import { WMS_EVENT_TYPES } from '../events/catalog.js';
 import { WarehouseAlreadyExistsError, WarehouseNotFoundError } from '../errors.js';
+import { allocateCode } from '../numbering/allocate.js';
 import { assertWarehouseEnabled, listWarehouseStock, listWarehouses } from '../queries/warehouse-queries.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
@@ -11,26 +12,25 @@ import { def, type WorkspaceResolver } from './tool-def.js';
  * 工具不进 core.wms 的 tools 数组。
  */
 export function createWarehouseTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
-  const warehouseCreate: ToolDefinition<{ warehouseCode: string; name?: string }> = {
+  const warehouseCreate: ToolDefinition<{ warehouseCode?: string; name?: string }> = {
     id: 'wms.warehouse.create',
     label: '创建仓库',
     description:
-      '创建一个仓库。warehouseCode 全库唯一，name 缺省同编码。仓库不是库存桶，库存仍在库位上；之后用 wms.location.create / wms.location.update 的 warehouseCode 把库位划进来。停用 module.warehouse 后本工具拒绝。虚拟库位 DEFAULT 不能划进仓库。',
+      '创建一个仓库。warehouseCode 全库唯一，不传或空着则按编号规则（warehouse）生成，传了就用传入的。name 缺省同编码。仓库不是库存桶，库存仍在库位上；之后用 wms.location.create / wms.location.update 的 warehouseCode 把库位划进来。停用 module.warehouse 后本工具拒绝。虚拟库位 DEFAULT 不能划进仓库。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
-        warehouseCode: { type: 'string', description: '仓库编码，如 WH-1' },
+        warehouseCode: { type: 'string', description: '仓库编码（可选。不传或空着按编号规则生成，如 WH-01）' },
         name: { type: 'string', description: '仓库名称（可选，缺省同编码）' },
       },
-      required: ['warehouseCode'],
+      required: [],
     },
     handler: (params, ctx) => {
       const ws = resolveWorkspace(ctx.workspaceId);
       ws.sync();
       assertWarehouseEnabled(ws);
-      const warehouseCode = typeof params.warehouseCode === 'string' ? params.warehouseCode.trim() : '';
-      if (!warehouseCode) throw new Error('TOOL_REJECTED: warehouseCode 不能为空');
+      const warehouseCode = allocateCode(ws, 'warehouse', params.warehouseCode);
       if (ws.warehouses.byCode(warehouseCode)) throw new WarehouseAlreadyExistsError(warehouseCode);
       const name = typeof params.name === 'string' && params.name.trim() ? params.name.trim() : warehouseCode;
       const warehouseId = randomUUID();

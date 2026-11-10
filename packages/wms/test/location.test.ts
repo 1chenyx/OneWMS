@@ -82,10 +82,9 @@ describe('库位主数据', () => {
     expect(ws.locations.list()).toHaveLength(0);
   });
 
-  it('空编码 → 拒绝', async () => {
-    await expect(
-      ws.tools.invoke('wms.location.create', { locationCode: '' }),
-    ).rejects.toThrow(/不能为空/);
+  it('空编码按编号规则生成', async () => {
+    const created = (await ws.tools.invoke('wms.location.create', { locationCode: '' })) as { locationCode: string };
+    expect(created.locationCode).toBe('LOC-0001');
   });
 });
 

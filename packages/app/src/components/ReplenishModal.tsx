@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { App as AntApp, Modal, Table, Typography } from 'antd';
+import { App as AntApp, Input, Modal, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from '../api/client';
 import type { ReplenishmentSuggestion } from '../api/client';
+import { useDraftNumber } from './use-seeded-code';
 import { fmtQty } from '../lib/format';
 import { monoCell, numCell, TABLE_PAGINATION } from './table-style';
 
@@ -20,11 +21,17 @@ export default function ReplenishModal({ open, onClose }: { open: boolean; onClo
     enabled: open,
   });
   const [picked, setPicked] = useState<string[] | null>(null);
+  const orderNoDraft = useDraftNumber(open ? 'order.in' : null);
   const create = useMutation({
-    mutationFn: (skuCodes: string[]) => api.createReplenishment({ skuCodes }),
+    mutationFn: (input: { skuCodes: string[]; orderNo?: string }) =>
+      api.createReplenishment({
+        skuCodes: input.skuCodes,
+        ...(input.orderNo ? { orderNo: input.orderNo } : {}),
+      }),
     onSuccess: (created) => {
       void queryClient.invalidateQueries({ queryKey: ['replenishment'] });
       void queryClient.invalidateQueries({ queryKey: ['orders'] });
+      void queryClient.invalidateQueries({ queryKey: ['numbering'] });
       message.success(`已开入库单 ${created.orderNo}，这是一张普通入库单，收货后才会加库存`);
       onClose();
     },
@@ -46,7 +53,8 @@ export default function ReplenishModal({ open, onClose }: { open: boolean; onClo
       message.warning('请至少选择一个商品');
       return;
     }
-    create.mutate(selected);
+    const orderNo = orderNoDraft.value.trim();
+    create.mutate({ skuCodes: selected, ...(orderNo ? { orderNo } : {}) });
   };
 
   const columns: ColumnsType<ReplenishmentSuggestion> = [
@@ -98,8 +106,18 @@ export default function ReplenishModal({ open, onClose }: { open: boolean; onClo
       width={720}
       destroyOnHidden
     >
+      <div style={{ marginBottom: 12, maxWidth: 360 }}>
+        <Typography.Text>入库单号</Typography.Text>
+        <Input
+          aria-label="入库单号"
+          style={{ marginTop: 4 }}
+          placeholder="留空则按编号规则生成"
+          value={orderNoDraft.value}
+          onChange={(event) => orderNoDraft.onChange(event.target.value)}
+        />
+      </div>
       <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-        勾选要补的商品。生成的是普通入库单，收货后才会加库存。
+        勾选要补的商品。单号已按入库规则填好，可以改。生成的是普通入库单，收货后才会加库存。
       </Typography.Paragraph>
       {suggestions.isError ? (
         <Typography.Text type="danger">

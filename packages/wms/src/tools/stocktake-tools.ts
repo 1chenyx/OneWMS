@@ -22,6 +22,7 @@ import {
   resolveLocation,
 } from '../state/inventory-policy.js';
 import { bucketReservationNotice } from '../state/reservation.js';
+import { allocateCode } from '../numbering/allocate.js';
 import { assertStocktakeLines } from '../state/serial-policy.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
@@ -34,7 +35,7 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
     id: 'wms.stocktake.create',
     label: '创建盘点单',
     description:
-      '创建一张盘点单，对指定范围（缺省全场）的库存做实盘核对。创建时立即按当前账面余量生成待盘明细行——每个有余量的 SKU×库位×批次桶一行，行上记录创建时点的账面快照（expectedQty）。locationCodes 是盘点范围的库位编码列表（可选；缺省或空数组 = 全场盘点，含默认库位 DEFAULT）；stocktakeNo 盘点单号（可选，缺省自动生成 ST-日期-序号）；note 备注（可选）。生命周期：创建后处于盘点中（created）→ wms.stocktake.count 逐桶录实盘数 → 全部录完后 wms.stocktake.close 关单（按差异自动调整库存）→ 或 wms.stocktake.cancel 取消（不调整库存）。范围外库位的录入会被拒绝。',
+      '创建一张盘点单，对指定范围（缺省全场）的库存做实盘核对。创建时立即按当前账面余量生成待盘明细行——每个有余量的 SKU×库位×批次桶一行，行上记录创建时点的账面快照（expectedQty）。locationCodes 是盘点范围的库位编码列表（可选；缺省或空数组 = 全场盘点，含默认库位 DEFAULT）；stocktakeNo 盘点单号（可选，不传或空着按编号规则 stocktake 生成）；note 备注（可选）。生命周期：创建后处于盘点中（created）→ wms.stocktake.count 逐桶录实盘数 → 全部录完后 wms.stocktake.close 关单（按差异自动调整库存）→ 或 wms.stocktake.cancel 取消（不调整库存）。范围外库位的录入会被拒绝。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -44,7 +45,7 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
           items: { type: 'string' },
           description: '盘点范围库位编码列表（可选；缺省或空数组 = 全场盘点，含默认库位 DEFAULT）',
         },
-        stocktakeNo: { type: 'string', description: '盘点单号（可选，缺省自动生成）' },
+        stocktakeNo: { type: 'string', description: '盘点单号（可选。不传或空着按编号规则生成）' },
         note: { type: 'string', description: '备注（可选，如 月度大盘）' },
       },
       required: [],
@@ -58,7 +59,7 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
         codes && codes.length > 0
           ? [...new Set(codes.map((code) => resolveLocation(ws, code).locationId))]
           : null;
-      const stocktakeNo = params.stocktakeNo ?? generateStocktakeNo();
+      const stocktakeNo = allocateCode(ws, 'stocktake', params.stocktakeNo);
       if (ws.stocktakes.byNo(stocktakeNo)) {
         throw new StocktakeExistsError(stocktakeNo);
       }
@@ -325,8 +326,4 @@ export function createStocktakeTools(resolveWorkspace: WorkspaceResolver): ToolD
   ];
 }
 
-/** 盘点单号：ST-20261105-a1b2c3d4（ST + 日期 + uuid 片段；与单号生成同模式） */
-function generateStocktakeNo(): string {
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  return `ST-${date}-${randomUUID().slice(0, 8)}`;
-}
+

@@ -56,9 +56,9 @@ describe('SKU 端点', () => {
     expect(data.code).toBe('WMS_SKU_EXISTS');
   });
 
-  it('缺必填字段 → 400（schema 校验器拒绝）', async () => {
+  it('缺名称 → 400（schema 校验器拒绝）', async () => {
     const app = setup();
-    const res = await post(app, '/api/skus', { name: '没有编码' });
+    const res = await post(app, '/api/skus', { skuCode: 'A-1' });
     expect(res.status).toBe(400);
   });
 
@@ -1142,5 +1142,37 @@ describe('托盘端点（module.lpn）', () => {
     expect(moved.status).toBe(200);
     const after = (await (await app.request('/api/lpns/P-1/stock')).json()) as { locationCode: string };
     expect(after.locationCode).toBe('B-02');
+  });
+});
+
+describe('编号', () => {
+  it('GET /api/numbering 给出下一号，未知位置 400', async () => {
+    const app = setup();
+    const res = await app.request('/api/numbering?place=order.in');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      patchOp: string;
+      places: { next: string }[];
+    };
+    expect(body.patchOp).toBe('replace');
+    expect(body.places).toHaveLength(1);
+    expect(body.places[0]?.next).toMatch(/^IN-\d{8}-0001$/);
+    const bad = await app.request('/api/numbering?place=nope');
+    expect(bad.status).toBe(400);
+  });
+
+  it('不传单号和商品编码时按规则生成', async () => {
+    const app = setup();
+    const sku = await post(app, '/api/skus', { name: '轴承' });
+    expect(sku.status).toBe(201);
+    const skuBody = (await sku.json()) as { skuCode: string };
+    expect(skuBody.skuCode).toMatch(/^SKU-\d{5}$/);
+    const order = await post(app, '/api/orders', {
+      direction: 'in',
+      lines: [{ skuCode: skuBody.skuCode, quantity: 1 }],
+    });
+    expect(order.status).toBe(201);
+    const orderBody = (await order.json()) as { orderNo: string };
+    expect(orderBody.orderNo).toMatch(/^IN-\d{8}-0001$/);
   });
 });

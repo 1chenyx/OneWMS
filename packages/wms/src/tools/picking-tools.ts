@@ -4,6 +4,7 @@ import type { WmsWorkspace } from '../wms.js';
 import { DEFAULT_BATCH_NO, WMS_EVENT_TYPES } from '../events/catalog.js';
 import {
   OrderNotFoundError,
+  PickingExistsError,
   PickingIncompleteError,
   PickingLineNotFoundError,
   PickingNoOrdersError,
@@ -14,6 +15,7 @@ import {
   WorkflowNotFoundError,
 } from '../errors.js';
 import { readWmsSettings } from '../config/wms-settings.js';
+import { allocateCode } from '../numbering/allocate.js';
 import { allocateFromBuckets } from '../state/allocation.js';
 import { assertSubstitution, mergeBuckets, type PickBucket } from '../state/execution-policy.js';
 import { assertOutboundBuckets } from '../state/outbound-guards.js';
@@ -54,17 +56,19 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
   const pickingCreate: ToolDefinition<{
     orderNos: string[];
     note?: string;
+    pickingNo?: string;
   }> = {
     id: 'wms.picking.create',
     label: '创建拣货单',
     description:
-      '聚合多张「拣货中」状态的出库单成一张拣货单（建议桶自动生成：行有显式批次用该桶，虚拟批次按 defaultAllocation 策略建议）。参数：orderNos（出库单号数组，至少一张）、note（可选）。行建议桶随事件携带；实拣与扣减发生在后续 pick/close。',
+      '聚合多张「拣货中」状态的出库单成一张拣货单（建议桶自动生成：行有显式批次用该桶，虚拟批次按 defaultAllocation 策略建议）。参数：orderNos（出库单号数组，至少一张）、note（可选）、pickingNo（可选，不传或空着按编号规则 picking 生成）。行建议桶随事件携带；实拣与扣减发生在后续 pick/close。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
         orderNos: { type: 'array', items: { type: 'string' }, description: '出库单号数组（须为「拣货中」状态）' },
         note: { type: 'string', description: '备注（可选）' },
+        pickingNo: { type: 'string', description: '拣货单号（可选。不传或空着按编号规则生成）' },
       },
       required: ['orderNos'],
     },
@@ -77,7 +81,8 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
       const settings = readWmsSettings(ws);
       const today = new Date().toISOString().slice(0, 10);
       const pickingId = randomUUID();
-      const pickingNo = `PK-${today.replace(/-/g, '')}-${randomUUID().slice(0, 8)}`;
+      const pickingNo = allocateCode(ws, 'picking', params.pickingNo);
+      if (ws.pickings.byNo(pickingNo)) throw new PickingExistsError(pickingNo);
       const lines: {
         lineId: string;
         orderId: string;

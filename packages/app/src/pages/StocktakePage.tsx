@@ -29,6 +29,7 @@ import {
   useStocktakes,
 } from '../api/hooks';
 import { ApiError } from '../api/client';
+import { filledCode, useSeededField } from '../components/use-seeded-code';
 import type { Stocktake, StocktakeLine } from '../api/client';
 import ScanInput from '../components/ScanInput';
 import PageHeader from '../components/PageHeader';
@@ -195,18 +196,25 @@ function CreateStocktakeModal({ open, onClose }: { open: boolean; onClose: () =>
   const scopeMode = Form.useWatch('scopeMode', form);
   const create = useCreateStocktake();
   const { data: locations } = useLocations();
+  useEffect(() => {
+    if (open) form.resetFields();
+  }, [open, form]);
+  useSeededField(form, 'stocktakeNo', open ? 'stocktake' : null);
 
   const submit = async (values: {
     scopeMode: 'all' | 'scoped';
     locationCodes?: string[];
     note?: string;
+    stocktakeNo?: string;
   }) => {
     if (values.scopeMode === 'scoped' && (!values.locationCodes || values.locationCodes.length === 0)) {
       message.error('指定库位模式请至少勾选一个库位');
       return;
     }
     try {
+      const stocktakeNo = filledCode(values.stocktakeNo);
       const r = await create.mutateAsync({
+        ...(stocktakeNo ? { stocktakeNo } : {}),
         locationCodes: values.scopeMode === 'scoped' ? values.locationCodes : undefined,
         note: values.note || undefined,
       });
@@ -230,6 +238,9 @@ function CreateStocktakeModal({ open, onClose }: { open: boolean; onClose: () =>
         创建时立即按当前账面余量生成待盘明细行（每个有余量的 SKU×库位×批次桶一行）。
       </Typography.Paragraph>
       <Form form={form} layout="vertical" onFinish={submit} initialValues={{ scopeMode: 'all' }}>
+        <Form.Item name="stocktakeNo" label="盘点单号" extra="已填入建议编号，可以改。留空则按编号规则生成。">
+          <Input aria-label="盘点单号" />
+        </Form.Item>
         <Form.Item name="scopeMode" label="盘点范围">
           <Radio.Group
             options={[

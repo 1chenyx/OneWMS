@@ -146,6 +146,7 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     const system = requests[0].system;
     // 慢通道行为规则（§4.1：确认权在人类，AI 只提议 + 转述报告）
     expect(system).toContain('profile.propose');
+    expect(system).toContain('wms.numbering.preview');
     expect(system).toContain('无权代替用户确认');
     expect(system).toContain('chat.attachment.apply');
     // Profile 摘要：wms 种子的三个基础扩展字段与两条默认流程

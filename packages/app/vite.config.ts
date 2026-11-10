@@ -13,6 +13,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: '@one/wms/numbering',
+        replacement: fileURLToPath(new URL('../wms/src/numbering/pattern.ts', import.meta.url)),
+      },
+      {
         find: '@one/core/when',
         replacement: fileURLToPath(new URL('../core/src/profile/when.ts', import.meta.url)),
       },

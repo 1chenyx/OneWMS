@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ToolDefinition } from '@one/core';
 import { WMS_EVENT_TYPES } from '../events/catalog.js';
 import { PartnerAlreadyExistsError, PartnerNotFoundError } from '../errors.js';
+import { allocateCode } from '../numbering/allocate.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
 /**
@@ -11,7 +12,7 @@ import { def, type WorkspaceResolver } from './tool-def.js';
  */
 export function createPartnerTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
   const partnerCreate: ToolDefinition<{
-    partnerCode: string;
+    partnerCode?: string;
     kind: 'supplier' | 'customer';
     name: string;
     contact?: string;
@@ -23,12 +24,12 @@ export function createPartnerTools(resolveWorkspace: WorkspaceResolver): ToolDef
     id: 'wms.partner.create',
     label: '创建往来单位',
     description:
-      '创建一个往来单位（供应商或客户）。kind 取 supplier（供应商，用于入库单）/ customer（客户，用于出库单），创建后不可更改——身份变化请新建编码。partnerCode 全库唯一（如 SUP-001 / CUS-001）；name 名称必填；可选 contact 联系人、phone 电话、address 地址、note 备注、extData 扩展字段。入库单/出库单可关联对应 kind 的往来单位（order.create 的 partnerCode 参数）。',
+      '创建一个往来单位（供应商或客户）。kind 取 supplier（供应商，用于入库单）/ customer（客户，用于出库单），创建后不可更改——身份变化请新建编码。partnerCode 全库唯一，不传或空着则按编号规则生成（供应商 partner.supplier，客户 partner.customer）；name 名称必填；可选 contact 联系人、phone 电话、address 地址、note 备注、extData 扩展字段。入库单/出库单可关联对应 kind 的往来单位（order.create 的 partnerCode 参数）。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
-        partnerCode: { type: 'string', description: '往来单位唯一编码，如 SUP-001' },
+        partnerCode: { type: 'string', description: '往来单位唯一编码（可选。不传或空着按编号规则生成）' },
         kind: {
           type: 'string',
           enum: ['supplier', 'customer'],
@@ -41,18 +42,23 @@ export function createPartnerTools(resolveWorkspace: WorkspaceResolver): ToolDef
         note: { type: 'string', description: '备注（可选）' },
         extData: { type: 'object', description: '扩展字段键值对（可选）' },
       },
-      required: ['partnerCode', 'kind', 'name'],
+      required: ['kind', 'name'],
     },
     handler: (params, ctx) => {
       const ws = resolveWorkspace(ctx.workspaceId);
       ws.sync();
-      if (ws.partners.byCode(params.partnerCode)) {
-        throw new PartnerAlreadyExistsError(params.partnerCode);
+      const partnerCode = allocateCode(
+        ws,
+        params.kind === 'customer' ? 'partner.customer' : 'partner.supplier',
+        params.partnerCode,
+      );
+      if (ws.partners.byCode(partnerCode)) {
+        throw new PartnerAlreadyExistsError(partnerCode);
       }
       const partnerId = randomUUID();
       ctx.appendEvent(WMS_EVENT_TYPES.partnerCreated, {
         partnerId,
-        partnerCode: params.partnerCode,
+        partnerCode,
         kind: params.kind,
         name: params.name,
         contact: params.contact,
@@ -62,7 +68,7 @@ export function createPartnerTools(resolveWorkspace: WorkspaceResolver): ToolDef
         extData: params.extData,
       });
       ws.sync();
-      return { partnerId, partnerCode: params.partnerCode, kind: params.kind, name: params.name };
+      return { partnerId, partnerCode, kind: params.kind, name: params.name };
     },
   };
 

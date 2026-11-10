@@ -21,6 +21,8 @@ import {
   querySerial,
   listLpns,
   lpnStock,
+  describeNumbering,
+  isNumberPlace,
   listOrdersWithLines,
   listOrdersWithLinesPage,
   listPickingsWithLines,
@@ -91,6 +93,12 @@ function actorOf(ctx: AppContext): string {
 
 export function wmsRoutes(ctx: AppContext): Hono {
   return new Hono()
+    .get('/numbering', (c) => {
+      ctx.ws.sync();
+      const place = c.req.query('place')?.trim() || undefined;
+      if (place && !isNumberPlace(place)) throw new BadQueryError(`没有这个编号位置：${place}`);
+      return c.json(describeNumbering(ctx.ws, place));
+    })
     // ── SKU ─────────────────────────────────────────────
     // barcode = 精确匹配（扫码枪入口）；q = 三字段模糊（编码/名称/条码）。
     // A2 软停用：默认只回启用档（选择器/下拉零改动自动排除停用）；includeArchived=1 回全量；

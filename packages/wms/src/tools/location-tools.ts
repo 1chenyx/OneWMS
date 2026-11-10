@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ToolDefinition } from '@one/core';
 import { DEFAULT_LOCATION_ID, WMS_EVENT_TYPES } from '../events/catalog.js';
 import { LocationAlreadyExistsError, LocationNotFoundError, WarehouseNotFoundError } from '../errors.js';
+import { allocateCode } from '../numbering/allocate.js';
 import { assertWarehouseEnabled } from '../queries/warehouse-queries.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
@@ -37,7 +38,7 @@ function readCapacity(raw: unknown, present: boolean, mode: 'create' | 'update')
 
 export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
   const locationCreate: ToolDefinition<{
-    locationCode: string;
+    locationCode?: string;
     name?: string;
     warehouseCode?: string;
     capacity?: number | null;
@@ -45,37 +46,35 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
     id: 'wms.location.create',
     label: '创建库位',
     description:
-      '创建一个新的库位（仓库内的物理存储位）。locationCode 是全库唯一的库位编码（如 A-01），name 是显示名称（可选，缺省同编码）。库存可分库位存放与移库；保留字 DEFAULT 不可用于创建（它是未指定库位时库存的默认归宿，虚拟存在）。可选 warehouseCode 把库位划进已有仓库（module.warehouse）；不传或空字符串则未分仓。停用多仓后只要带了 warehouseCode 就拒绝。容量是库位最多放多少。不填表示不限。上架是否拦截由 putawayCapacity 决定。',
+      '创建一个新的库位（仓库内的物理存储位）。locationCode 是全库唯一的库位编码，不传或空着则按编号规则（location）生成，传了就用传入的；name 是显示名称（可选，缺省同编码）。库存可分库位存放与移库；保留字 DEFAULT 不可用于创建（它是未指定库位时库存的默认归宿，虚拟存在）。可选 warehouseCode 把库位划进已有仓库（module.warehouse）；不传或空字符串则未分仓。停用多仓后只要带了 warehouseCode 就拒绝。容量是库位最多放多少。不填表示不限。上架是否拦截由 putawayCapacity 决定。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
-        locationCode: { type: 'string', description: '库位唯一编码，如 A-01' },
+        locationCode: { type: 'string', description: '库位唯一编码（可选。不传或空着按编号规则生成，如 LOC-0001）' },
         name: { type: 'string', description: '库位显示名称（可选，缺省同编码）' },
         warehouseCode: { type: 'string', description: '所属仓库编码（可选；module.warehouse 启用时有效，不传则未分仓）' },
         capacity: { type: 'number', description: '容量（可选，正数）。不填表示不限。上架是否拦截由 putawayCapacity 决定' },
       },
-      required: ['locationCode'],
+      required: [],
     },
     handler: (params, ctx) => {
       const ws = resolveWorkspace(ctx.workspaceId);
       ws.sync();
-      if (typeof params.locationCode !== 'string' || !params.locationCode) {
-        throw new Error('TOOL_REJECTED: locationCode 不能为空');
-      }
+      const locationCode = allocateCode(ws, 'location', params.locationCode);
       const capacity = readCapacity(params.capacity, Object.hasOwn(params, 'capacity'), 'create');
       const warehouseId = resolveWarehouseId(ws, params, 'create');
-      if (params.locationCode === DEFAULT_LOCATION_ID) {
+      if (locationCode === DEFAULT_LOCATION_ID) {
         throw new Error('TOOL_REJECTED: DEFAULT 是保留字（默认库位，虚拟存在），不可创建同名库位');
       }
-      if (ws.locations.byCode(params.locationCode)) {
-        throw new LocationAlreadyExistsError(params.locationCode);
+      if (ws.locations.byCode(locationCode)) {
+        throw new LocationAlreadyExistsError(locationCode);
       }
       const locationId = randomUUID();
-      const name = params.name ?? params.locationCode;
+      const name = params.name ?? locationCode;
       ctx.appendEvent(WMS_EVENT_TYPES.locationCreated, {
         locationId,
-        locationCode: params.locationCode,
+        locationCode,
         name,
         ...(warehouseId ? { warehouseId } : {}),
         ...(typeof capacity === 'number' ? { capacity } : {}),
@@ -83,7 +82,7 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
       ws.sync();
       return {
         locationId,
-        locationCode: params.locationCode,
+        locationCode,
         name,
         ...(typeof capacity === 'number' ? { capacity } : {}),
       };

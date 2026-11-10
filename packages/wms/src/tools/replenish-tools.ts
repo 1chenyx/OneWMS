@@ -15,6 +15,7 @@ import {
   listReplenishmentSuggestions,
   type ReplenishmentSuggestion,
 } from '../queries/replenish-queries.js';
+import { allocateCode } from '../numbering/allocate.js';
 import { serialEnabled } from '../state/serial-policy.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
@@ -35,7 +36,7 @@ export function createReplenishTools(resolveWorkspace: WorkspaceResolver): ToolD
     id: 'wms.replenish.create',
     label: '生成补货单',
     description:
-      '按安全库存缺口生成一张入库单。缺口 = 安全库存 − 可用量（余量 − 冻结 − 拣货占用）− 尚未收货的入库数量（状态为已创建或已预报）。可用量已经低于安全库存、但在途入库已经盖住缺口的商品不会再开。skuCodes 可选，只补这些编码；不传则一张单盖住全部缺口。重复编码会合并。没有缺口、传入空数组、或传入的编码没有缺口时拒绝且不产生事件。未知编码拒绝。可选 partnerCode（供应商）、note（缺省「补货」）、orderNo。开出的是普通入库单（状态已创建，行落在默认库位和默认批次），收货时才加库存。停用 module.replenish 后本工具拒绝；低库存预警仍可用；已经开出的入库单仍可收货。',
+      '按安全库存缺口生成一张入库单。缺口 = 安全库存 − 可用量（余量 − 冻结 − 拣货占用）− 尚未收货的入库数量（状态为已创建或已预报）。可用量已经低于安全库存、但在途入库已经盖住缺口的商品不会再开。skuCodes 可选，只补这些编码；不传则一张单盖住全部缺口。重复编码会合并。没有缺口、传入空数组、或传入的编码没有缺口时拒绝且不产生事件。未知编码拒绝。可选 partnerCode（供应商）、note（缺省「补货」）、orderNo（不传或空着按入库单编号规则生成）。开出的是普通入库单（状态已创建，行落在默认库位和默认批次），收货时才加库存。停用 module.replenish 后本工具拒绝；低库存预警仍可用；已经开出的入库单仍可收货。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -47,7 +48,7 @@ export function createReplenishTools(resolveWorkspace: WorkspaceResolver): ToolD
         },
         partnerCode: { type: 'string', description: '供应商编码（可选）。入库单只能关联供应商。' },
         note: { type: 'string', description: '备注（可选，缺省「补货」）' },
-        orderNo: { type: 'string', description: '单据号（可选，缺省自动生成）' },
+        orderNo: { type: 'string', description: '单据号（可选。不传或空着按入库单编号规则生成）' },
       },
       required: [],
     },
@@ -102,8 +103,7 @@ export function createReplenishTools(resolveWorkspace: WorkspaceResolver): ToolD
         partnerId = partner.id;
       }
 
-      const requestedNo = typeof params.orderNo === 'string' ? params.orderNo.trim() : '';
-      const orderNo = requestedNo || generateOrderNo();
+      const orderNo = allocateCode(ws, 'order.in', params.orderNo);
       if (ws.orders.byNo(orderNo)) throw new OrderAlreadyExistsError(orderNo);
 
       const note = typeof params.note === 'string' && params.note.trim() ? params.note.trim() : '补货';
@@ -149,8 +149,4 @@ function parseSkuCodes(raw: unknown): string[] | undefined {
   return out;
 }
 
-/** 与入库单自动单号同一形态：IN-日期-uuid 片段 */
-function generateOrderNo(): string {
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  return `IN-${date}-${randomUUID().slice(0, 8)}`;
-}
+

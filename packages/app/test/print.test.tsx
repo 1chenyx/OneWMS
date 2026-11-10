@@ -142,6 +142,7 @@ vi.mock('../src/api/hooks', () => ({
   useDismissConflict: () => ({ mutate: vi.fn(), isPending: false }),
   useTransitionOrder: () => ({ mutateAsync: vi.fn(), isPending: false, variables: undefined }),
   useCreateOrder: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useNextNumber: () => ({ isLoading: false, data: undefined }),
   usePartners: () => ({ isLoading: false, data: [] }),
   useSkus: () => ({ isLoading: false, data: [] }),
   usePutawayOrder: () => ({ mutateAsync: vi.fn(), isPending: false }),

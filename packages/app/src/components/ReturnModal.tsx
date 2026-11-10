@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { App as AntApp, InputNumber, Modal, Select, Table, Typography } from 'antd';
+import { orderNumberPlace } from '@one/wms/numbering';
+import { App as AntApp, Input, InputNumber, Modal, Select, Table, Typography } from 'antd';
 import { useCreateOrder, useLocations } from '../api/hooks';
 import { api, ApiError } from '../api/client';
 import type { Order, ReturnableLine } from '../api/client';
+import { useDraftNumber } from './use-seeded-code';
 import { fmtQty } from '../lib/format';
 import { monoCell, numCell, TABLE_PAGINATION } from './table-style';
 
@@ -51,6 +53,9 @@ export default function ReturnModal({
 
   const view = returnable.data;
   const direction = view?.direction;
+  const orderNoDraft = useDraftNumber(
+    open && direction ? orderNumberPlace({ direction, returnOf: true }) : null,
+  );
 
   const submit = async () => {
     if (!view || !direction) return;
@@ -73,8 +78,10 @@ export default function ReturnModal({
       return;
     }
     try {
+      const orderNo = orderNoDraft.value.trim();
       const created = await create.mutateAsync({
         direction,
+        ...(orderNo ? { orderNo } : {}),
         returnOf: view.sourceOrderNo,
         note: `退货 ${view.sourceOrderNo}`,
         lines,
@@ -102,6 +109,16 @@ export default function ReturnModal({
       destroyOnHidden
       width={760}
     >
+      <div style={{ marginBottom: 12, maxWidth: 360 }}>
+        <Typography.Text>单号</Typography.Text>
+        <Input
+          aria-label="退货单号"
+          style={{ marginTop: 4 }}
+          placeholder="留空则按编号规则生成"
+          value={orderNoDraft.value}
+          onChange={(event) => orderNoDraft.onChange(event.target.value)}
+        />
+      </div>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
         {direction === 'out'
           ? '退供开出库单，发货时按这里的数量扣库存。批次必须是原单上的批次，库位可以改成实际出库的库位。'

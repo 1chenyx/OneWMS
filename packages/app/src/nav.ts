@@ -115,7 +115,7 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
   {
     key: 'sys',
     label: '系统',
-    description: '收发流程、出库规则、仓库能力与应用设置',
+    description: '收发流程、出库与编号规则、仓库能力与应用设置',
     icon: ControlOutlined,
     items: [
       { page: 'flows', label: '流程', icon: ApartmentOutlined },

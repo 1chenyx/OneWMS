@@ -80,6 +80,25 @@ vi.mock('../src/api/client', () => ({
       if (query?.limit == null) return rows;
       return { total: rows.length, limit: query.limit, offset: query.offset ?? 0, hasMore: false, rows };
     },
+    numbering: async (place?: string) => ({
+      stored: true,
+      patchOp: 'replace' as const,
+      path: '/modules/core.wms/settings/numbering',
+      numbering: {},
+      places: [
+        {
+          place: place ?? 'location',
+          label: place === 'warehouse' ? '仓库' : '库位',
+          group: '档案',
+          pattern: place === 'warehouse' ? 'WH-{seq:2}' : 'LOC-{seq:4}',
+          configured: null,
+          invalid: null,
+          reset: 'never',
+          resetLabel: '一直累加',
+          next: place === 'warehouse' ? 'WH-01' : 'LOC-0001',
+        },
+      ],
+    }),
     createLocation: vi.fn(),
     updateLocation: vi.fn(),
     createWarehouse: vi.fn(),

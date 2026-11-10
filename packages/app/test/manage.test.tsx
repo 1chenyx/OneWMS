@@ -172,6 +172,7 @@ vi.mock('../src/api/hooks', () => ({
   useSkus: () => ({ isLoading: false, data: skusFixture }),
   usePartners: () => ({ isLoading: false, data: [] }),
   useCreateSku: () => ({ mutateAsync: createSkuMock, isPending: false }),
+  useNextNumber: () => ({ isLoading: false, data: undefined }),
   useUpdateSku: () => ({ mutateAsync: updateSkuMock, isPending: false }),
   useArchiveSku: () => ({ mutateAsync: archiveSkuMock, isPending: false }),
   useUnarchiveSku: () => ({ mutateAsync: unarchiveSkuMock, isPending: false }),

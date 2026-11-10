@@ -7,6 +7,7 @@ import { api, ApiError } from '../api/client';
 import type { LpnRow, LpnStockLine } from '../api/client';
 import { useAppNav } from '../app-nav';
 import PageHeader from '../components/PageHeader';
+import { filledCode, useSeededField } from '../components/use-seeded-code';
 import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
 
 /**
@@ -63,6 +64,7 @@ export default function PalletsPage() {
   const [moveForm] = Form.useForm<{ toLocationCode: string }>();
   const [selected, setSelected] = useState<string | null>(() => takeInitialFilter()?.lpnCode ?? null);
   const [createOpen, setCreateOpen] = useState(false);
+  useSeededField(createForm, 'lpnCode', createOpen ? 'lpn' : null);
   const [contentMode, setContentMode] = useState<'pack' | 'unpack' | null>(null);
   const [moveOpen, setMoveOpen] = useState(false);
 
@@ -86,15 +88,17 @@ export default function PalletsPage() {
   const fail = (caught: unknown, fallback: string) => message.error(errorText(caught, fallback));
 
   const create = useMutation({
-    mutationFn: (values: { lpnCode: string; locationCode?: string }) => {
-      const locationCode = values.locationCode?.trim();
+    mutationFn: (values: { lpnCode?: string; locationCode?: string }) => {
+      const lpnCode = filledCode(values.lpnCode);
+      const locationCode = filledCode(values.locationCode);
       return api.createLpn({
-        lpnCode: values.lpnCode.trim(),
+        ...(lpnCode ? { lpnCode } : {}),
         ...(locationCode ? { locationCode } : {}),
       });
     },
     onSuccess: (created) => {
       refresh();
+      void queryClient.invalidateQueries({ queryKey: ['numbering'] });
       setSelected(created.lpnCode);
       setCreateOpen(false);
       message.success(`托盘 ${created.lpnCode} 已建在 ${created.locationCode}`);
@@ -150,7 +154,13 @@ export default function PalletsPage() {
         subtitle="托盘占用某个库位上已经有的货。移动时整托一起走，不另算一套库存。"
         extra={
           lpnOn ? (
-            <Button type="primary" onClick={() => setCreateOpen(true)}>
+            <Button
+              type="primary"
+              onClick={() => {
+                createForm.resetFields();
+                setCreateOpen(true);
+              }}
+            >
               新建托盘
             </Button>
           ) : null
@@ -221,7 +231,7 @@ export default function PalletsPage() {
           layout="vertical"
           onFinish={(values) => create.mutate(values)}
         >
-          <Form.Item name="lpnCode" label="托盘号" rules={[{ required: true, message: '填写托盘号' }]}>
+          <Form.Item name="lpnCode" label="托盘号" extra="已填入建议编号，可以改。留空则按编号规则生成。">
             <Input placeholder="如 P-1" />
           </Form.Item>
           <Form.Item name="locationCode" label="库位（可选）">

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { allocateCode } from '../numbering/allocate.js';
+import { orderNumberPlace } from '../numbering/pattern.js';
 import { evalWhenCondition, type ToolContext, type ToolDefinition } from '@one/core';
 import type { WmsWorkspace } from '../wms.js';
 import { readWmsSettings } from '../config/wms-settings.js';
@@ -256,7 +258,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     id: 'wms.order.create',
     label: '创建出入库单',
     description:
-      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正数，支持 3 位小数——散装/称重场景，如 0.5 表示半斤）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致）。出库行写了批次就只扣该批次；没写批次的行按仓库统一的分配策略扣。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。批次怎么扣不在单据上指定，是 core.wms 设置 defaultAllocation（strict=严格桶不分配，没写批次只扣 DEFAULT / fifo=先进先出 / fefo=先到期先出，缺省 strict）。fifo 或 fefo 时，没写批次的行在该行库位内拆成具体批次，一行可拆多批；写了批次的行不参与拆分。要改规则用 profile.propose 改 /modules/core.wms/settings/defaultAllocation，确认后生效，不要传 allocation。退货单不按分配策略拆行。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传则自动生成。module.return 启用时可传 returnOf 原单号：入库单退已发货的出库单（客退，收货时加库存），出库单退已收货的入库单（退供，发货时扣库存）。数量按 SKU 和批次不能超过原单已入账再减去未取消的退货，批次必须是原单上的批次，不按分配策略拆行。不传 returnOf 就是普通出入库。停用后退货参数会被拒绝，已开出的退货单仍可继续流转。module.asn 启用时可传 asn=true 把入库单开成到货预报（状态已预报，可选 expectedAt 预计到货日 YYYY-MM-DD）：收货前不加库存，收到货再转入 received 才加库存，取消预报不动库存。不传 asn 就是直接入库。停用后预报参数会被拒绝，已经预报的单仍可收货或取消。预报不能同时是退货，也不能开出库单。写了批次或库位之后能不能换，也是仓库设置 specifiedBatchConstraint、specifiedLocationConstraint（prefer=可以换，lock=不能换），不要在单据上传这两个参数。没填的批次和库位不受这两项限制。退货单的批次始终锁定，序列号商品的库位和批次始终锁定。',
+      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正数，支持 3 位小数——散装/称重场景，如 0.5 表示半斤）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致）。出库行写了批次就只扣该批次；没写批次的行按仓库统一的分配策略扣。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。批次怎么扣不在单据上指定，是 core.wms 设置 defaultAllocation（strict=严格桶不分配，没写批次只扣 DEFAULT / fifo=先进先出 / fefo=先到期先出，缺省 strict）。fifo 或 fefo 时，没写批次的行在该行库位内拆成具体批次，一行可拆多批；写了批次的行不参与拆分。要改规则用 profile.propose 改 /modules/core.wms/settings/defaultAllocation，确认后生效，不要传 allocation。退货单不按分配策略拆行。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传或空着则按编号规则生成（普通入库、出库、预报、客退、退供各用各的模板），传了就用传入的。module.return 启用时可传 returnOf 原单号：入库单退已发货的出库单（客退，收货时加库存），出库单退已收货的入库单（退供，发货时扣库存）。数量按 SKU 和批次不能超过原单已入账再减去未取消的退货，批次必须是原单上的批次，不按分配策略拆行。不传 returnOf 就是普通出入库。停用后退货参数会被拒绝，已开出的退货单仍可继续流转。module.asn 启用时可传 asn=true 把入库单开成到货预报（状态已预报，可选 expectedAt 预计到货日 YYYY-MM-DD）：收货前不加库存，收到货再转入 received 才加库存，取消预报不动库存。不传 asn 就是直接入库。停用后预报参数会被拒绝，已经预报的单仍可收货或取消。预报不能同时是退货，也不能开出库单。写了批次或库位之后能不能换，也是仓库设置 specifiedBatchConstraint、specifiedLocationConstraint（prefer=可以换，lock=不能换），不要在单据上传这两个参数。没填的批次和库位不受这两项限制。退货单的批次始终锁定，序列号商品的库位和批次始终锁定。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -267,7 +269,11 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
           description: '单据明细行，每行 { skuCode, quantity, locationCode?, batchNo?, batchExpiryDate? }',
           items: { type: 'object' },
         },
-        orderNo: { type: 'string', description: '单据号（可选，缺省自动生成）' },
+        orderNo: {
+          type: 'string',
+          description:
+            '单据号（可选。不传或空着按编号规则生成：普通入库 order.in、出库 order.out、预报 order.asn、客退 order.return.in、退供 order.return.out。传了就用这个）',
+        },
         note: { type: 'string', description: '备注（可选）' },
         partnerCode: {
           type: 'string',
@@ -363,7 +369,15 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         seenKeys.add(key);
       }
 
-      const orderNo = params.orderNo ?? generateOrderNo(params.direction);
+      const orderNo = allocateCode(
+        ws,
+        orderNumberPlace({
+          direction: params.direction,
+          asn: wantsAsn,
+          returnOf: returnOf.length > 0,
+        }),
+        params.orderNo,
+      );
       if (ws.orders.byNo(orderNo)) {
         throw new OrderAlreadyExistsError(orderNo);
       }
@@ -743,8 +757,4 @@ function postedOf(
   return postedBucketsForReturn(source.direction, ws.orders.lines(source.id), ws.inventory.movementsByOrder(source.id));
 }
 
-/** 自动单号：IN-20261030-a1b2c3d4（方向 + 日期 + uuid 片段） */
-function generateOrderNo(direction: OrderDirection): string {
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  return `${direction === 'in' ? 'IN' : 'OUT'}-${date}-${randomUUID().slice(0, 8)}`;
-}
+

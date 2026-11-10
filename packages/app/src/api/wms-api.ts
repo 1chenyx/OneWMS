@@ -530,10 +530,33 @@ function locations(query?: LocationListQuery & { limit?: number; offset?: number
   return request<Location[] | ListPage<Location>>(qs ? `/api/locations?${qs}` : '/api/locations');
 }
 
+/** GET /api/numbering。下一号只供预填，不占号。 */
+export interface NumberingPlaceView {
+  place: string;
+  label: string;
+  group: string;
+  pattern: string;
+  configured: string | null;
+  invalid: string | null;
+  reset: string;
+  resetLabel: string;
+  next: string;
+}
+
+export interface NumberingView {
+  stored: boolean;
+  patchOp: 'add' | 'replace';
+  path: string;
+  numbering: Record<string, string>;
+  places: NumberingPlaceView[];
+}
+
 export const wmsApi = {
+  numbering: (place?: string) =>
+    request<NumberingView>(place ? `/api/numbering?place=${encodeURIComponent(place)}` : '/api/numbering'),
   skus,
   createSku: (body: {
-    skuCode: string;
+    skuCode?: string;
     name: string;
     barcode?: string;
     reorderPoint?: number;
@@ -610,7 +633,7 @@ export const wmsApi = {
     ),
   partners,
   createPartner: (body: {
-    partnerCode: string;
+    partnerCode?: string;
     kind: 'supplier' | 'customer';
     name: string;
     contact?: string;
@@ -633,7 +656,7 @@ export const wmsApi = {
   /** 拣货单清单（M21）：state 过滤（created/closed/canceled） */
   pickings: (state?: string) =>
     request<Picking[]>(state ? `/api/pickings?state=${state}` : '/api/pickings'),
-  createPicking: (body: { orderNos: string[]; note?: string }) =>
+  createPicking: (body: { orderNos: string[]; note?: string; pickingNo?: string }) =>
     request<{ pickingId: string; pickingNo: string; state: string; lineCount: number }>(
       '/api/pickings',
       { method: 'POST', body: JSON.stringify(body) },
@@ -815,7 +838,7 @@ export const wmsApi = {
       { method: 'POST' },
     ),
   locations,
-  createLocation: (body: { locationCode: string; name?: string; warehouseCode?: string; capacity?: number }) =>
+  createLocation: (body: { locationCode?: string; name?: string; warehouseCode?: string; capacity?: number }) =>
     request<{ locationId: string; locationCode: string; name: string; capacity?: number }>('/api/locations', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -827,7 +850,7 @@ export const wmsApi = {
       { method: 'PUT', body: JSON.stringify(body) },
     ),
   warehouses: () => request<Warehouse[]>('/api/warehouses'),
-  createWarehouse: (body: { warehouseCode: string; name?: string }) =>
+  createWarehouse: (body: { warehouseCode?: string; name?: string }) =>
     request<{ warehouseId: string; warehouseCode: string; name: string }>('/api/warehouses', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -849,7 +872,7 @@ export const wmsApi = {
   },
   serial: (serialNo: string) => request<SerialRow>(`/api/serials/${encodeURIComponent(serialNo)}`),
   lpns: () => request<LpnRow[]>('/api/lpns'),
-  createLpn: (body: { lpnCode: string; locationCode?: string }) =>
+  createLpn: (body: { lpnCode?: string; locationCode?: string }) =>
     request<{ lpnId: string; lpnCode: string; locationCode: string }>('/api/lpns', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -873,7 +896,7 @@ export const wmsApi = {
   stocktakes: () => request<Stocktake[]>('/api/stocktakes'),
   stocktakeDetail: (no: string) =>
     request<StocktakeDetail>(`/api/stocktakes/${encodeURIComponent(no)}`),
-  createStocktake: (body: { locationCodes?: string[]; note?: string }) =>
+  createStocktake: (body: { locationCodes?: string[]; note?: string; stocktakeNo?: string }) =>
     request<{ stocktakeId: string; stocktakeNo: string; state: string; lineCount: number }>(
       '/api/stocktakes',
       { method: 'POST', body: JSON.stringify(body) },

@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App as AntApp, ConfigProvider } from 'antd';
 import type { ProfileSnapshot } from '@one/core';
+import { NUMBERING_PLACES, readNumbering, sampleNumber } from '@one/wms/numbering';
 import type { ProfileCatalog } from '../src/api/profile-api';
 import RulesPage from '../src/pages/RulesPage';
 
@@ -153,5 +154,72 @@ describe('规则页', () => {
       note: '规则：指定批次改为不能换',
     });
     expect(await screen.findByRole('region', { name: '确认这次修改' })).toHaveTextContent('写了批次的行改为不能换');
+  });
+
+  it('编号规则整对象提交，还没有 numbering 键时用 add', async () => {
+    harness.state.snapshot = {
+      ...snapshot(),
+      modules: { 'core.wms': { enabled: true, version: '0.1.0', settings: {} } },
+    };
+    harness.proposeMock.mockResolvedValue({
+      proposalId: 'p-num',
+      pendingConfirm: true,
+      hint: '',
+      report: { summary: '共 1 项变更', items: [] },
+    });
+    const user = userEvent.setup();
+    render(wrap(<RulesPage />));
+
+    const input = screen.getByRole('textbox', { name: '入库单编号模板' });
+    await user.clear(input);
+    // user-event 里 {{ 才是一个 {，后面的 } 不用再转义。
+    await user.type(input, 'IN-{{yyyy}-{{seq:3}');
+    const sample = sampleNumber('IN-{yyyy}-{seq:3}');
+    if (!sample.ok) throw new Error(sample.error);
+    expect(await screen.findByText(new RegExp(sample.sample))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '提交编号规则' })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: '提交编号规则' }));
+    const base = readNumbering({});
+    const value = Object.fromEntries(
+      NUMBERING_PLACES.map((place) => [
+        place.id,
+        place.id === 'order.in' ? 'IN-{yyyy}-{seq:3}' : base.byId[place.id].pattern,
+      ]),
+    );
+    expect(harness.proposeMock).toHaveBeenCalledWith({
+      patch: [{ op: 'add', path: '/modules/core.wms/settings/numbering', value }],
+      note: '规则：编号 入库单',
+    });
+    expect(await screen.findByRole('region', { name: '确认这次修改' })).toHaveTextContent('入库单改为 IN-{yyyy}-{seq:3}');
+    expect(screen.getByRole('radio', { name: /严格桶/ })).toBeDisabled();
+  });
+
+  it('编号模板不合法时不能提交', async () => {
+    const user = userEvent.setup();
+    render(wrap(<RulesPage />));
+    const input = screen.getByRole('textbox', { name: '商品编号模板' });
+    await user.clear(input);
+    await user.type(input, 'NOSEQ');
+    expect(screen.getByText(/必须有且只有一个/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '提交编号规则' })).toBeDisabled();
+  });
+
+  it('出库规则还在确认时不能再提交编号', async () => {
+    harness.proposeMock.mockResolvedValue({
+      proposalId: 'p-rule',
+      pendingConfirm: true,
+      hint: '',
+      report: { summary: '共 1 项变更', items: [] },
+    });
+    const user = userEvent.setup();
+    render(wrap(<RulesPage />));
+    const input = screen.getByRole('textbox', { name: '商品编号模板' });
+    await user.clear(input);
+    await user.type(input, 'ITEM-{{seq:3}');
+    expect(screen.getByRole('button', { name: '提交编号规则' })).toBeEnabled();
+    await user.click(screen.getByRole('radio', { name: /先进先出/ }));
+    expect(screen.getByRole('button', { name: '提交编号规则' })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: '商品编号模板' })).toBeDisabled();
   });
 });

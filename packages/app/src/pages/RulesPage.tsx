@@ -3,6 +3,8 @@ import PageHeader from '../components/PageHeader';
 import { presentOf } from '../lib/module-present';
 import { useProfileCatalog, useProfileSnapshot } from '../api/hooks';
 import ChangeConfirm from './ChangeConfirm';
+import NumberingRulesCard from './NumberingRulesCard';
+import { useNumberingRules } from './use-numbering-rules';
 import {
   ALLOCATION_LABEL,
   allocationResult,
@@ -18,7 +20,7 @@ import {
 } from './use-outbound-rules';
 
 /**
- * 规则。整仓怎么出货在这里定。
+ * 规则。出库怎么扣、各处编号怎么编，都在这里定。
  * 出库单不再另选批次怎么扣，也不另选写了的批次、库位能不能换。
  */
 
@@ -32,7 +34,10 @@ const PAGE_STYLE = `
   width: 100%;
 }
 .rules-body {
-  max-width: 720px;
+  max-width: 880px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .outbound-rules {
   padding: 14px 16px;
@@ -69,24 +74,23 @@ const PAGE_STYLE = `
 export default function RulesPage() {
   const snapshot = useProfileSnapshot();
   const catalog = useProfileCatalog();
-  const rules = useOutboundRules();
+  const outbound = useOutboundRules();
+  const numbering = useNumberingRules();
   const nameOf = (id: string) => catalog.data?.modules.find((item) => item.id === id)?.name ?? presentOf(id).name;
+  const settings = snapshot.data?.modules['core.wms']?.settings;
 
   return (
     <div className="rules-page">
       <style>{PAGE_STYLE}</style>
-      <PageHeader title="规则" subtitle="整仓怎么出货在这里定。出库单按这里的配置出。确认后才生效。" />
+      <PageHeader title="规则" subtitle="出库怎么扣、各处编号怎么编，都在这里定。确认后才生效。" />
       {snapshot.isError ? (
         <Alert type="error" showIcon message="读不到规则配置" />
       ) : snapshot.isLoading || !snapshot.data ? (
         <Card loading />
       ) : (
         <div className="rules-body">
-          <OutboundRulesCard
-            settings={snapshot.data.modules['core.wms']?.settings}
-            rules={rules}
-            nameOf={nameOf}
-          />
+          <OutboundRulesCard settings={settings} rules={outbound} locked={numbering.busy} nameOf={nameOf} />
+          <NumberingRulesCard settings={settings} rules={numbering} locked={outbound.busy} nameOf={nameOf} />
         </div>
       )}
     </div>
@@ -96,10 +100,12 @@ export default function RulesPage() {
 function OutboundRulesCard({
   settings,
   rules,
+  locked,
   nameOf,
 }: {
   settings: Record<string, unknown> | undefined;
   rules: ReturnType<typeof useOutboundRules>;
+  locked: boolean;
   nameOf: (id: string) => string;
 }) {
   const savedAllocation = readAllocation(settings);
@@ -110,7 +116,7 @@ function OutboundRulesCard({
   const blockExpired = rules.preview?.blockExpired ?? savedExpired;
   const batchConstraint = rules.preview?.batchConstraint ?? savedBatch;
   const locationConstraint = rules.preview?.locationConstraint ?? savedLocation;
-  const disabled = rules.busy;
+  const disabled = rules.busy || locked;
   const base = (): Omit<OutboundRuleDraft, 'place' | 'text'> => ({
     allocation: savedAllocation,
     blockExpired: savedExpired,

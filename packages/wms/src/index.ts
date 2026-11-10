@@ -99,6 +99,17 @@ export { WMS_PROJECTION_VERSION } from './views/wms-projections.js';
 export { createWmsTools } from './tools/wms-tools.js';
 export { readWmsSettings } from './config/wms-settings.js';
 export type { WmsSettings } from './config/wms-settings.js';
+export { allocateCode, describeNumbering } from './numbering/allocate.js';
+export type { NumberingPlaceView, NumberingView } from './numbering/allocate.js';
+export {
+  NUMBERING_PLACES,
+  compilePattern,
+  isNumberPlace,
+  orderNumberPlace,
+  readNumbering,
+  sampleNumber,
+} from './numbering/pattern.js';
+export type { NumberPlaceId, NumberingRules } from './numbering/pattern.js';
 
 export { listOrdersWithLines, listOrdersWithLinesPage, withOrderLines } from './queries/order-queries.js';
 export { getReturnable } from './queries/return-queries.js';

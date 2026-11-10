@@ -17,6 +17,20 @@ export function useProfileCatalog() {
   });
 }
 
+/** 某个位置的下一号。place 为空不请求。预填用，不占号。 */
+export function useNextNumber(place: string | null) {
+  return useQuery({
+    queryKey: ['numbering', place ?? ''],
+    enabled: !!place,
+    queryFn: async () => {
+      const view = await api.numbering(place!);
+      const row = view.places.find((item) => item.place === place) ?? view.places[0];
+      if (!row) throw new Error('没有这个编号位置');
+      return { place: row.place, value: row.next, pattern: row.pattern };
+    },
+  });
+}
+
 // ── SKU ──────────────────────────────────────────────
 
 /** SKU 清单（q = 编码/名称/条码 模糊搜索，M18；空串 = 全量）。queryKey 带 q，
@@ -51,7 +65,10 @@ export function useCreateSku() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.createSku,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['skus'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['skus'] });
+      void qc.invalidateQueries({ queryKey: ['numbering'] });
+    },
   });
 }
 
@@ -144,7 +161,14 @@ function useInvalidatePartners() {
 
 export function useCreatePartner() {
   const invalidate = useInvalidatePartners();
-  return useMutation({ mutationFn: api.createPartner, onSuccess: invalidate });
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createPartner,
+    onSuccess: () => {
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ['numbering'] });
+    },
+  });
 }
 
 export function useUpdatePartner() {
@@ -177,7 +201,14 @@ function useInvalidatePickings() {
 
 export function useCreatePicking() {
   const invalidate = useInvalidatePickings();
-  return useMutation({ mutationFn: api.createPicking, onSuccess: invalidate });
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createPicking,
+    onSuccess: () => {
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ['numbering'] });
+    },
+  });
 }
 
 export function usePickPickingLine() {
@@ -287,7 +318,10 @@ export function useCreateOrder() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.createOrder,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['orders'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['orders'] });
+      void qc.invalidateQueries({ queryKey: ['numbering'] });
+    },
   });
 }
 
@@ -512,7 +546,14 @@ function useInvalidateLocations() {
 
 export function useCreateLocation() {
   const invalidate = useInvalidateLocations();
-  return useMutation({ mutationFn: api.createLocation, onSuccess: invalidate });
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createLocation,
+    onSuccess: () => {
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ['numbering'] });
+    },
+  });
 }
 
 export function useUpdateLocation() {
@@ -560,7 +601,14 @@ function useInvalidateStocktakeLifecycle() {
 
 export function useCreateStocktake() {
   const invalidate = useInvalidateStocktakeLines();
-  return useMutation({ mutationFn: api.createStocktake, onSuccess: invalidate });
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createStocktake,
+    onSuccess: () => {
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ['numbering'] });
+    },
+  });
 }
 
 export function useCountStocktake() {
@@ -626,6 +674,7 @@ export function useConfirmProposal() {
       void qc.invalidateQueries({ queryKey: ['proposals'] });
       void qc.invalidateQueries({ queryKey: ['profile'] });
       void qc.invalidateQueries({ queryKey: ['orders'] });
+      void qc.invalidateQueries({ queryKey: ['numbering'] });
     },
   });
 }

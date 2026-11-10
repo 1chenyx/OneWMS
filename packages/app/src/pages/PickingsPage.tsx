@@ -29,6 +29,7 @@ import {
 import { ApiError } from '../api/client';
 import type { Picking, PickingLine } from '../api/client';
 import PageHeader from '../components/PageHeader';
+import { useDraftNumber } from '../components/use-seeded-code';
 import { PrintPreviewModal, PrintRoot, PrintSelectionBar, PrintStyle, usePrintSession } from '../components/print-preview';
 import { PickingPrintSheet, pickingPrintTitle } from '../components/print-sheets';
 import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
@@ -56,6 +57,7 @@ export default function PickingsPage() {
   const close = useClosePicking();
   const cancel = useCancelPicking();
   const [createOpen, setCreateOpen] = useState(false);
+  const pickingNo = useDraftNumber(createOpen ? 'picking' : null);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const session = usePrintSession<Picking>();
   /** 换状态筛选后清空勾选。拣货单数据在客户端，勾选跟着当前这份清单。 */
@@ -115,7 +117,8 @@ export default function PickingsPage() {
       return;
     }
     try {
-      const r = await create.mutateAsync({ orderNos: selectedOrders });
+      const code = pickingNo.value.trim();
+      const r = await create.mutateAsync({ orderNos: selectedOrders, ...(code ? { pickingNo: code } : {}) });
       message.success(`拣货单 ${r.pickingNo} 已创建（${r.lineCount} 行）`);
       setSelectedOrders([]);
       setCreateOpen(false);
@@ -279,6 +282,16 @@ export default function PickingsPage() {
           okText="创建"
           destroyOnHidden
         >
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            拣货单号已按规则填好，可以改。留空则保存时再生成。
+          </Typography.Paragraph>
+          <Input
+            aria-label="拣货单号"
+            style={{ marginBottom: 12 }}
+            placeholder="留空则按编号规则生成"
+            value={pickingNo.value}
+            onChange={(event) => pickingNo.onChange(event.target.value)}
+          />
           <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
             选择「拣货中」状态的出库单聚合为一张拣货单（可多选）：
           </Typography.Paragraph>

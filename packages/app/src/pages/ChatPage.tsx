@@ -7,6 +7,7 @@ import type { AgentDef, AiProfilePublic, ChatAttachmentPayload, ChatInvocation }
 import { useAiConfig, useProposals } from '../api/hooks';
 import { useChatSession } from '../chat/ChatProvider';
 import type { ChatTurn } from '../chat/ChatProvider';
+import { ChatMarkdown } from '../chat/render-markdown';
 import { parseChatFile, MAX_CHAT_FILES } from '../chat/parse-attachment';
 import { useAppNav } from '../app-nav';
 import type { InitialFilter, Page } from '../app-nav';
@@ -27,7 +28,8 @@ import PageHeader from '../components/PageHeader';
  *  - 配置确认：对话里的 profile.propose 和 AI 记忆设置一到就弹窗，
  *    写明将改成什么样、有什么影响；关掉后可从输入框上方再打开。
  *    助手定义的改动在助手管理页自己确认，不进这个窗口；
- *  - 流式渲染：一组工具调用先收成一句人话，展开才看明细；助手文本逐 delta 增长；
+ *  - 流式渲染：一组工具调用先收成一句人话，展开才看明细；助手文本逐 delta 增长，
+ *    按 Markdown 排版。模型写来的 HTML 只当文字显示；
  *  - 成功的操作展开后仍可去对应管理页；
  *  - 输入区可以带上 Excel、CSV 或文本，用户说怎么处理，助手就怎么处理。
  */
@@ -276,11 +278,7 @@ export default function ChatPage() {
               <div key={idx}>
                 <UserBubble turn={turn} />
                 <TurnActivity turn={turn} onAnswer={chat.answerAsk} onNavigate={navigate} />
-                {turn.assistantText ? (
-                  <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
-                    {turn.assistantText}
-                  </Typography.Paragraph>
-                ) : null}
+                {turn.assistantText ? <ChatMarkdown text={turn.assistantText} /> : null}
                 {turn.failed ? (
                   <Typography.Paragraph type="danger" style={{ marginBottom: 0 }}>
                     {turn.failed}

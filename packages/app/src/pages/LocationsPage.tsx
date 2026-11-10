@@ -22,6 +22,7 @@ import { api, ApiError } from '../api/client';
 import type { Location, Warehouse } from '../api/client';
 import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
 import PageHeader from '../components/PageHeader';
+import { filledCode, useSeededField } from '../components/use-seeded-code';
 import { LocationSheetPort } from '../components/sheet-specs';
 import { monoCell, serverPagination } from '../components/table-style';
 
@@ -189,6 +190,8 @@ export default function LocationsPage() {
   const [editingWarehouse, setEditingWarehouse] = useState<Warehouse | null>(null);
   const [warehouseSaving, setWarehouseSaving] = useState(false);
   const [warehouseForm] = Form.useForm<{ warehouseCode: string; name?: string }>();
+  useSeededField(form, 'locationCode', open && !editing ? 'location' : null);
+  useSeededField(warehouseForm, 'warehouseCode', warehouseOpen && !editingWarehouse ? 'warehouse' : null);
 
   const openCreate = (warehouseCode?: string) => {
     setEditing(null);
@@ -226,13 +229,9 @@ export default function LocationsPage() {
           warehouseOn ? `库位 ${r.locationCode} 已保存` : `库位 ${r.locationCode} 已更名为「${r.name}」`,
         );
       } else {
-        const code = values.locationCode.trim();
-        if (!code) {
-          message.error('请输入库位编码');
-          return;
-        }
+        const code = filledCode(values.locationCode);
         const r = await create.mutateAsync({
-          locationCode: code,
+          ...(code ? { locationCode: code } : {}),
           name: name || undefined,
           ...(warehouseOn && warehouseCode ? { warehouseCode } : {}),
           ...(capacity != null ? { capacity } : {}),
@@ -270,16 +269,16 @@ export default function LocationsPage() {
         await api.updateWarehouse(editingWarehouse.warehouseCode, { name });
         message.success(`仓库 ${editingWarehouse.warehouseCode} 已更名为「${name}」`);
       } else {
-        const code = values.warehouseCode.trim();
-        if (!code) {
-          message.error('请输入仓库编码');
-          return;
-        }
-        const created = await api.createWarehouse({ warehouseCode: code, name: name || undefined });
+        const code = filledCode(values.warehouseCode);
+        const created = await api.createWarehouse({
+          ...(code ? { warehouseCode: code } : {}),
+          name: name || undefined,
+        });
         message.success(`仓库 ${created.warehouseCode} 已创建`);
         setPicked({ kind: 'warehouse', code: created.warehouseCode });
       }
       await queryClient.invalidateQueries({ queryKey: ['warehouses'] });
+      await queryClient.invalidateQueries({ queryKey: ['numbering'] });
       setWarehouseOpen(false);
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : `${editingWarehouse ? '保存' : '创建'}失败：${String(e)}`);
@@ -368,8 +367,11 @@ export default function LocationsPage() {
           <Form.Item
             name="locationCode"
             label="库位编码"
-            rules={editing ? [] : [{ required: true, message: '请输入编码' }]}
-            extra={editing ? '编码是业务键，历史单据按它引用，不可修改' : '如 A-01、二楼东架；DEFAULT 是保留字不可用'}
+            extra={
+              editing
+                ? '编码是业务键，历史单据按它引用，不可修改'
+                : '已填入建议编号，可以改。留空则按编号规则生成。DEFAULT 是保留字不可用'
+            }
           >
             <Input placeholder="如 A-01（全库唯一）" disabled={editing != null} />
           </Form.Item>
@@ -407,8 +409,11 @@ export default function LocationsPage() {
             <Form.Item
               name="warehouseCode"
               label="仓库编码"
-              rules={editingWarehouse ? [] : [{ required: true, message: '请输入编码' }]}
-              extra={editingWarehouse ? '编码是业务键，不可修改' : '如 WH-1。同一工作区里编码不能重复'}
+              extra={
+                editingWarehouse
+                  ? '编码是业务键，不可修改'
+                  : '已填入建议编号，可以改。留空则按编号规则生成。同一工作区里编码不能重复'
+              }
             >
               <Input placeholder="如 WH-1" disabled={editingWarehouse != null} />
             </Form.Item>

@@ -9,6 +9,7 @@ import {
   SerialDisabledError,
   SkuNotFoundError,
 } from '../errors.js';
+import { allocateCode } from '../numbering/allocate.js';
 import { listLpns, lpnStock } from '../queries/lpn-queries.js';
 import {
   assertPositiveQty,
@@ -29,26 +30,25 @@ import { def, type WorkspaceResolver } from './tool-def.js';
  * 工具不进 core.wms 的 tools 数组。
  */
 export function createLpnTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
-  const lpnCreate: ToolDefinition<{ lpnCode: string; locationCode?: string }> = {
+  const lpnCreate: ToolDefinition<{ lpnCode?: string; locationCode?: string }> = {
     id: 'wms.lpn.create',
     label: '创建托盘',
     description:
-      '建一个空托盘。lpnCode 全库唯一。locationCode 缺省为虚拟库位 DEFAULT。停用 module.lpn 后本工具拒绝。',
+      '建一个空托盘。lpnCode 全库唯一，不传或空着则按编号规则（lpn）生成，传了就用传入的。locationCode 缺省为虚拟库位 DEFAULT。停用 module.lpn 后本工具拒绝。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
-        lpnCode: { type: 'string', description: '托盘编码' },
+        lpnCode: { type: 'string', description: '托盘编码（可选。不传或空着按编号规则生成，如 LPN-0001）' },
         locationCode: { type: 'string', description: '所在库位（可选，缺省 DEFAULT）' },
       },
-      required: ['lpnCode'],
+      required: [],
     },
     handler: (params, ctx) => {
       const ws = resolveWorkspace(ctx.workspaceId);
       ws.sync();
       assertLpnEnabled(ws);
-      const lpnCode = typeof params.lpnCode === 'string' ? params.lpnCode.trim() : '';
-      if (!lpnCode) throw new Error('TOOL_REJECTED: lpnCode 不能为空');
+      const lpnCode = allocateCode(ws, 'lpn', params.lpnCode);
       if (ws.lpns.byCode(lpnCode)) throw new LpnAlreadyExistsError(lpnCode);
       const loc = resolveLocation(ws, params.locationCode);
       const lpnId = randomUUID();

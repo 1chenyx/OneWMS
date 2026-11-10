@@ -95,6 +95,7 @@ describe('设置种子与兜底（M13）', () => {
       specifiedBatchConstraint: 'prefer',
       specifiedLocationConstraint: 'prefer',
       putawayCapacity: 'off',
+      numbering: {},
     });
   });
 

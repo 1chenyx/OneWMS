@@ -4,6 +4,7 @@ import type { FieldExtension } from '@one/core';
 import { useCreateSku, useProfileSnapshot, useUpdateSku } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { Sku } from '../api/client';
+import { filledCode, useSeededField } from './use-seeded-code';
 
 /**
  * SKU 表单（动态表单，Profile 消费闭环的输入侧）——新建 / 编辑同一份：
@@ -60,6 +61,8 @@ export default function SkuFormModal({
     form.setFieldsValue(values);
   }, [open, sku, form, extensions, serialOn]);
 
+  useSeededField(form, 'skuCode', open && !editing ? 'sku' : null);
+
   const submit = async (values: Record<string, unknown>) => {
     // 收集扩展字段值：空值跳过；json 类型提交前 parse
     const extData: Record<string, unknown> = {};
@@ -98,8 +101,9 @@ export default function SkuFormModal({
         });
         message.success(`SKU ${sku.skuCode} 已更新`);
       } else {
-        await create.mutateAsync({
-          skuCode: values.skuCode as string,
+        const skuCode = filledCode(values.skuCode);
+        const created = await create.mutateAsync({
+          ...(skuCode ? { skuCode } : {}),
           name: values.name as string,
           barcode: barcode || undefined,
           reorderPoint: reorderPoint > 0 ? reorderPoint : undefined,
@@ -107,7 +111,7 @@ export default function SkuFormModal({
           ...(serialOn && values.serialTracked === true ? { serialTracked: true } : {}),
           extData: Object.keys(extData).length ? extData : undefined,
         });
-        message.success(`SKU ${values.skuCode} 已创建`);
+        message.success(`SKU ${created.skuCode} 已创建`);
       }
       onClose();
     } catch (e) {
@@ -126,7 +130,7 @@ export default function SkuFormModal({
       destroyOnHidden
     >
       <Form form={form} layout="vertical" onFinish={submit}>
-        <Form.Item name="skuCode" label="SKU 编码" rules={[{ required: true, message: '请输入编码' }]}>
+        <Form.Item name="skuCode" label="SKU 编码" extra={editing ? undefined : '已填入建议编号，可以改。留空则按编号规则生成。'}>
           <Input placeholder="如 A-1001（全库唯一）" disabled={editing} />
         </Form.Item>
         <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
