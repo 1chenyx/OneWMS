@@ -26,6 +26,7 @@ import { AppNavProvider, useAppNav } from './app-nav';
 import type { Page } from './app-nav';
 import ModuleRail from './components/ModuleRail';
 import Topbar from './components/Topbar';
+import ChatDock from './components/ChatDock';
 
 /**
  * 页面注册表：page key → 组件。新增页面：Page 联合类型加 key →
@@ -98,11 +99,12 @@ function AppShell() {
             flexDirection: 'column',
           }}
         >
-          {/* ChatProvider 在页面壳级：AI 对话状态跨页存活（切页不丢） */}
+          {/* ChatProvider 在页面壳级：AI 对话状态跨页存活（切页不丢）。浮窗和整页共用这一份。 */}
           <ChatProvider>
             <div className="app-page" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
               <ActivePage />
             </div>
+            <ChatDock />
           </ChatProvider>
         </Layout.Content>
       </Layout>

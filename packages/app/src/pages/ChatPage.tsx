@@ -32,6 +32,7 @@ import PageHeader from '../components/PageHeader';
  *    按 Markdown 排版。模型写来的 HTML 只当文字显示；
  *  - 成功的操作展开后仍可去对应管理页；
  *  - 输入区可以带上 Excel、CSV 或文本，用户说怎么处理，助手就怎么处理。
+ *  - variant=dock：右侧浮窗里的同一块面板，不带页头，输入框矮一档。
  */
 
 /** 已配置过的厂商，按第一次出现的顺序。名字用预设，没有预设就用保存时的称呼。 */
@@ -85,7 +86,7 @@ const ComposerChip = forwardRef<HTMLButtonElement, ButtonProps>(function Compose
   );
 });
 
-export default function ChatPage() {
+export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'dock' }) {
   const { message } = AntApp.useApp();
   const chat = useChatSession();
   const { navigate } = useAppNav();
@@ -216,16 +217,18 @@ export default function ChatPage() {
     chat.setProfileId(credential.id, modelId === credential.model ? undefined : modelId);
   };
 
+  const dock = variant === 'dock';
+
   return (
     <div
-      className="app-fill"
+      className={dock ? undefined : 'app-fill'}
       style={{
         width: '100%',
-        maxWidth: 860,
-        margin: '0 auto',
+        maxWidth: dock ? undefined : 860,
+        margin: dock ? undefined : '0 auto',
         display: 'flex',
         flexDirection: 'column',
-        gap: 16,
+        gap: dock ? 8 : 16,
         flex: 1,
         height: '100%',
         maxHeight: '100%',
@@ -233,7 +236,7 @@ export default function ChatPage() {
         overflow: 'hidden',
       }}
     >
-      <PageHeader title="AI 对话" subtitle="自然语言出入库 / 改配置" />
+      {dock ? null : <PageHeader title="AI 对话" subtitle="自然语言出入库 / 改配置" />}
       {/* AI 未配置引导卡：配置保存成功后自动消失 */}
       {aiUnconfigured ? (
         <Alert
@@ -262,12 +265,28 @@ export default function ChatPage() {
         ) : null}
       </Modal>
       <Card
-        style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}
-        styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } }}
+        style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+          overflow: 'hidden',
+          ...(dock ? { border: 'none', boxShadow: 'none', background: 'transparent' } : {}),
+        }}
+        styles={{
+          body: {
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+            overflow: 'hidden',
+            ...(dock ? { padding: 0 } : {}),
+          },
+        }}
       >
         <div ref={listRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 8 }}>
           {chat.turns.length === 0 ? (
-            <Typography.Paragraph type="secondary" style={{ padding: 24 }}>
+            <Typography.Paragraph type="secondary" style={{ padding: dock ? 8 : 24 }}>
               试试说：「建一个 SKU：A-1001 轴承」「A-1001 入库 50 个」。
               也可以导入 Excel、CSV 或文本，再说怎么处理，比如「按这张表入库」或「这些是新商品，帮我建档」。
               改配置会立刻弹出确认，写明要改成什么样、有什么影响。
@@ -347,7 +366,7 @@ export default function ChatPage() {
             <Input.TextArea
               value={input}
               variant="borderless"
-              rows={3}
+              rows={dock ? 2 : 3}
               onChange={(e) => setInput(e.target.value)}
               onPressEnter={(e) => {
                 if (!e.shiftKey) {
@@ -368,7 +387,7 @@ export default function ChatPage() {
               style={{ display: 'none' }}
               onChange={(e) => onPickFiles(e.target.files)}
             />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: dock ? 'wrap' : undefined }}>
               <Dropdown
                 trigger={['click']}
                 disabled={chat.isStreaming || agents.length === 0}
@@ -411,7 +430,7 @@ export default function ChatPage() {
                   },
                 }}
               >
-                <ComposerChip style={{ maxWidth: 320 }}>
+                <ComposerChip style={{ maxWidth: dock ? 180 : 320 }}>
                   {shownVendorName ? `${shownVendorName} · ${shownModel ?? '模型'}` : (shownModel ?? '模型')}{' '}
                   <DownOutlined aria-hidden />
                 </ComposerChip>
