@@ -18,18 +18,23 @@ import { OrderView } from './views/order-view.js';
 import { InventoryView } from './views/inventory-view.js';
 import { StocktakeView } from './views/stocktake-view.js';
 import { PickingView } from './views/picking-view.js';
-import { WmsProjections, WMS_PROJECTION_VERSION } from './views/wms-projections.js';
+import { WmsProjections, WMS_PROJECTION_GROUP } from './views/wms-projections.js';
 import { createWmsTools } from './tools/wms-tools.js';
 import { createPutawayTools } from './tools/putaway-tools.js';
 import { isWmsEventType } from './events/catalog.js';
 import { wmsManifest } from './wms-manifest.js';
-import { putawayManifest } from './putaway-manifest.js';
+import { inboundPutawayPatch, putawayManifest } from './putaway-manifest.js';
 import { reversalManifest } from './reversal-manifest.js';
 import { partialManifest } from './partial-manifest.js';
 import { reservationManifest } from './reservation-manifest.js';
 import { returnManifest } from './return-manifest.js';
 import { asnManifest } from './asn-manifest.js';
-import { outboundPickingPatch, pickingManifest } from './picking-manifest.js';
+import { outboundPickedPatch, outboundPickingPatch, pickingManifest } from './picking-manifest.js';
+import { qcManifest } from './qc-manifest.js';
+import { waveManifest } from './wave-manifest.js';
+import { packManifest } from './pack-manifest.js';
+import { loadManifest } from './load-manifest.js';
+import { reviewManifest } from './review-manifest.js';
 import { replenishManifest } from './replenish-manifest.js';
 import { createReplenishTools } from './tools/replenish-tools.js';
 import { warehouseManifest } from './warehouse-manifest.js';
@@ -66,6 +71,11 @@ export class WmsDomain {
   readonly #serialManifest: ModuleManifest;
   readonly #lpnManifest: ModuleManifest;
   readonly #pickingManifest: ModuleManifest;
+  readonly #qcManifest: ModuleManifest;
+  readonly #waveManifest: ModuleManifest;
+  readonly #packManifest: ModuleManifest;
+  readonly #loadManifest: ModuleManifest;
+  readonly #reviewManifest: ModuleManifest;
   readonly #cache = new Map<string, WmsWorkspace>();
 
   private constructor(core: OneCore) {
@@ -103,6 +113,11 @@ export class WmsDomain {
     this.#serialManifest = serialManifest(serialToolDefs);
     this.#lpnManifest = lpnManifest(lpnToolDefs);
     this.#pickingManifest = pickingManifest();
+    this.#qcManifest = qcManifest();
+    this.#waveManifest = waveManifest();
+    this.#packManifest = packManifest();
+    this.#loadManifest = loadManifest();
+    this.#reviewManifest = reviewManifest();
     core.exposeModuleRegistry().registerManifest(this.#manifest);
     core.exposeModuleRegistry().registerManifest(this.#putawayManifest);
     core.exposeModuleRegistry().registerManifest(this.#reversalManifest);
@@ -115,6 +130,11 @@ export class WmsDomain {
     core.exposeModuleRegistry().registerManifest(this.#serialManifest);
     core.exposeModuleRegistry().registerManifest(this.#lpnManifest);
     core.exposeModuleRegistry().registerManifest(this.#pickingManifest);
+    core.exposeModuleRegistry().registerManifest(this.#qcManifest);
+    core.exposeModuleRegistry().registerManifest(this.#waveManifest);
+    core.exposeModuleRegistry().registerManifest(this.#packManifest);
+    core.exposeModuleRegistry().registerManifest(this.#loadManifest);
+    core.exposeModuleRegistry().registerManifest(this.#reviewManifest);
   }
 
   /** 把领域挂到内核上（幂等心智：attach 两次 = 工具覆盖注册 + 表 IF NOT EXISTS + 目录覆盖登记） */
@@ -142,6 +162,11 @@ export class WmsDomain {
         this.#serialManifest,
         this.#lpnManifest,
         this.#pickingManifest,
+        this.#qcManifest,
+        this.#waveManifest,
+        this.#packManifest,
+        this.#loadManifest,
+        this.#reviewManifest,
       );
       this.#cache.set(workspaceId, ws);
     }
@@ -195,6 +220,11 @@ export class WmsWorkspace {
   readonly #serialManifest: ModuleManifest;
   readonly #lpnManifest: ModuleManifest;
   readonly #pickingManifest: ModuleManifest;
+  readonly #qcManifest: ModuleManifest;
+  readonly #waveManifest: ModuleManifest;
+  readonly #packManifest: ModuleManifest;
+  readonly #loadManifest: ModuleManifest;
+  readonly #reviewManifest: ModuleManifest;
   #cursor = -1;
 
   constructor(
@@ -213,6 +243,11 @@ export class WmsWorkspace {
     serialManifest: ModuleManifest,
     lpnManifest: ModuleManifest,
     pickingManifest: ModuleManifest,
+    qcManifest: ModuleManifest,
+    waveManifest: ModuleManifest,
+    packManifest: ModuleManifest,
+    loadManifest: ModuleManifest,
+    reviewManifest: ModuleManifest,
   ) {
     this.#facade = core.workspace(workspaceId);
     this.#db = db;
@@ -229,6 +264,11 @@ export class WmsWorkspace {
     this.#serialManifest = serialManifest;
     this.#lpnManifest = lpnManifest;
     this.#pickingManifest = pickingManifest;
+    this.#qcManifest = qcManifest;
+    this.#waveManifest = waveManifest;
+    this.#packManifest = packManifest;
+    this.#loadManifest = loadManifest;
+    this.#reviewManifest = reviewManifest;
     this.events = this.#facade.events;
     this.fields = this.#facade.fields;
     this.tools = this.#facade.tools;
@@ -250,9 +290,9 @@ export class WmsWorkspace {
     // 注意 core.workspace() 已在上面构造过，内核投影组（registry/profile）的版本
     // 校验因此先于本组完成，两组各打各的戳。
     ensureProjectionVersion(this.#db, {
-      group: 'wms',
+      group: WMS_PROJECTION_GROUP.group,
       workspaceId,
-      codeVersion: WMS_PROJECTION_VERSION,
+      codeVersion: WMS_PROJECTION_GROUP.codeVersion,
       rebuild: () => this.replay(),
     });
     this.sync();
@@ -268,7 +308,43 @@ export class WmsWorkspace {
     this.#installOptional(this.#serialManifest);
     this.#installOptional(this.#lpnManifest);
     this.#installOptional(this.#pickingManifest);
+    this.#installOptional(this.#qcManifest);
+    this.#installOptional(this.#waveManifest);
+    this.#installOptional(this.#packManifest);
+    this.#installOptional(this.#loadManifest);
+    this.#installOptional(this.#reviewManifest);
     this.#alignPickingGate();
+    this.#alignPickedState();
+    this.#alignPutawayGate();
+  }
+
+  /**
+   * 老库的入库流程把 received→done 写成了无条件。
+   * 打开工作区时给这条边补上「上架未启用才走」。新库种子已经带上，这里是空操作。
+   * 补丁对不上时只警告，不挡住打开。
+   */
+  #alignPutawayGate(): void {
+    const inbound = this.profile.getSnapshot().workflows.inbound;
+    if (!inbound) return;
+    const patch = inboundPutawayPatch(inbound);
+    if (!patch) return;
+    const actor = `module:module.putaway@${this.#nodeId}`;
+    let proposalId: string | undefined;
+    try {
+      proposalId = this.profile.propose(actor, patch, '入库上架步骤改为必做').proposalId;
+      this.profile.confirm(proposalId, actor);
+    } catch (e) {
+      if (proposalId) {
+        try {
+          this.profile.reject(proposalId);
+        } catch {
+          // 提议已经不在待确认里
+        }
+      }
+      console.warn(
+        `[module.putaway] 入库流程未能补上上架开关：${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   /**
@@ -296,6 +372,31 @@ export class WmsWorkspace {
       }
       console.warn(
         `[module.picking] 出库流程未能补上拣货开关：${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  /** 老库补「已拣货」。新库安装时已经贡献过，这里是空操作。 */
+  #alignPickedState(): void {
+    const outbound = this.profile.getSnapshot().workflows.outbound;
+    if (!outbound) return;
+    const patch = outboundPickedPatch(outbound);
+    if (!patch) return;
+    const actor = `module:module.picking@${this.#nodeId}`;
+    let proposalId: string | undefined;
+    try {
+      proposalId = this.profile.propose(actor, patch, '出库增加已拣货').proposalId;
+      this.profile.confirm(proposalId, actor);
+    } catch (e) {
+      if (proposalId) {
+        try {
+          this.profile.reject(proposalId);
+        } catch {
+          // 提议已经不在待确认里
+        }
+      }
+      console.warn(
+        `[module.picking] 出库流程未能补上已拣货：${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }

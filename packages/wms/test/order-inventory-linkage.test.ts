@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { OneCore } from '@one/core';
-import { WmsDomain, InsufficientStockError } from '../src/index.js';
+import { WmsDomain, InsufficientStockError, InvalidTransitionError } from '../src/index.js';
+import { allowDirectShip } from './direct-ship.js';
 
 /**
  * 单据 → 库存联动（M9）：
  *  - 入库 received 自动 +库存（逐行流水，reason=order:received，关联单号）
- *  - 出库 picking 余量预检（同 SKU 多行聚合；不足拒绝且零事件）
+ *  - 出库建单按桶预检（同 SKU 多行聚合；不足拒绝且零事件）
  *  - 出库 shipped 自动 -库存（硬守卫：不足拒绝且零事件——含 picking 后库存被挪走的窗口）
  *  - 无效应状态（done / canceled）库存不动；replay 重建一致；手动 adjust 共存
  */
@@ -75,9 +76,13 @@ describe('入库联动：received 自动上架', () => {
     expect(ledger[0].orderId).toBe(ws.orders.byNo(no)!.id);
   });
 
-  it('received → done 不再变动库存', async () => {
+  it('上架并完成不再变动库存，已收货不能直接完成', async () => {
     const no = await createOrder('in', [{ skuCode: 'A-1', quantity: 10 }]);
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'received' });
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'done' })).rejects.toThrow(
+      InvalidTransitionError,
+    );
+    await ws.tools.invoke('wms.order.putaway', { orderNo: no });
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'done' });
     expect(qty('A-1')).toBe(10);
   });
@@ -97,6 +102,7 @@ describe('出库联动：预检 + 自动扣减', () => {
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'picking' });
     expect(qty('A-1')).toBe(100); // 拣货不动账
 
+    allowDirectShip(ws);
     const r = (await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'shipped' })) as {
       adjustedLines: { skuCode: string; locationCode: string; batchNo: string; delta: number }[];
     };
@@ -106,18 +112,17 @@ describe('出库联动：预检 + 自动扣减', () => {
     expect(qty('A-1')).toBe(60);
   });
 
-  it('picking 预检：多行中任一 SKU 余量不足即拒绝，零事件、状态不变', async () => {
+  it('建单预检：多行中任一 SKU 余量不足即拒绝，零事件、不成单', async () => {
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 50 }); // B-2 余量为 0
-    const no = await createOrder('out', [
-      { skuCode: 'A-1', quantity: 30 },
-      { skuCode: 'B-2', quantity: 30 },
-    ]);
     const before = countEvents();
 
     await expect(
-      ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'picking' }),
+      createOrder('out', [
+        { skuCode: 'A-1', quantity: 30 },
+        { skuCode: 'B-2', quantity: 30 },
+      ]),
     ).rejects.toThrow(InsufficientStockError);
-    expect(ws.orders.byNo(no)!.state).toBe('created');
+    expect(ws.orders.list('out')).toHaveLength(0);
     expect(countEvents()).toBe(before);
     expect(qty('A-1')).toBe(50);
   });
@@ -128,6 +133,7 @@ describe('出库联动：预检 + 自动扣减', () => {
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'picking' });
     // 拣货与发货之间，库存被手动调整调走。占用只拦住其他出库单，不拦调整。
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: -50 });
+    allowDirectShip(ws);
     const before = countEvents();
 
     await expect(
@@ -150,6 +156,7 @@ describe('出库联动：预检 + 自动扣减', () => {
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 100 });
     const no = await createOrder('out', [{ skuCode: 'A-1', quantity: 40 }]);
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'shipped' });
 
     const shipped = ws.inventory
@@ -166,6 +173,7 @@ describe('联动与追账模型', () => {
     await ws.tools.invoke('wms.order.transition', { orderNo: inNo, to: 'received' });
     const outNo = await createOrder('out', [{ skuCode: 'A-1', quantity: 30 }]);
     await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' });
     expect(qty('A-1')).toBe(70);
 

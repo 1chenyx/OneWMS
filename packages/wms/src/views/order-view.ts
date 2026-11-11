@@ -349,22 +349,27 @@ export class OrderView {
     return row ? rowToRecord(row) : undefined;
   }
 
-  /** 按方向列出单据（in / out） */
+  /**
+   * 按方向列出单据（in / out）。
+   * 界面清单（入库、出库、上架）按更新时间倒序，同一时刻按单号稳定。
+   */
   list(direction?: OrderDirection): OrderRecord[] {
     const rows = direction
       ? (this.db
           .prepare<unknown[], OrderRow>(
-            `SELECT * FROM wms_order WHERE workspace_id = ? AND direction = ? ORDER BY order_no`,
+            `SELECT * FROM wms_order WHERE workspace_id = ? AND direction = ? ORDER BY updated_at DESC, order_no`,
           )
           .all(this.workspaceId, direction) as unknown as OrderRow[])
       : (this.db
-          .prepare<unknown[], OrderRow>(`SELECT * FROM wms_order WHERE workspace_id = ? ORDER BY order_no`)
+          .prepare<unknown[], OrderRow>(
+            `SELECT * FROM wms_order WHERE workspace_id = ? ORDER BY updated_at DESC, order_no`,
+          )
           .all(this.workspaceId) as unknown as OrderRow[]);
     return rows.map(rowToRecord);
   }
 
   /**
-   * 界面清单分页。排序与 list() 相同（order_no），过滤只认单号包含。
+   * 界面清单分页。排序与 list() 相同（updated_at DESC, order_no），过滤只认单号包含。
    * AI 工具的 listPage 仍按创建时间倒序，两套排序不要并成一个。
    */
   listPageByNo(opts: {
@@ -391,7 +396,7 @@ export class OrderView {
     ).total;
     const rows = this.db
       .prepare<unknown[], OrderRow>(
-        `SELECT * FROM wms_order WHERE ${whereSql} ORDER BY order_no LIMIT ? OFFSET ?`,
+        `SELECT * FROM wms_order WHERE ${whereSql} ORDER BY updated_at DESC, order_no LIMIT ? OFFSET ?`,
       )
       .all(...args, opts.limit, opts.offset) as unknown as OrderRow[];
     return { rows: rows.map(rowToRecord), total };

@@ -3,11 +3,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OneCore, type PatchOp } from '@one/core';
-import { InsufficientStockError, InvalidTransitionError, WmsDomain } from '../src/index.js';
+import { InsufficientStockError, InvalidTransitionError, PickingRequiredError, WmsDomain } from '../src/index.js';
 
 /**
  * module.picking：出库拣货步骤可关。
- * 打开时仍是建单 → 拣货 → 发货。关掉后建单直接发货，发货时预检并扣减。
+ * 打开时是建单 → 拣货中 → 已拣货 → 发货。关掉后建单直接发货，发货时预检并扣减。
  * 已经在拣货中的单仍可发货或取消。直接发货不占用。
  */
 
@@ -53,6 +53,13 @@ describe('module.picking', () => {
     await ws.tools.invoke('wms.order.transition', { orderNo, to: 'picking' });
     expect(ws.orders.byNo(orderNo)!.state).toBe('picking');
     expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(10);
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo, to: 'shipped' })).rejects.toThrow(
+      PickingRequiredError,
+    );
+    expect(ws.orders.byNo(orderNo)!.state).toBe('picking');
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo, to: 'picked' })).rejects.toThrow(
+      PickingRequiredError,
+    );
   });
 
   it('关掉后建单直接发货并扣库存；余量不够则停在已创建', async () => {
@@ -63,16 +70,22 @@ describe('module.picking', () => {
     expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(6);
     expect(ws.inventory.reservedOfSku(ws.skus.byCode('A-1')!.id)).toBe(0);
 
-    const over = await outbound(8, 'OUT-OVER');
+    const later = await outbound(4, 'OUT-LATER');
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: -5 });
     const before = ws.events.count();
-    await expect(ws.tools.invoke('wms.order.transition', { orderNo: over, to: 'shipped' })).rejects.toThrow(
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: later, to: 'shipped' })).rejects.toThrow(
       InsufficientStockError,
     );
     expect(ws.events.count()).toBe(before);
-    expect(ws.orders.byNo(over)!.state).toBe('created');
-    await expect(ws.tools.invoke('wms.order.transition', { orderNo: over, to: 'picking' })).rejects.toThrow(
+    expect(ws.orders.byNo(later)!.state).toBe('created');
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: later, to: 'picking' })).rejects.toThrow(
       InvalidTransitionError,
     );
+
+    const beforeCreate = ws.events.count();
+    await expect(outbound(8, 'OUT-OVER')).rejects.toThrow(InsufficientStockError);
+    expect(ws.events.count()).toBe(beforeCreate);
+    expect(ws.orders.byNo('OUT-OVER')).toBeUndefined();
   });
 
   it('关掉之后，已经在拣货中的单仍可发货或取消', async () => {
@@ -118,6 +131,58 @@ describe('module.picking', () => {
       '!module.picking.enabled',
     );
     expect(edges.find((edge) => edge.from === 'shipped' && edge.to === 'canceled')?.providedBy).toBe('module.reversal');
+    expect(ws2.profile.getSnapshot().version).toBe(version + 1);
+    second.close();
+
+    const third = OneCore.open(dbPath);
+    const ws3 = WmsDomain.attach(third).workspace('ws-old');
+    expect(ws3.profile.getSnapshot().version).toBe(version + 1);
+    third.close();
+  });
+
+  it('老库没有已拣货时，打开会补上，再开一次不再改版本', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'onewms-picked-state-'));
+    tmpDirs.push(dir);
+    const dbPath = join(dir, 'app.db');
+
+    const first = OneCore.open(dbPath);
+    const ws1 = WmsDomain.attach(first).workspace('ws-old');
+    const outbound = ws1.profile.getSnapshot().workflows.outbound!;
+    const proposed = ws1.profile.propose(
+      'user:tester',
+      [
+        { op: 'replace', path: '/workflows/outbound/states', value: outbound.states.filter((state) => state.id !== 'picked') },
+        {
+          op: 'replace',
+          path: '/workflows/outbound/transitions',
+          value: outbound.transitions.filter((edge) => edge.to !== 'picked' && edge.from !== 'picked'),
+        },
+      ],
+      '模拟没有已拣货的老库',
+    );
+    ws1.profile.confirm(proposed.proposalId, 'user:tester');
+    const version = ws1.profile.getSnapshot().version;
+    first.close();
+
+    const second = OneCore.open(dbPath);
+    const ws2 = WmsDomain.attach(second).workspace('ws-old');
+    const next = ws2.profile.getSnapshot().workflows.outbound!;
+    expect(next.states.find((state) => state.id === 'picked')).toMatchObject({
+      label: '已拣货',
+      providedBy: 'module.picking',
+    });
+    expect(next.transitions).toEqual(
+      expect.arrayContaining([
+        {
+          from: 'picking',
+          to: 'picked',
+          when: 'module.picking.enabled',
+          effect: 'none',
+          providedBy: 'module.picking',
+        },
+        { from: 'picked', to: 'shipped', effect: 'none', providedBy: 'module.picking' },
+      ]),
+    );
     expect(ws2.profile.getSnapshot().version).toBe(version + 1);
     second.close();
 

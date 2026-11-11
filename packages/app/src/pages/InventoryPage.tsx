@@ -226,7 +226,7 @@ export default function InventoryPage() {
   const sliceRows = sliceQuery.isError ? [] : (sliceQuery.data?.rows ?? []);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div className="app-fill list-page" style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
         title="库存"
         subtitle={
@@ -310,7 +310,7 @@ export default function InventoryPage() {
           </>
         }
       />
-      <Card>
+      <Card className="list-card">
         {sliced ? (
           <Table<InventorySliceRow>
             rowKey="key"

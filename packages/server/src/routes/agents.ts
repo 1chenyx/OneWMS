@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { AI_MODULE_ID, readAgentDefs } from '@one/ai';
 import type { AppContext } from '../context.js';
+import { resolveActor } from '../actor.js';
 
 /**
  * AI 助手管理端点（M16）：
@@ -40,7 +41,7 @@ export function agentRoutes(ctx: AppContext): Hono {
           patch: [{ op: 'replace', path: `/modules/${AI_MODULE_ID}/settings/agents`, value: body.agents }],
           note,
         },
-        `user:local@${ctx.core.nodeId}`,
+        resolveActor(ctx, c),
       );
       return c.json(result, 201);
     });

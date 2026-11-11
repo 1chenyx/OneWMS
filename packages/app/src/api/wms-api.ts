@@ -444,7 +444,7 @@ function skus(query?: {
   return request<Sku[] | ListPage<Sku>>(qs ? `/api/skus?${qs}` : '/api/skus');
 }
 
-/** 不传 limit 时是全量数组；传入 limit 时按单号分页。 */
+/** 不传 limit 时是全量数组；传入 limit 时按更新时间倒序分页。 */
 function orders(direction?: 'in' | 'out'): Promise<Order[]>;
 function orders(
   direction: 'in' | 'out' | undefined,
@@ -768,7 +768,13 @@ export const wmsApi = {
   /** 上架确认与归位（M21）：targets 缺省 = 纯确认不动库存 */
   putawayOrder: (
     orderNo: string,
-    targets?: { skuCode: string; fromLocationCode?: string; batchNo?: string; toLocationCode: string }[],
+    targets?: {
+      skuCode: string;
+      fromLocationCode?: string;
+      batchNo?: string;
+      toLocationCode: string;
+      quantity?: number;
+    }[],
   ) =>
     request<{
       orderNo: string;
@@ -781,6 +787,7 @@ export const wmsApi = {
         toLocationCode: string;
         quantity: number;
       }[];
+      warning?: string;
     }>(`/api/orders/${orderNo}/putaway`, {
       method: 'POST',
       body: JSON.stringify({ targets }),

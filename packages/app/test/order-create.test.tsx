@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, waitFor, within } from '@testing-library/react';
+import { render, screen, cleanup, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App as AntApp, ConfigProvider } from 'antd';
@@ -152,7 +152,6 @@ describe('新建出入库单', () => {
     expect(screen.queryByRole('heading', { name: '入库单' })).not.toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /到货预报/ })).toBeInTheDocument();
-    expect(screen.getByText(/库位是这行货收进来放的位置/)).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: '批次' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: '效期' })).toBeInTheDocument();
 
@@ -167,17 +166,12 @@ describe('新建出入库单', () => {
     expect(screen.getByRole('heading', { name: '入库单' })).toBeInTheDocument();
   });
 
-  it('出库选商品就能看到每一桶，只提示仓库规则，保存时不带怎么扣', async () => {
+  it('出库选商品就能看到每一桶，保存时不带怎么扣', async () => {
     const user = userEvent.setup();
     render(wrap(<OrdersPage direction="out" />));
     await user.click(screen.getByRole('button', { name: /新建单据/ }));
 
     expect(screen.getByRole('heading', { name: '新建出库单' })).toBeInTheDocument();
-    expect(screen.getByText(/在系统的规则页配置/)).toBeInTheDocument();
-    expect(screen.getByText(/当前是严格桶/)).toBeInTheDocument();
-    expect(screen.getByText(/写了批次的行可以换/)).toBeInTheDocument();
-    expect(screen.getByText(/写了库位的行可以换/)).toBeInTheDocument();
-    expect(screen.getByText(/过期批次不能出/)).toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: /先进先出/ })).not.toBeInTheDocument();
     expect(screen.queryByText('指定过的批次')).not.toBeInTheDocument();
     expect(screen.queryByText('指定过的库位')).not.toBeInTheDocument();
@@ -198,6 +192,24 @@ describe('新建出入库单', () => {
       direction: 'out',
       lines: [{ skuCode: 'A-1', quantity: 1, locationCode: 'A-01', batchNo: 'B-9' }],
     });
+  });
+
+  it('所选桶不够这一行时保存报错，不提交', async () => {
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage direction="out" />));
+    await user.click(screen.getByRole('button', { name: /新建单据/ }));
+    await user.type(screen.getByPlaceholderText(/扫条码或编码/), '6901234567892{Enter}');
+    const bucketRow = (await screen.findByText('A-01')).closest('tr');
+    expect(bucketRow).not.toBeNull();
+    await user.click(within(bucketRow as HTMLElement).getByRole('button', { name: '用这桶' }));
+    const qty = screen.getByRole('spinbutton');
+    fireEvent.change(qty, { target: { value: '13' } });
+    await waitFor(() => expect(Number((qty as HTMLInputElement).value)).toBe(13));
+    await user.click(screen.getByRole('button', { name: '保存单据' }));
+
+    expect(await screen.findByText(/这一桶只有 12，不够出 13/)).toBeInTheDocument();
+    expect(createMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: '新建出库单' })).toBeInTheDocument();
   });
 
   it('单号预先填好，改过再保存就用改过的', async () => {

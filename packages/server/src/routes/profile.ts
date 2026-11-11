@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { AppContext } from '../context.js';
+import { resolveActor } from '../actor.js';
 
 /**
  * GET /api/profile/snapshot —— Profile 快照（确认界面的「现状」数据源）。
@@ -19,7 +20,7 @@ export function profileRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'profile.propose',
           { patch: body.patch, note: body.note },
-          `user:local@${ctx.core.nodeId}`,
+          resolveActor(ctx, c),
         ),
         201,
       );

@@ -86,6 +86,7 @@ describe('对话附件', () => {
   it('没有方向列时用参数里的 direction', async () => {
     ctx = createAppContext({ dbPath: ':memory:', workspaceId: 'ws-att-dir' });
     await ctx.ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: '螺丝' });
+    await ctx.ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 3 });
     const file = sheet([['A-1', '3']], ['编码', '数量']);
     const result = (await applyAttachment(ctx.ws, 'ai:test', [file], {
       attachmentId: 'sheet1',

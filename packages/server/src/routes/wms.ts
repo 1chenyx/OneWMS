@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { resolveActor } from '../actor.js';
 import {
   getAlertSummary,
   getDashboardOverview,
@@ -86,11 +87,6 @@ export type { ExpiryBatchRow, ExpiryLevel, OrderWithLines } from '@one/wms';
  * 错误经 onError 统一映射（WMS_* / TOOL_* → 400 + code，前端按 code 分支提示）。
  */
 
-/** 人操作界面的 actor（带节点后缀：审计可辨「人做的」，且同步通道节点唯一） */
-function actorOf(ctx: AppContext): string {
-  return `user:local@${ctx.core.nodeId}`;
-}
-
 export function wmsRoutes(ctx: AppContext): Hono {
   return new Hono()
     .get('/numbering', (c) => {
@@ -119,7 +115,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
     })
     .post('/skus', async (c) => {
       const body = await c.req.json();
-      return c.json(await ctx.ws.tools.invoke('wms.sku.create', body, actorOf(ctx)), 201);
+      return c.json(await ctx.ws.tools.invoke('wms.sku.create', body, resolveActor(ctx, c)), 201);
     })
     .put('/skus/:skuCode', async (c) => {
       const body = await c.req.json();
@@ -127,7 +123,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.sku.update',
           { ...body, skuCode: c.req.param('skuCode') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -136,7 +132,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.sku.archive',
           { skuCode: c.req.param('skuCode') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -145,7 +141,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.sku.unarchive',
           { skuCode: c.req.param('skuCode') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -164,7 +160,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
     })
     .post('/partners', async (c) => {
       const body = await c.req.json();
-      return c.json(await ctx.ws.tools.invoke('wms.partner.create', body, actorOf(ctx)), 201);
+      return c.json(await ctx.ws.tools.invoke('wms.partner.create', body, resolveActor(ctx, c)), 201);
     })
     .put('/partners/:partnerCode', async (c) => {
       const body = await c.req.json();
@@ -172,7 +168,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.partner.update',
           { ...body, partnerCode: c.req.param('partnerCode') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -188,7 +184,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
     })
     .post('/pickings', async (c) => {
       const body = await c.req.json();
-      return c.json(await ctx.ws.tools.invoke('wms.picking.create', body, actorOf(ctx)), 201);
+      return c.json(await ctx.ws.tools.invoke('wms.picking.create', body, resolveActor(ctx, c)), 201);
     })
     .post('/pickings/:no/pick', async (c) => {
       const body = await c.req.json();
@@ -196,7 +192,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.picking.pick',
           { ...body, pickingNo: c.req.param('no') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -205,7 +201,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.picking.close',
           { pickingNo: c.req.param('no') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -214,7 +210,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.picking.cancel',
           { pickingNo: c.req.param('no') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -231,7 +227,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/replenishment', (c) => c.json(getReplenishment(ctx.ws)))
     .post('/replenishment', async (c) => {
       const body = await c.req.json().catch(() => ({}));
-      return c.json(await ctx.ws.tools.invoke('wms.replenish.create', body, actorOf(ctx)), 201);
+      return c.json(await ctx.ws.tools.invoke('wms.replenish.create', body, resolveActor(ctx, c)), 201);
     })
     // ── 单据 ────────────────────────────────────────────
     .get('/orders', (c) => {
@@ -250,7 +246,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/orders/:orderNo/returnable', (c) => c.json(getReturnable(ctx.ws, c.req.param('orderNo'))))
     .post('/orders', async (c) => {
       const body = await c.req.json();
-      return c.json(await ctx.ws.tools.invoke('wms.order.create', body, actorOf(ctx)), 201);
+      return c.json(await ctx.ws.tools.invoke('wms.order.create', body, resolveActor(ctx, c)), 201);
     })
     .get('/order-conflicts', (c) => c.json(ctx.ws.orders.listConflicts('open')))
     .post('/order-conflicts/:eventId/accept', async (c) => {
@@ -258,7 +254,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.order.conflict.accept',
           { eventId: c.req.param('eventId') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -267,7 +263,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.order.conflict.dismiss',
           { eventId: c.req.param('eventId') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -277,7 +273,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.order.revise',
           { ...body, orderNo: c.req.param('orderNo') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -290,7 +286,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
           to: body.to,
           lines: Array.isArray(body.lines) && body.lines.length > 0 ? body.lines : undefined,
         },
-        actorOf(ctx),
+        resolveActor(ctx, c),
       );
       return c.json(result);
     })
@@ -304,7 +300,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
           targets:
             body.targets && body.targets.length > 0 ? body.targets : undefined,
         },
-        actorOf(ctx),
+        resolveActor(ctx, c),
       );
       return c.json(result);
     })
@@ -383,20 +379,20 @@ export function wmsRoutes(ctx: AppContext): Hono {
     })
     .post('/inventory/adjust', async (c) => {
       const body = await c.req.json();
-      return c.json(await ctx.ws.tools.invoke('wms.inventory.adjust', body, actorOf(ctx)));
+      return c.json(await ctx.ws.tools.invoke('wms.inventory.adjust', body, resolveActor(ctx, c)));
     })
     // ── 冻结（M19：活动清单 / 冻结 / 释放；写全走工具通道）──
     .get('/holds', (c) => c.json(listHoldRows(ctx.ws, c.req.query('skuCode'))))
     .post('/holds', async (c) => {
       const body = await c.req.json();
-      return c.json(await ctx.ws.tools.invoke('wms.inventory.hold', body, actorOf(ctx)), 201);
+      return c.json(await ctx.ws.tools.invoke('wms.inventory.hold', body, resolveActor(ctx, c)), 201);
     })
     .post('/holds/:id/release', async (c) =>
       c.json(
         await ctx.ws.tools.invoke(
           'wms.inventory.release',
           { holdId: c.req.param('id') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       ),
     )
@@ -423,7 +419,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/warehouses', (c) => c.json(listWarehouses(ctx.ws)))
     .post('/warehouses', async (c) => {
       const body = await c.req.json();
-      return c.json(await ctx.ws.tools.invoke('wms.warehouse.create', body, actorOf(ctx)), 201);
+      return c.json(await ctx.ws.tools.invoke('wms.warehouse.create', body, resolveActor(ctx, c)), 201);
     })
     .put('/warehouses/:warehouseCode', async (c) => {
       const body = await c.req.json();
@@ -431,7 +427,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.warehouse.update',
           { ...body, warehouseCode: c.req.param('warehouseCode') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -451,30 +447,30 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/lpns', (c) => c.json(listLpns(ctx.ws)))
     .post('/lpns', async (c) => {
       const body = await c.req.json();
-      return c.json(await ctx.ws.tools.invoke('wms.lpn.create', body, actorOf(ctx)), 201);
+      return c.json(await ctx.ws.tools.invoke('wms.lpn.create', body, resolveActor(ctx, c)), 201);
     })
     .post('/lpns/:code/pack', async (c) => {
       const body = await c.req.json();
       return c.json(
-        await ctx.ws.tools.invoke('wms.lpn.pack', { ...body, lpnCode: c.req.param('code') }, actorOf(ctx)),
+        await ctx.ws.tools.invoke('wms.lpn.pack', { ...body, lpnCode: c.req.param('code') }, resolveActor(ctx, c)),
       );
     })
     .post('/lpns/:code/unpack', async (c) => {
       const body = await c.req.json();
       return c.json(
-        await ctx.ws.tools.invoke('wms.lpn.unpack', { ...body, lpnCode: c.req.param('code') }, actorOf(ctx)),
+        await ctx.ws.tools.invoke('wms.lpn.unpack', { ...body, lpnCode: c.req.param('code') }, resolveActor(ctx, c)),
       );
     })
     .post('/lpns/:code/move', async (c) => {
       const body = await c.req.json();
       return c.json(
-        await ctx.ws.tools.invoke('wms.lpn.move', { ...body, lpnCode: c.req.param('code') }, actorOf(ctx)),
+        await ctx.ws.tools.invoke('wms.lpn.move', { ...body, lpnCode: c.req.param('code') }, resolveActor(ctx, c)),
       );
     })
     .get('/lpns/:code/stock', (c) => c.json(lpnStock(ctx.ws, c.req.param('code'))))
     .post('/locations', async (c) => {
       const body = await c.req.json();
-      return c.json(await ctx.ws.tools.invoke('wms.location.create', body, actorOf(ctx)), 201);
+      return c.json(await ctx.ws.tools.invoke('wms.location.create', body, resolveActor(ctx, c)), 201);
     })
     .put('/locations/:locationCode', async (c) => {
       const body = await c.req.json();
@@ -482,7 +478,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.location.update',
           { ...body, locationCode: c.req.param('locationCode') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -490,7 +486,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/stocktakes', (c) => c.json(listStocktakes(ctx.ws)))
     .post('/stocktakes', async (c) => {
       const body = await c.req.json();
-      return c.json(await ctx.ws.tools.invoke('wms.stocktake.create', body, actorOf(ctx)), 201);
+      return c.json(await ctx.ws.tools.invoke('wms.stocktake.create', body, resolveActor(ctx, c)), 201);
     })
     .get('/stocktakes/:no', (c) => {
       const stocktakeNo = c.req.param('no');
@@ -504,7 +500,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.stocktake.count',
           { ...body, stocktakeNo: c.req.param('no') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -513,7 +509,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.stocktake.close',
           { stocktakeNo: c.req.param('no') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       ),
     )
@@ -522,7 +518,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.stocktake.cancel',
           { stocktakeNo: c.req.param('no') },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       ),
     );

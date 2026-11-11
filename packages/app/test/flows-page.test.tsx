@@ -39,8 +39,13 @@ function snapshot(): ProfileSnapshot {
     modules: {
       'core.wms': { enabled: true, version: '0.1.0' },
       'module.asn': { enabled: true, version: '0.1.0' },
+      'module.qc': { enabled: true, version: '0.1.0' },
       'module.putaway': { enabled: true, version: '0.1.0' },
+      'module.wave': { enabled: true, version: '0.1.0' },
       'module.picking': { enabled: true, version: '0.1.0' },
+      'module.review': { enabled: true, version: '0.1.0' },
+      'module.pack': { enabled: true, version: '0.1.0' },
+      'module.load': { enabled: true, version: '0.1.0' },
       'module.reservation': { enabled: true, version: '0.1.0' },
       'module.partial': { enabled: true, version: '0.1.0' },
       'module.reversal': { enabled: true, version: '0.1.0' },
@@ -104,11 +109,27 @@ afterEach(() => {
 describe('流程页', () => {
   it('入库和出库画在同一页，仓库能力不出现', () => {
     render(wrap(<FlowsPage />));
-    expect(chartNodes('inbound').map((node) => node.label)).toEqual(['建单', '预报', '收货', '上架', '完成']);
+    expect(chartNodes('inbound').map((node) => node.label)).toEqual(['建单', '预报', '收货', '质检', '上架', '完成']);
     expect(chartNodes('inbound').every((node) => node.active === 'true')).toBe(true);
-    expect(chartNodes('outbound').map((node) => node.label)).toEqual(['建单', '拣货', '发货', '完成']);
+    expect(chartNodes('outbound').map((node) => node.label)).toEqual([
+      '建单',
+      '波次',
+      '拣货',
+      '已拣货',
+      '复核',
+      '打包',
+      '装车',
+      '发货',
+      '完成',
+    ]);
     expect(screen.getByRole('switch', { name: '预报' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: '质检' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: '波次' })).toBeChecked();
     expect(screen.getByRole('switch', { name: /^拣货$/ })).toBeChecked();
+    expect(screen.getByRole('switch', { name: '复核' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: '打包' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: '装车' })).toBeChecked();
+    expect(screen.queryByRole('switch', { name: '已拣货' })).not.toBeInTheDocument();
     expect(screen.getByRole('switch', { name: '拣货：占库存' })).toBeChecked();
     expect(screen.getByRole('switch', { name: '收货：按实数' })).toBeChecked();
     expect(screen.getByRole('switch', { name: '发货：可冲销' })).toBeChecked();
@@ -116,6 +137,9 @@ describe('流程页', () => {
     expect(screen.queryByText('仓储基础')).not.toBeInTheDocument();
     expect(screen.queryByText('退货')).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '出库规则' })).not.toBeInTheDocument();
+    const chart = document.querySelector('[data-testid="outbound-chart"]');
+    expect(chart?.parentElement?.classList.contains('chart-scroll')).toBe(true);
+    expect(document.querySelector('.flow-page style')?.textContent).toContain('flex-wrap: nowrap');
   });
 
   it('关掉预报后箭头从建单绕到收货，生效后才提交', async () => {
@@ -162,7 +186,7 @@ describe('流程页', () => {
     expect(harness.rejectMock).not.toHaveBeenCalled();
   });
 
-  it('关掉拣货后箭头从建单绕到发货', async () => {
+  it('关掉拣货后箭头从波次绕到复核', async () => {
     harness.proposeMock.mockResolvedValue({
       proposalId: 'p-pick',
       pendingConfirm: true,
@@ -178,9 +202,10 @@ describe('流程页', () => {
       note: '流程：关掉拣货',
     });
     expect(chartNodes('outbound').find((node) => node.label === '拣货')?.active).toBe('false');
-    const bypass = document.querySelector('[data-testid="outbound-chart"] [data-from="建单"][data-to="发货"]');
+    const bypass = document.querySelector('[data-testid="outbound-chart"] [data-from="波次"][data-to="复核"]');
     expect(bypass?.querySelector('[data-node="拣货"]')).toBeTruthy();
-    expect(await screen.findByRole('region', { name: '确认这次修改' })).toHaveTextContent('关掉后，建单直接发货');
+    expect(bypass?.querySelector('[data-node="已拣货"]')).toBeTruthy();
+    expect(await screen.findByRole('region', { name: '确认这次修改' })).toHaveTextContent('关掉后，跳过拣货和已拣货');
   });
 
   it('撤销后预报回到主路径', async () => {

@@ -50,6 +50,7 @@ async function stock(skuCode: string, qty: number, batchNo?: string): Promise<vo
     lines: [{ skuCode, quantity: qty, ...(batchNo ? { batchNo } : {}) }],
   })) as { orderNo: string };
   await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'received' });
+  await ws.tools.invoke('wms.order.putaway', { orderNo: r.orderNo });
   await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'done' });
 }
 
@@ -146,7 +147,26 @@ describe('拣货单：实拣与关单', () => {
     return { pickingNo: r.pickingNo, o1, o2 };
   }
 
-  it('未拣完关单 → PickingIncompleteError；拣满后关单 → 订单 shipped + 统一扣减', async () => {
+  it('清单按更新时间倒序；录入实拣后该单排到最前', async () => {
+    const first = await newPicking();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = await newPicking();
+    expect(listPickingsWithLines(ws).map((p) => p.pickingNo)).toEqual([second.pickingNo, first.pickingNo]);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await ws.tools.invoke('wms.picking.pick', {
+      pickingNo: first.pickingNo,
+      orderNo: first.o1,
+      skuCode: 'A-1',
+      suggestedBatchNo: 'B-1',
+      pickedQty: 1,
+    });
+    const listed = listPickingsWithLines(ws);
+    expect(listed.map((p) => p.pickingNo)).toEqual([first.pickingNo, second.pickingNo]);
+    expect(listed[0]!.updatedAt >= listed[1]!.updatedAt).toBe(true);
+  });
+
+  it('未拣完关单 → PickingIncompleteError；拣满后关单 → 订单已拣货并扣减，再发货不再扣', async () => {
     const { pickingNo, o1, o2 } = await newPicking();
 
     await expect(ws.tools.invoke('wms.picking.close', { pickingNo })).rejects.toThrow(
@@ -172,21 +192,24 @@ describe('拣货单：实拣与关单', () => {
       orders: { orderNo: string; to: string }[];
     };
     expect(r.state).toBe('closed');
-    // 逐单 shipped（聚合顺序无承诺——无序比较）
     expect(r.orders).toEqual(
       expect.arrayContaining([
-        { orderNo: o1, from: 'picking', to: 'shipped' },
-        { orderNo: o2, from: 'picking', to: 'shipped' },
+        { orderNo: o1, from: 'picking', to: 'picked' },
+        { orderNo: o2, from: 'picking', to: 'picked' },
       ]),
     );
     expect(r.orders).toHaveLength(2);
-    expect(ws.orders.byNo(o1)!.state).toBe('shipped');
-    expect(ws.orders.byNo(o2)!.state).toBe('shipped');
+    expect(ws.orders.byNo(o1)!.state).toBe('picked');
+    expect(ws.orders.byNo(o2)!.state).toBe('picked');
 
     const a1 = ws.skus.byCode('A-1')!;
     const b2 = ws.skus.byCode('B-2')!;
     expect(ws.inventory.quantityOf(a1.id, 'DEFAULT', 'B-1')).toBe(15);
     expect(ws.inventory.quantityOf(b2.id, 'DEFAULT', 'DEFAULT')).toBe(7);
+
+    await ws.tools.invoke('wms.order.transition', { orderNo: o1, to: 'shipped' });
+    expect(ws.orders.byNo(o1)!.state).toBe('shipped');
+    expect(ws.inventory.quantityOf(a1.id, 'DEFAULT', 'B-1')).toBe(15);
   });
 
   it('实拣可改拣其他库位/批次——关单按实拣桶校验与扣减', async () => {
@@ -350,7 +373,7 @@ describe('拣货单：实拣与关单', () => {
     ws.replay();
     const a1 = ws.skus.byCode('A-1')!;
     expect(ws.pickings.byNo(pickingNo)!.state).toBe('closed');
-    expect(ws.orders.byNo(o1)!.state).toBe('shipped');
+    expect(ws.orders.byNo(o1)!.state).toBe('picked');
     expect(ws.inventory.quantityOf(a1.id, 'DEFAULT', 'B-1')).toBe(15);
   });
 });
@@ -369,18 +392,23 @@ describe('拣货单：订单流程配置联动（when 过滤）', () => {
       pickedQty: 5,
     });
 
-    // 慢通道改流程：picking→shipped 挂 when module.putaway.enabled（同 patch 停用
-    // 该模块——转移保留但运行时不可达；静态可达性不受影响，patch 合法）
+    // 慢通道改流程：拿掉已拣货，并把 picking→shipped 挂上停用模块的 when。
+    // 转移保留但运行时不可达；静态可达性不受影响，patch 合法。
+    const outbound = ws.profile.getSnapshot().workflows.outbound!;
     const patch: PatchOp[] = [
       {
         op: 'replace',
+        path: '/workflows/outbound/states',
+        value: outbound.states.filter((state) => state.id !== 'picked'),
+      },
+      {
+        op: 'replace',
         path: '/workflows/outbound/transitions',
-        value: [
-          { from: 'created', to: 'picking' },
-          { from: 'picking', to: 'shipped', when: 'module.putaway.enabled' },
-          { from: 'shipped', to: 'done' },
-          { from: 'picking', to: 'canceled' },
-        ],
+        value: outbound.transitions
+          .filter((edge) => edge.from !== 'picked' && edge.to !== 'picked')
+          .map((edge) =>
+            edge.from === 'picking' && edge.to === 'shipped' ? { ...edge, when: 'module.putaway.enabled' } : edge,
+          ),
       },
       { op: 'replace', path: '/modules/module.putaway/enabled', value: false },
     ];

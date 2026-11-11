@@ -37,13 +37,17 @@ describe('默认 Profile 种子', () => {
     expect(snapshot.schema.entities.sku.extensions.every((f) => f.visible && f.providedBy === 'core.wms')).toBe(true);
 
     // 流程骨架与 M2 硬编码状态机逐条一致（已知临时状态：M6 前配置面≠行为权威）
-    // core.wms + putaway + reversal + partial + reservation + return + asn + replenish + warehouse + serial + lpn + picking
-    expect(snapshot.version).toBe(12);
+    // core.wms + putaway + reversal + partial + reservation + return + asn + replenish + warehouse + serial + lpn + picking + qc + wave + pack + load + review
+    expect(snapshot.version).toBe(17);
     const { inbound, outbound } = snapshot.workflows;
     expect(inbound.states[0].id).toBe('created'); // states[0] = 初始态约定
-    // inbound = 基础转移 + putaway 贡献（received→putaway 挂 when；putaway→done 无条件）
+    // inbound = 基础转移（received→done 仅在上架关闭时）+ putaway 贡献
     expect(inbound.transitions).toEqual([
-      ...ORDER_TRANSITIONS.in.map((t) => ({ from: t.from, to: t.to })),
+      ...ORDER_TRANSITIONS.in.map((t) =>
+        t.from === 'received' && t.to === 'done'
+          ? { from: t.from, to: t.to, when: '!module.putaway.enabled' }
+          : { from: t.from, to: t.to },
+      ),
       { from: 'received', to: 'putaway', when: 'module.putaway.enabled', providedBy: 'module.putaway' },
       { from: 'putaway', to: 'done', providedBy: 'module.putaway' },
       {
@@ -62,6 +66,9 @@ describe('默认 Profile 种子', () => {
       },
       { from: 'announced', to: 'received', effect: 'increase', providedBy: 'module.asn' },
       { from: 'announced', to: 'canceled', effect: 'none', providedBy: 'module.asn' },
+      { from: 'received', to: 'inspected', when: 'module.qc.enabled', effect: 'none', providedBy: 'module.qc' },
+      { from: 'inspected', to: 'putaway', when: 'module.putaway.enabled', providedBy: 'module.qc' },
+      { from: 'inspected', to: 'done', when: '!module.putaway.enabled', providedBy: 'module.qc' },
     ]);
     expect(inbound.states.find((s) => s.id === 'putaway')?.providedBy).toBe('module.putaway');
     expect(outbound.transitions).toEqual([
@@ -78,7 +85,38 @@ describe('默认 Profile 种子', () => {
         effect: 'increase',
         providedBy: 'module.reversal',
       },
+      {
+        from: 'picking',
+        to: 'picked',
+        when: 'module.picking.enabled',
+        effect: 'none',
+        providedBy: 'module.picking',
+      },
+      { from: 'picked', to: 'shipped', effect: 'none', providedBy: 'module.picking' },
+      { from: 'created', to: 'waved', when: 'module.wave.enabled', effect: 'none', providedBy: 'module.wave' },
+      { from: 'waved', to: 'picking', when: 'module.picking.enabled', effect: 'check', providedBy: 'module.wave' },
+      { from: 'waved', to: 'canceled', effect: 'none', providedBy: 'module.wave' },
+      { from: 'waved', to: 'shipped', when: '!module.picking.enabled', providedBy: 'module.wave' },
+      { from: 'picked', to: 'packed', when: 'module.pack.enabled', effect: 'none', providedBy: 'module.pack' },
+      { from: 'waved', to: 'packed', when: 'module.pack.enabled', effect: 'none', providedBy: 'module.pack' },
+      { from: 'created', to: 'packed', when: 'module.pack.enabled', effect: 'none', providedBy: 'module.pack' },
+      { from: 'packed', to: 'shipped', providedBy: 'module.pack' },
+      { from: 'packed', to: 'loaded', when: 'module.load.enabled', effect: 'none', providedBy: 'module.load' },
+      { from: 'picked', to: 'loaded', when: 'module.load.enabled', effect: 'none', providedBy: 'module.load' },
+      { from: 'waved', to: 'loaded', when: 'module.load.enabled', effect: 'none', providedBy: 'module.load' },
+      { from: 'created', to: 'loaded', when: 'module.load.enabled', effect: 'none', providedBy: 'module.load' },
+      { from: 'loaded', to: 'shipped', providedBy: 'module.load' },
+      { from: 'picked', to: 'reviewed', when: 'module.review.enabled', effect: 'none', providedBy: 'module.review' },
+      { from: 'waved', to: 'reviewed', when: 'module.review.enabled', effect: 'none', providedBy: 'module.review' },
+      { from: 'created', to: 'reviewed', when: 'module.review.enabled', effect: 'none', providedBy: 'module.review' },
+      { from: 'reviewed', to: 'packed', when: 'module.pack.enabled', effect: 'none', providedBy: 'module.review' },
+      { from: 'reviewed', to: 'loaded', when: 'module.load.enabled', effect: 'none', providedBy: 'module.review' },
+      { from: 'reviewed', to: 'shipped', providedBy: 'module.review' },
     ]);
+    expect(outbound.states.find((s) => s.id === 'picked')).toMatchObject({
+      label: '已拣货',
+      providedBy: 'module.picking',
+    });
     // 上架模块默认启用（enabled=true → putaway 步骤立即可用）
     expect(snapshot.modules['module.putaway']).toMatchObject({ enabled: true, version: '0.1.0' });
     expect(snapshot.modules['module.reservation']).toMatchObject({ enabled: true, version: '0.1.0' });
@@ -89,7 +127,17 @@ describe('默认 Profile 种子', () => {
     expect(snapshot.modules['module.serial']).toMatchObject({ enabled: true, version: '0.1.0' });
     expect(snapshot.modules['module.lpn']).toMatchObject({ enabled: true, version: '0.1.0' });
     expect(snapshot.modules['module.picking']).toMatchObject({ enabled: true, version: '0.1.0' });
+    expect(snapshot.modules['module.qc']).toMatchObject({ enabled: true, version: '0.1.0' });
+    expect(snapshot.modules['module.wave']).toMatchObject({ enabled: true, version: '0.1.0' });
+    expect(snapshot.modules['module.pack']).toMatchObject({ enabled: true, version: '0.1.0' });
+    expect(snapshot.modules['module.load']).toMatchObject({ enabled: true, version: '0.1.0' });
+    expect(snapshot.modules['module.review']).toMatchObject({ enabled: true, version: '0.1.0' });
     expect(inbound.states.find((s) => s.id === 'announced')?.providedBy).toBe('module.asn');
+    expect(inbound.states.find((s) => s.id === 'inspected')).toMatchObject({ label: '已质检', providedBy: 'module.qc' });
+    expect(outbound.states.find((s) => s.id === 'waved')).toMatchObject({ label: '已组波', providedBy: 'module.wave' });
+    expect(outbound.states.find((s) => s.id === 'packed')).toMatchObject({ label: '已打包', providedBy: 'module.pack' });
+    expect(outbound.states.find((s) => s.id === 'loaded')).toMatchObject({ label: '已装车', providedBy: 'module.load' });
+    expect(outbound.states.find((s) => s.id === 'reviewed')).toMatchObject({ label: '已复核', providedBy: 'module.review' });
     core.close();
   });
 
@@ -101,14 +149,14 @@ describe('默认 Profile 种子', () => {
     const first = OneCore.open(dbPath);
     const ws1 = WmsDomain.attach(first).workspace('ws-reopen');
     const events1 = ws1.events.count();
-    expect(ws1.profile.getSnapshot().version).toBe(12);
+    expect(ws1.profile.getSnapshot().version).toBe(17);
     first.close();
 
     // 新进程打开同一库：种子事件已存在（hasHistory），不再装载
     const second = OneCore.open(dbPath);
     const ws2 = WmsDomain.attach(second).workspace('ws-reopen');
     expect(ws2.events.count()).toBe(events1);
-    expect(ws2.profile.getSnapshot().version).toBe(12);
+    expect(ws2.profile.getSnapshot().version).toBe(17);
     second.close();
   });
 
@@ -139,7 +187,7 @@ describe('默认 Profile 种子', () => {
     expect(ws.fields.get('sku', 'spec')!.visible).toBe(false);
     // 纯字段变更走注册表事件（1 条 visibility_changed），不落 config.change
     expect(ws.events.count()).toBe(eventsBefore + 1);
-    expect(ws.profile.getSnapshot().version).toBe(12); // 十二个模块种子，未被慢通道改变
+    expect(ws.profile.getSnapshot().version).toBe(17); // 十七个模块种子，未被慢通道改变
     core.close();
   });
 });

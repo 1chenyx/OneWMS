@@ -44,7 +44,7 @@
 | 跨互联网直连 | 由 VPN 组网承接，不做穿透 |
 | 多租户改造 | ③ 另起代码 |
 | 为 Phase P 提前重构 core/wms 全部 SQL | ③ 立项时再做，现在只保证新增代码可移植 |
-| `packages/app` 内写死 `localhost:8787` | Phase A.1 要消除的第一项 |
+| `packages/app` 内隐含「与后端同源」 | 全部请求走相对路径（无硬编码 host），Phase A.1 要消除的第一项 |
 
 ---
 
@@ -69,7 +69,7 @@ module-registry.ts :: uninstall()    Phase B.0 需在此补投影清理
 
 | 缺口 | 证据 | 对应任务 |
 |---|---|---|
-| 前端硬编码 API 地址，与 sidecar 强绑定 | `packages/app/src/lib/api.ts` 用相对路径，隐含「与后端同源」 | A.1 |
+| 前端隐含同源，与 sidecar 强绑定 | `packages/app/src/api/request.ts :: request` 直接 `fetch(url)`，全部调用点传相对路径（无硬编码 host） | A.1 |
 | actor 单点已收敛但未提交 | `packages/server/src/actor.ts :: resolveActor(ctx, c)` | A.2 |
 | 实体结构由代码写死 | `manifest-types.ts :: ModuleManifest.records` 注释明写「固定列，不能用 profile.propose 增删」 | B.1 |
 | 前端页面封闭枚举 | `app-nav.tsx :: Page` 是字面量联合，`Record<Page, ComponentType>` 穷尽检查 | B.6 |
@@ -86,8 +86,9 @@ module-registry.ts :: uninstall()    Phase B.0 需在此补投影清理
 
 ### 2.4 三个必须知道的技术约束
 
-**① 投影版本只到域级**
-`wms-projections.ts :: WMS_PROJECTION_VERSION = 1` 十表共用，`clear()` 硬编码 19 条 DELETE。任何新投影表若触发 bump → **整个 WMS 域全量重放**。必须先做 B.0。
+**① 投影版本只到域级** —— ✅ 已由 B.0 解决
+原状：`wms-projections.ts :: WMS_PROJECTION_VERSION = 1` 十表共用，`clear()` 硬编码 20 条 DELETE，任何新投影表触发 bump → **整个 WMS 域全量重放**。
+现状：一个域可声明多组，各组各打各的戳；表清单登记在 `WMS_PROJECTION_GROUP.tables`（core `ProjectionGroupSpec`），`clear()` 照清单执行，并有测试对着 `sqlite_master` 守卫完整性。详见 §B.0。
 
 **② oplog 有 `(workspace_id, actor, seq)` 唯一约束**
 这是同步通道「单写者」的地基。actor 命名不能随意变更格式。
@@ -103,9 +104,15 @@ module-registry.ts :: uninstall()    Phase B.0 需在此补投影清理
 
 ### A.1 API base URL 可配置
 
-- `packages/app/src/lib/api.ts` 增加运行时配置注入（构建期 env + 运行时设置界面）
-- 消除所有硬编码同源假设
-- **验收**：`packages/app` 构建产物指向远程 URL 时可正常登录并读写
+现状不是「写死了 host」，而是**全部走相对路径**（`api/request.ts :: request` 直接 `fetch(url)`，调用点传 `/api/...`），隐含「前端与后端同源」。
+
+- `packages/app/src/api/request.ts :: request` 增加 base URL 前缀拼接（构建期 env + 运行时设置界面）
+- base URL 为空时保持相对路径行为不变（①② 默认形态零回归）
+- ⚠️ **跨源是本项真正的成本，方案原先漏了**：一旦 base URL 指向别的 origin，
+  - `packages/server` 需要 CORS 中间件（当前同源所以没配）
+  - Tauri 下前端 origin 是 `tauri://localhost`，需列入允许来源
+  - SSE 端点（chat 流式）的跨源行为要单独验，不能只验普通 JSON 请求
+- **验收**：`packages/app` 构建产物指向远程 URL 时可正常登录并读写，且 chat SSE 流式正常
 
 ### A.2 actor 单点收敛
 
@@ -116,19 +123,33 @@ module-registry.ts :: uninstall()    Phase B.0 需在此补投影清理
 - **签名保持 `(ctx, c)`**，不要改成只收 `req`——② 的局域网多用户和 ③ 的租户身份都需要从请求里取
 - ⚠️ 账本不可变：已落盘的旧 actor 永远洗不掉，只能影响新事件。**改历史事件 = 破坏账本完整性 = 同步指纹全变，绝对禁止**
 
-### A.3 API 契约文档化
+### A.3 API 契约文档化（**暂缓**）
 
+> 决策：本项暂缓，等 §8 战略决策落定 + ③ 立项后再做。
+> 原因：「契约测试双跑」要求同一套用例跑本地 server 与 mock 平台 server，
+> 但 ③ 目前连代码库都不存在，mock 平台 server 无从构造，**该验收项当前不可执行**。
+
+原范围（保留备查）：
 - 为 `packages/server/src/routes/*` 产出 OpenAPI（或等价 schema）
 - **契约测试双跑**：同一套用例跑本地 server 与 mock 平台 server，任一失败即契约漂移
 - 明确哪些端点进契约（③ 必须实现）、哪些是 ①② 专属
 
 ⚠️ **条件反转提醒**：若 ③ 决定直接复用 `packages/server/src/routes`，则必须补做 **ctx 池化改造**（61 个端点从 `routes(ctx)` 闭包捕获改成 `routes({ resolveCtx })` 每请求解析）。当前判定为「③ 另写」，故不做。**这个前提一旦被推翻，A 阶段范围立即扩大。**
 
-### A.4 顺带修复：卸载不反注册工具
+### A.4 卸载后工具不可见（**改：授权层过滤，不动总线**）
 
-`module-registry.ts :: uninstall()` 从不调用 `ToolBus.unregister`（该方法存在）。后果：模块卸了，AI 仍能调用它的工具。
+原方案是「`uninstall()` 补 `ToolBus.unregister`」。**这个做法会引入 bug，已否决**，三条理由：
 
-⚠️ 这是本方案**唯一的行为变更**（其余都是纯增量）。约 5 行，但必须跑全量测试，确认没有测试依赖「卸载后工具仍在总线」的旧行为。
+1. **所有权反转**：`module-registry.ts :: install()` 预检 5 明确要求工具必须**已由代码装载方预先注册在总线上**，ModuleRegistry 自己从不注册工具。让 uninstall 去摘它没装过的东西，语义上站不住。
+2. **总线是进程级单例**：`ToolBus` 实例注入每个 `WorkspaceFacade`（`core/src/workspace/workspace.ts`），而 `unregister(toolId)` **不带 workspace 维度**。workspace A 卸载模块会把 workspace B 的工具一起摘掉。
+3. **模块变成一次性**：摘掉 handler 后重装同模块，预检 5 直接抛「工具未在工具总线上注册」，装不回去。
+
+**改后的做法**：保留 handler，在**授权/可见性层**按「已安装且 `enabled` 的模块」过滤工具清单。
+- AI 拿不到工具 = 调不到，达到原目标（「模块卸了 AI 仍能调用」）
+- 重装无损，多 workspace 互不干扰
+- 落点：AI 侧工具目录装配（`ai/src/agent-defs.ts` / `tool-catalog.ts`）与 `routes/chat.ts` 的 catalog 取用处
+
+⚠️ 仍是本方案**唯一的行为变更**（其余纯增量），必须跑全量测试，确认没有测试依赖「卸载后工具仍在清单里」的旧行为。
 
 ---
 
@@ -136,11 +157,28 @@ module-registry.ts :: uninstall()    Phase B.0 需在此补投影清理
 
 **目标里程碑**：客户提交一份 JSON，即可新增业务对象，端到端可用（存储 → 读写端点 → AI 工具 → 界面），全程零代码、热生效。
 
-### B.0 per-group 投影版本（前置件，必须先做）
+### B.0 per-group 投影版本（前置件）✅ 已完成
 
-解决 §2.4 ①。把 `WMS_PROJECTION_VERSION` 单值改成 per-group 版本表，`clear()` 从硬编码 DELETE 改成按 group 元数据驱动。
+解决 §2.4 ①。
 
-**验收**：新增一个投影 group 并 bump 其版本，只重放该 group，WMS 域十表不动。
+**实施时的事实更正**：版本戳机制**本来就是 per-group**的——`ensureProjectionVersion(db, { group, workspaceId, codeVersion, rebuild })` 已带 group 维度，meta key = `projection.<group>.<workspaceId>`，core / wms / memory 各自成组。真正缺的是两件事：
+
+1. **一个域只能声明一组**。WMS 十表挤在 `group='wms'` 下共用一个版本号，新增任何投影都得跟着整域重放。
+2. **「本组有哪些表」是硬编码**。`WmsProjections.clear()` 里 20 条 DELETE，加表要同时改建表和清空，漏一条不报错而是静默错账（重放时旧行还在、新行又插一遍）。
+
+**实际改动**：
+- 新增 `core/src/projection/projection-group.ts`：`ProjectionGroupSpec { group, codeVersion, tables }` + `clearProjectionTables(db, workspaceId, tables)`。表支持 `scope`（同表被多组共用时按列切片，B.2 的 `dyn_records` 按 `module_id` 分组靠它）；表名/列名要拼进 SQL，走标识符白名单校验。
+- `wms-projections.ts`：新增 `WMS_PROJECTION_GROUP` 常量登记 20 张表，`clear()` 改为照清单执行。`wms.ts` 的 `ensureProjectionVersion` 调用点从该常量取 `group` / `codeVersion`，不再散落字面量。
+
+⚠️ **老库兼容：不需要迁移，(a)(b) 两个选项都作废。** 原判断的前提（「改成 per-group 后 key 形状变化」）不成立——组名沿用 `core` / `wms` / `memory`，key 形状一字未改，老库的戳照常命中。另外即便真的失配，`decideProjectionVersion` 对「库里没戳」判的是 `fresh`，而 **fresh 只打戳不重建**，压根不会触发全量重放。原方案在这里把两条路径都判错了。
+
+**验收（已达成，测试落地）**：
+- `core/test/projection-group.test.ts`：只清本工作区、scope 切片、畸形标识符拒绝
+- `wms/test/projection-group.test.ts`：
+  - 清单完整性守卫——`WMS_PROJECTION_GROUP.tables` 对着 `sqlite_master` 里全部 `wms_*` 表校验，新建表忘登记当场红
+  - 新增一组（`wms-extra`）并 bump → 只重建该组，`wms_sku` 被篡改的值原样留着（证明十表没动）
+  - 反向——WMS 组戳回拨触发整域重建，额外组的表不受牵连
+- 基线：typecheck 全绿；测试 963 → **974**（core 135→141、wms 325→330）
 
 ### B.1 放开 `records` 为可配置
 
@@ -149,26 +187,39 @@ module-registry.ts :: uninstall()    Phase B.0 需在此补投影清理
 - **复用 `module-registry.ts :: install()` 的 6 道预检，一行不改**
 - 校验：实体 id 命名空间隔离（建议 `dyn.{moduleId}.{recordId}`）、字段类型白名单、与内置实体撞名拒绝
 
-### B.2 通用记录存储（单表 JSON，不做动态 DDL）
+### B.2 通用记录存储（单表 JSON + 独立索引表，不做动态 DDL）
 
-**决策：单表 + JSON 列 + 生成列索引**，不为每个声明实体建表。
+**决策：单表 + JSON 列 + 独立索引表**，不为每个声明实体建表，**也不用生成列**。
 
 理由：跨库可移植（Postgres 同样成立）；改配置无需 schema 迁移；卸载无需 drop table。
+
+⚠️ **为什么不用生成列（方案原先自相矛盾处）**：本节要求「可移植 SQL」，§6 也要求 B.2「不写 SQLite 方言」。但生成列两边不通——
+- SQLite：`GENERATED ALWAYS AS (json_extract(data,'$.x')) STORED|VIRTUAL`（3.31+）
+- Postgres：只支持 `STORED`，取值写法是 `data->>'x'` / `jsonb_path_query`
+- JSON 列类型本身也不同（SQLite TEXT vs Postgres jsonb）
+
+所以改用**独立索引表**，纯可移植 SQL，代价是查询多一次 join：
 
 ```
 dyn_records(
   workspace_id, module_id, record_type, record_id,
-  data JSON,            -- 全部字段
-  <生成列 + 索引>       -- 按 manifest 声明的可查询字段
+  data,                 -- JSON 文本，全部字段（列类型用 TEXT，两边通用）
   created_at, updated_at, version
 )
+
+dyn_index(
+  workspace_id, module_id, record_type, record_id,
+  field_key, field_value,        -- 仅 manifest 声明为「可查询」的字段才落行
+)
+-- 索引：(workspace_id, module_id, record_type, field_key, field_value)
 ```
 
-- 记录变更走 `record.created` / `record.updated` / `record.deleted` 事件，投影到上表
+- 记录变更走 `record.created` / `record.updated` / `record.deleted` 事件，投影时**同步重建该 record 的索引行**（先删后插，幂等）
 - 用 B.0 的 per-group 版本管理，group 名 = `dyn.{moduleId}`
 - **卸载模块保留表和数据**（符合「卸载不丢业务数据」承诺）；重装同 id 但 schema 变了 → 走 `ensureProjectionVersion` 迁移
+- ⚠️ **孤儿数据行为需写进对外文档**：卸载后 manifest 不在场，B.3 端点「白名单严格来自 manifest，未声明一律 404」→ 数据仍在库里但界面上不可访问，只有重装同 id 模块才能重新看到。这是刻意的（不静默暴露无 schema 数据），但客户必须知道。
 
-**能力边界（必须写进对外文档）**：适合「独立管理的辅助档案」，不适合「参与核心库存联动的实体」。复杂联表与聚合报表撑不住。
+**能力边界（必须写进对外文档）**：适合「独立管理的辅助档案」，不适合「参与核心库存联动的实体」。复杂联表与聚合报表撑不住（索引表只支持等值/范围单字段过滤，不支持多字段联合索引）。
 
 ### B.3 通用 record 端点
 
@@ -183,19 +234,27 @@ dyn_records(
 
 ⚠️ **这一项不能省**。否则配置了新实体 AI 也不知道，「AI 立刻可用」不成立。
 
-⚠️ `tool-bus.ts :: permission` 字段目前**只是元数据，无消费方**。B.3/B.4 一开放，等于把全部写操作暴露给前端。**B.5 是硬要求，不是可选项。**
+⚠️ `tool-bus.ts :: permission` 是 `'read' | 'write'` 二值，**已有消费方**（见 B.5 更正）。但 B.3/B.4 一开放，等于把全部写操作暴露给前端。**B.5 是硬要求，不是可选项。**
 
 ### B.5 写操作二次确认
 
-让 `permission` 获得消费方：
-- 读工具直通
-- 写工具（`permission` 含 `.write` / `.create` / `.delete`）返回待确认令牌，前端二次提交才执行
+⚠️ **更正方案原文的两处事实错误**：
+1. `permission` 的实际类型是 `'read' | 'write'` 二值（`core/src/bus/tool-bus.ts :: ToolDefinition.permission`），**不存在** `.write` / `.create` / `.delete` 这种点分词表。擅自扩枚举会连带打破 `install()` 预检 5 的 permission 一致性比对与 `manifest-validate.ts` 的白名单校验。
+2. 它也**不是「无消费方」**，现有三处在用：
+   - `server/src/routes/chat.ts :: allowApply`——判定助手是否有业务写权限
+   - `ai/src/agent-defs.ts`——只读助手的工具集按 `permission === 'read'` 过滤
+   - `app/src/pages/agent-tools.ts :: permissionRank`——UI 分类与筛选
+
+**做法（沿用现有二值，不引入新词表）**：
+- `permission === 'read'` 的工具直通
+- `permission === 'write'` 的工具返回待确认令牌，前端二次提交才执行
+- 令牌需带过期与幂等键，避免重复提交造成双写
 
 ### B.6 SDUI（界面）
 
 前端是 Vite 打包的静态 `dist`，**运行时无法加载新的 React 组件**。方案是服务端驱动 UI：
 
-1. `manifest` 增加 `ui` 贡献字段（`manifest-types.ts` 已预留该字段位置）
+1. `manifest` 增加 `ui` 贡献字段——⚠️ **`manifest-types.ts` 并未预留该字段**，只有注释写了「ui / jobs / entry / rules 不实现（无 v1 消费方，v2 生长点）」。需真正新增 `ModuleManifest.ui` 类型定义，并同步放行 `manifest-validate.ts`（否则声明式模块带 `ui` 会被校验拒绝）
 2. `app-nav.tsx :: Page` 从字面量联合改为 `BuiltinPage | (string & {})`——**保留内置调用点的编译期检查与补全**
 3. 新增运行时页面注册表
 4. 通用实体列表页组件——推广 `SkusPage.tsx` 的动态列闭环（列定义来自 manifest）
@@ -269,7 +328,7 @@ core 定义：EventStore / ProjectionStore / RegistryStore 接口
 - WMS 领域逻辑：库存联动效应点、批次分配策略、效期出库拦截、流程转移规则
 - 投影/重放机制、字段 owner/usedBy 所有权模型、模块安装 6 道预检
 
-**约束现在就生效**：B.2 的通用记录存储必须用可移植 SQL（不写 SQLite 方言），因为它是 ③ 也要用的。
+**约束现在就生效**：B.2 的通用记录存储必须用可移植 SQL（不写 SQLite 方言），因为它是 ③ 也要用的。**生成列（generated column）因此被排除**——SQLite 与 Postgres 的生成列语法、JSON 取值函数、列类型都不一致，详见 B.2。改用独立索引表 `dyn_index` 承接可查询字段。
 
 ---
 
@@ -278,19 +337,19 @@ core 定义：EventStore / ProjectionStore / RegistryStore 接口
 ```
 Phase A · 契约固化
   [x] A.2 actor 单点收敛（本地工作区已实现，待提交；剩余调用点待核查）
-  [ ] A.1 API base URL 可配置
-  [ ] A.3 OpenAPI + 契约测试双跑
-  [ ] A.4 uninstall 补 bus.unregister（唯一行为变更，重点跑测试）
-  ── 验收：前端指向远程后端可正常工作；契约测试双跑通过 ──
+  [ ] A.1 API base URL 可配置（含 CORS + Tauri origin + SSE 跨源验证）
+  [~] A.3 OpenAPI + 契约测试双跑 —— **暂缓**，等 §8 决策 + ③ 立项
+  [ ] A.4 卸载后工具不可见 —— **改为授权层过滤，不动 ToolBus**（唯一行为变更，重点跑测试）
+  ── 验收：前端指向远程后端可正常工作（含 SSE）；模块卸载后 AI 取不到其工具，且重装成功 ──
 
 Phase B · 声明式模块（主线）
-  [ ] B.0 per-group 投影版本（前置件，必须第一个做）
+  [x] B.0 per-group 投影版本（前置件）—— 已完成，老库无需迁移（key 形状未变）
   [ ] B.1 records 可配置 + dyn.module.register 提案类型
-  [ ] B.2 dyn_records 单表 JSON 存储 + record.* 事件
+  [ ] B.2 dyn_records 单表 JSON + dyn_index 独立索引表 + record.* 事件
   [ ] B.3 通用 record 端点（白名单严格来自 manifest，未声明一律 404）
   [ ] B.4 通用 record 工具注册，description 从 manifest 动态拼装
-  [ ] B.5 写操作二次确认（permission 获得消费方）
-  [ ] B.6 SDUI：Page 改 string + 运行时注册表 + 通用列表页 + settings.schema 渲染器
+  [ ] B.5 写操作二次确认（沿用现有 `permission === 'write'`，不扩枚举）
+  [ ] B.6 SDUI：新增 ModuleManifest.ui + Page 改 string + 运行时注册表 + 通用列表页 + settings.schema 渲染器
   [ ] B.7 纯 JSON 示例模块 + CI 全链路守卫
   ── 验收：一份 JSON 即可新增业务对象，端到端可用，AI 立刻可用，零第三方代码 ──
 

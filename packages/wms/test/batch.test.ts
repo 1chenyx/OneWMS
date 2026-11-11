@@ -14,6 +14,7 @@ import {
   DEFAULT_BATCH_NO,
   WMS_EVENT_TYPES,
 } from '../src/index.js';
+import { allowDirectShip } from './direct-ship.js';
 
 /**
  * 批次/效期维度（M11）：
@@ -281,6 +282,7 @@ describe('单据行批次', () => {
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 10, batchNo: 'B2' });
     const no = await createOrder('out', [{ skuCode: 'A-1', quantity: 6, batchNo: 'B1' }]);
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'shipped' });
     expect(qty('A-1', 'DEFAULT', 'B1')).toBe(4);
     expect(qty('A-1', 'DEFAULT', 'B2')).toBe(10);
@@ -555,6 +557,7 @@ describe('批次分配策略（M12）', () => {
     expect(lines.map((l) => [l.batchNo, l.quantity])).toEqual([['B-1', 30], ['B-2', 10]]);
 
     await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'shipped' });
     expect(qty('A-1', DEFAULT_LOCATION_ID, 'B-1')).toBe(0);
     expect(qty('A-1', DEFAULT_LOCATION_ID, 'B-2')).toBe(10);
@@ -588,22 +591,24 @@ describe('批次分配策略（M12）', () => {
     expect(lines.map((l) => [l.batchNo, l.quantity])).toEqual([['B-3', 10], ['DEFAULT', 2]]);
   });
 
-  it('缺省不传 allocation = M11 严格桶语义（建单不分配，picking 时 DEFAULT 空则拒）', async () => {
+  it('缺省不传 allocation = M11 严格桶语义（不分配；DEFAULT 空则建单即拒）', async () => {
     await seedThreeBatches(); // DEFAULT 桶余量 0，B-1/B-2/B-3 共 60
-    // 建单成功（建单不预检余量，行批次 = DEFAULT——未被分配改写）
+    const before = countEvents();
+    await expect(
+      ws.tools.invoke('wms.order.create', {
+        direction: 'out', lines: [{ skuCode: 'A-1', quantity: 5 }],
+      }),
+    ).rejects.toThrow(InsufficientStockError);
+    expect(countEvents()).toBe(before);
+    expect(ws.orders.list('out')).toHaveLength(0);
+
+    // 有余量时仍不改写批次：行落在 DEFAULT，他桶不参与
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 5 });
     const r = (await ws.tools.invoke('wms.order.create', {
       direction: 'out', lines: [{ skuCode: 'A-1', quantity: 5 }],
     })) as { orderNo: string };
     const lines = ws.orders.lines(ws.orders.byNo(r.orderNo)!.id);
     expect(lines.map((l) => l.batchNo)).toEqual(['DEFAULT']);
-
-    // 预检在 picking：行桶 = DEFAULT（余量 0），他桶 60 不救 → 拒且零事件
-    const before = countEvents();
-    await expect(
-      ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'picking' }),
-    ).rejects.toThrow(InsufficientStockError);
-    expect(ws.orders.byNo(r.orderNo)!.state).toBe('created');
-    expect(countEvents()).toBe(before);
   });
 
   it('显式指定批次的行不参与分配（显式优先）', async () => {
@@ -678,6 +683,7 @@ describe('批次分配策略（M12）', () => {
     await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'picking' });
     expect(qty('A-1', DEFAULT_LOCATION_ID, 'B-1')).toBe(30); // 预检不动账
 
+    allowDirectShip(ws);
     const ship = (await ws.tools.invoke('wms.order.transition', {
       orderNo: r.orderNo, to: 'shipped',
     })) as { adjustedLines: { skuCode: string; batchNo: string; delta: number }[] };

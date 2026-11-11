@@ -21,7 +21,7 @@ const inbound: WorkflowDef = {
   ],
   transitions: [
     { from: 'created', to: 'received' },
-    { from: 'received', to: 'done' },
+    { from: 'received', to: 'done', when: '!module.putaway.enabled' },
     { from: 'created', to: 'canceled' },
     { from: 'created', to: 'announced', when: 'module.asn.enabled', effect: 'none' },
     { from: 'announced', to: 'received', effect: 'increase' },
@@ -35,19 +35,24 @@ const inbound: WorkflowDef = {
 const allOn = modules({ 'module.asn': true, 'module.putaway': true, 'module.reversal': true });
 
 describe('buildFlowStory', () => {
-  it('预报和上架都开着时，主步骤走长的那条，抄近路留在旁边', () => {
+  it('预报和上架都开着时，主步骤走长的那条，上架不能抄近路', () => {
     const story = buildFlowStory(inbound, allOn);
     expect(story.steps.map((step) => step.id)).toEqual(['created', 'announced', 'received', 'putaway', 'done']);
     expect(story.steps[0]?.sides).toEqual([
       { to: 'received', kind: 'skip' },
       { to: 'canceled', kind: 'cancel' },
     ]);
-    expect(story.steps[2]?.sides).toEqual([
-      { to: 'done', kind: 'skip' },
-      { to: 'canceled', kind: 'cancel' },
-    ]);
+    expect(story.steps[2]?.sides).toEqual([{ to: 'canceled', kind: 'cancel' }]);
     expect(story.dormantInserts).toEqual([]);
-    expect(story.dormantActions).toEqual([]);
+    expect(story.dormantActions).toEqual([
+      {
+        from: 'received',
+        to: 'done',
+        moduleId: 'module.putaway',
+        enableToActivate: false,
+        insertsState: false,
+      },
+    ]);
   });
 
   it('预报关掉后，已预报变成插在已创建后面的未开启步骤', () => {
@@ -67,6 +72,13 @@ describe('buildFlowStory', () => {
   it('冲销关掉后，已收货上多一个未开启的取消，不另画一步', () => {
     const story = buildFlowStory(inbound, modules({ 'module.asn': true, 'module.putaway': true, 'module.reversal': false }));
     expect(story.dormantActions).toEqual([
+      {
+        from: 'received',
+        to: 'done',
+        moduleId: 'module.putaway',
+        enableToActivate: false,
+        insertsState: false,
+      },
       {
         from: 'received',
         to: 'canceled',
@@ -101,7 +113,7 @@ describe('diffStory', () => {
     expect(change.pathBefore).toEqual(['created', 'announced', 'received', 'putaway', 'done']);
     expect(change.pathAfter).toEqual(['created', 'announced', 'received', 'done']);
     expect(change.lost).toEqual([{ from: 'received', to: 'putaway' }]);
-    expect(change.gained).toEqual([]);
+    expect(change.gained).toEqual([{ from: 'received', to: 'done' }]);
     expect(stateLabel(inbound, 'putaway')).toBe('已上架');
   });
 });
@@ -112,7 +124,8 @@ describe('buildFlowRecipe', () => {
     expect(on.map((step) => step.id)).toEqual(['created', 'announced', 'received', 'putaway', 'done']);
     expect(on.every((step) => step.active)).toBe(true);
     expect(on.find((step) => step.id === 'announced')).toMatchObject({ moduleId: 'module.asn', skipTo: 'received' });
-    expect(on.find((step) => step.id === 'putaway')).toMatchObject({ moduleId: 'module.putaway', skipTo: 'done' });
+    expect(on.find((step) => step.id === 'putaway')).toMatchObject({ moduleId: 'module.putaway' });
+    expect(on.find((step) => step.id === 'putaway')?.skipTo).toBeUndefined();
 
     const asnOff = buildFlowRecipe(inbound, modules({ 'module.asn': false, 'module.putaway': true, 'module.reversal': true }));
     expect(asnOff.map((step) => [step.id, step.active])).toEqual([

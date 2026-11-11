@@ -153,6 +153,7 @@ vi.mock('../src/api/hooks', () => ({
   usePickPickingLine: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useClosePicking: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useCancelPicking: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useInventoryBuckets: () => ({ isLoading: false, data: [] }),
 }));
 
 const wrap = (ui: React.ReactNode) => (
@@ -260,6 +261,22 @@ describe('单据打印（A1）', () => {
     expect(printed!.textContent).toContain('IN-20261107-1');
     expect(printed!.textContent).not.toContain('OUT-20261107-1');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('PickingsPage：列表上不能直接拣，点拣货才进入详情', async () => {
+    const user = userEvent.setup();
+    render(wrap(<PickingsPage />));
+    expect(screen.queryByRole('button', { name: '关单' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '确认这行' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '预览拣货单' }).length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('button', { name: '拣货' }));
+
+    expect(await screen.findByRole('heading', { name: '拣货 PK-20261107-1' })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '确认这行' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /再加一桶$/ })).toHaveLength(2);
+    expect(screen.getByRole('button', { name: '关单' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '预览拣货单' })).not.toBeInTheDocument();
   });
 
   it('PickingsPage：拣货单预览在弹窗里，行按建议库位排序，点打印才拉起 window.print', async () => {

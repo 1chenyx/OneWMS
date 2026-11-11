@@ -12,8 +12,15 @@ import {
   AsnWithReturnError,
   OrderAlreadyExistsError,
   OrderNotFoundError,
+  LoadRequiredError,
   OrderReviseRejectedError,
+  PackRequiredError,
+  PickingRequiredError,
+  ReviewRequiredError,
   PickingStillOpenError,
+  PutawayRequiredError,
+  QcRequiredError,
+  WaveRequiredError,
   PartialNotOnPostError,
   PartnerKindMismatchError,
   PartnerNotFoundError,
@@ -58,6 +65,83 @@ export interface OrderTransitionResult {
   adjustedLines?: { skuCode: string; locationCode: string; batchNo: string; delta: number }[];
 }
 
+function moduleOn(snapshot: { modules: Record<string, { enabled?: boolean } | undefined> }, id: string): boolean {
+  return snapshot.modules[id]?.enabled === true;
+}
+
+/**
+ * 质检、波次、拣货、复核、打包、装车开着时不能跳过。
+ * 拣货关单自己写出库事件，不经过这里。
+ */
+function assertStageRequired(
+  snapshot: { modules: Record<string, { enabled?: boolean } | undefined> },
+  order: { direction: string; state: string; orderNo: string },
+  to: string,
+): void {
+  if (to === 'canceled') return;
+  if (order.direction === 'in' && moduleOn(snapshot, 'module.qc') && order.state === 'received' && to !== 'inspected') {
+    throw new QcRequiredError(order.orderNo);
+  }
+  if (
+    order.direction === 'in' &&
+    moduleOn(snapshot, 'module.putaway') &&
+    (order.state === 'received' || order.state === 'inspected') &&
+    to === 'done'
+  ) {
+    throw new PutawayRequiredError(order.orderNo);
+  }
+  if (order.direction === 'out' && moduleOn(snapshot, 'module.wave') && order.state === 'created' && to !== 'waved') {
+    throw new WaveRequiredError(order.orderNo);
+  }
+  const pastPick =
+    order.state === 'picked' ||
+    order.state === 'reviewed' ||
+    order.state === 'packed' ||
+    order.state === 'loaded' ||
+    order.state === 'shipped';
+  if (order.direction === 'out' && moduleOn(snapshot, 'module.picking')) {
+    const skipPick = !pastPick && to !== 'picking' && to !== 'waved';
+    const skipShip = to === 'done' && order.state !== 'shipped';
+    if (skipPick || skipShip || to === 'picked') throw new PickingRequiredError(order.orderNo);
+  }
+  const reviewFrom = !moduleOn(snapshot, 'module.review')
+    ? null
+    : moduleOn(snapshot, 'module.picking')
+      ? 'picked'
+      : moduleOn(snapshot, 'module.wave')
+        ? 'waved'
+        : 'created';
+  if (order.direction === 'out' && reviewFrom && order.state === reviewFrom && to !== 'reviewed') {
+    throw new ReviewRequiredError(order.orderNo);
+  }
+  const packFrom = !moduleOn(snapshot, 'module.pack')
+    ? null
+    : moduleOn(snapshot, 'module.review') || order.state === 'reviewed'
+      ? 'reviewed'
+      : moduleOn(snapshot, 'module.picking')
+        ? 'picked'
+        : moduleOn(snapshot, 'module.wave')
+          ? 'waved'
+          : 'created';
+  if (order.direction === 'out' && packFrom && order.state === packFrom && to !== 'packed') {
+    throw new PackRequiredError(order.orderNo);
+  }
+  const loadFrom = !moduleOn(snapshot, 'module.load')
+    ? null
+    : moduleOn(snapshot, 'module.pack')
+      ? 'packed'
+      : moduleOn(snapshot, 'module.review') || order.state === 'reviewed'
+        ? 'reviewed'
+        : moduleOn(snapshot, 'module.picking')
+          ? 'picked'
+          : moduleOn(snapshot, 'module.wave')
+            ? 'waved'
+            : 'created';
+  if (order.direction === 'out' && loadFrom && order.state === loadFrom && to !== 'loaded') {
+    throw new LoadRequiredError(order.orderNo);
+  }
+}
+
 /**
  * 单据转移的命令实现（工具与冲突接受共用）。
  * 校验失败抛错、零事件。调用方可以包在更大的 runAtomic 里。
@@ -83,8 +167,17 @@ export function applyOrderTransition(
   assertTransition(activeTransitions, order.direction, order.state, params.to);
   const edge = activeTransitions.find((t) => t.from === order.state && t.to === params.to);
   const settings = readWmsSettings(ws);
-  const resolved = resolveTransitionEffect(order.direction, params.to, edge?.effect, settings);
-  // 未关拣货单占着这张出库单时，不能再走直接发货。取消和拣货关单不经过这里。
+  let resolved = resolveTransitionEffect(order.direction, params.to, edge?.effect, settings);
+  // 拣货关单已经扣过的，后面的发货不再扣第二次。打包、装车本身不带 effect。
+  if (
+    order.direction === 'out' &&
+    params.to === 'shipped' &&
+    ws.inventory.movementsByOrder(order.id).some((row) => row.net < 0)
+  ) {
+    resolved = { checkAvailability: false };
+  }
+  assertStageRequired(snapshot, order, params.to);
+  // 拣货已关掉、但还有未关拣货单时，不能再走直接发货。
   if (order.direction === 'out' && resolved.post === 'decrease') {
     const openPickingNo = ws.pickings.openPickingNoForOrder(order.id);
     if (openPickingNo) throw new PickingStillOpenError(order.orderNo, openPickingNo);
@@ -258,7 +351,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     id: 'wms.order.create',
     label: '创建出入库单',
     description:
-      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正数，支持 3 位小数——散装/称重场景，如 0.5 表示半斤）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致）。出库行写了批次就只扣该批次；没写批次的行按仓库统一的分配策略扣。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。批次怎么扣不在单据上指定，是 core.wms 设置 defaultAllocation（strict=严格桶不分配，没写批次只扣 DEFAULT / fifo=先进先出 / fefo=先到期先出，缺省 strict）。fifo 或 fefo 时，没写批次的行在该行库位内拆成具体批次，一行可拆多批；写了批次的行不参与拆分。要改规则用 profile.propose 改 /modules/core.wms/settings/defaultAllocation，确认后生效，不要传 allocation。退货单不按分配策略拆行。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传或空着则按编号规则生成（普通入库、出库、预报、客退、退供各用各的模板），传了就用传入的。module.return 启用时可传 returnOf 原单号：入库单退已发货的出库单（客退，收货时加库存），出库单退已收货的入库单（退供，发货时扣库存）。数量按 SKU 和批次不能超过原单已入账再减去未取消的退货，批次必须是原单上的批次，不按分配策略拆行。不传 returnOf 就是普通出入库。停用后退货参数会被拒绝，已开出的退货单仍可继续流转。module.asn 启用时可传 asn=true 把入库单开成到货预报（状态已预报，可选 expectedAt 预计到货日 YYYY-MM-DD）：收货前不加库存，收到货再转入 received 才加库存，取消预报不动库存。不传 asn 就是直接入库。停用后预报参数会被拒绝，已经预报的单仍可收货或取消。预报不能同时是退货，也不能开出库单。写了批次或库位之后能不能换，也是仓库设置 specifiedBatchConstraint、specifiedLocationConstraint（prefer=可以换，lock=不能换），不要在单据上传这两个参数。没填的批次和库位不受这两项限制。退货单的批次始终锁定，序列号商品的库位和批次始终锁定。',
+      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正数，支持 3 位小数——散装/称重场景，如 0.5 表示半斤）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致）。出库行写了批次就只扣该批次；没写批次的行按仓库统一的分配策略扣。出库在建单时就按落定后的每一桶校验余量、别人的拣货占用、冻结和过期拦截，不够就拒绝且不产生单据；改明细同样校验。入库建单不查库存。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。批次怎么扣不在单据上指定，是 core.wms 设置 defaultAllocation（strict=严格桶不分配，没写批次只扣 DEFAULT / fifo=先进先出 / fefo=先到期先出，缺省 strict）。fifo 或 fefo 时，没写批次的行在该行库位内拆成具体批次，一行可拆多批；写了批次的行不参与拆分。要改规则用 profile.propose 改 /modules/core.wms/settings/defaultAllocation，确认后生效，不要传 allocation。退货单不按分配策略拆行。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传或空着则按编号规则生成（普通入库、出库、预报、客退、退供各用各的模板），传了就用传入的。module.return 启用时可传 returnOf 原单号：入库单退已发货的出库单（客退，收货时加库存），出库单退已收货的入库单（退供，发货时扣库存）。数量按 SKU 和批次不能超过原单已入账再减去未取消的退货，批次必须是原单上的批次，不按分配策略拆行。不传 returnOf 就是普通出入库。停用后退货参数会被拒绝，已开出的退货单仍可继续流转。module.asn 启用时可传 asn=true 把入库单开成到货预报（状态已预报，可选 expectedAt 预计到货日 YYYY-MM-DD）：收货前不加库存，收到货再转入 received 才加库存，取消预报不动库存。不传 asn 就是直接入库。停用后预报参数会被拒绝，已经预报的单仍可收货或取消。预报不能同时是退货，也不能开出库单。写了批次或库位之后能不能换，也是仓库设置 specifiedBatchConstraint、specifiedLocationConstraint（prefer=可以换，lock=不能换），不要在单据上传这两个参数。没填的批次和库位不受这两项限制。退货单的批次始终锁定，序列号商品的库位和批次始终锁定。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -421,6 +514,18 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         returnOfOrderId = source!.id;
       }
 
+      if (params.direction === 'out') {
+        assertOutboundBuckets(
+          ws,
+          resolvedLines.map((line) => ({
+            skuId: ws.skus.byCode(line.skuCode)!.id,
+            locationId: resolveLocation(ws, line.locationCode).locationId,
+            batchNo: resolveBatch(line.batchNo, line.batchExpiryDate).batchNo,
+            quantity: quantizeQty(line.quantity),
+          })),
+        );
+      }
+
       const orderId = randomUUID();
       ctx.appendEvent(WMS_EVENT_TYPES.orderCreated, {
         orderId,
@@ -457,7 +562,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     id: 'wms.order.transition',
     label: '单据状态转移',
     description:
-      '推进单据状态，并按该转移的库存效应联动库存（按行的库位 + 批次）。未在转移上声明 effect 时：入库进入 received（可用 settings.inboundIncreaseState 改名）按行增加库存；出库进入 picking（outboundCheckState）只预检余量；出库进入 shipped（outboundDecreaseState）按行扣减。转移上的 effect（increase/decrease/check/none）优先于这三键。module.reversal 启用时，已收货可取消并扣回，已发货可取消并加回；停用后这两条转移不可用。module.partial 启用时，会改库存的转移可以带 lines 声明实收/实发（不大于该行订单数量，0 表示这行没到/没发）；不带 lines 按订单数量整单入账。停用 module.partial 后不能改少。已经入账的行，冲销按已入账数量，不能再改。合法目标由当前流程决定。过期批次拦截只作用于出库履约，不拦截入库冲销。拣货关单不走本工具的短发。module.reservation 启用时，出库进入只预检的状态会按行占用可用量，其他出库单不能再拿走；发货或取消时释放。停用后新的拣货不再占用，已有占用仍会在发货或取消时释放。module.picking 启用时，出库从已创建先进入拣货中（只预检）；停用后已创建直接发货（预检并扣减）。已经在拣货中、但还没有拣货单的出库单仍可直接发货或取消。有未关拣货单时，直接发货会被拒绝，要先取消拣货单。',
+      '推进单据状态，并按该转移的库存效应联动库存（按行的库位 + 批次）。未在转移上声明 effect 时：入库进入 received（可用 settings.inboundIncreaseState 改名）按行增加库存；出库进入 picking（outboundCheckState）只预检余量；出库进入 shipped（outboundDecreaseState）按行扣减。转移上的 effect（increase/decrease/check/none）优先于这三键。module.reversal 启用时，已收货可取消并扣回，已发货可取消并加回；停用后这两条转移不可用。module.partial 启用时，会改库存的转移可以带 lines 声明实收/实发（不大于该行订单数量，0 表示这行没到/没发）；不带 lines 按订单数量整单入账。停用 module.partial 后不能改少。已经入账的行，冲销按已入账数量，不能再改。合法目标由当前流程决定。过期批次拦截只作用于出库履约，不拦截入库冲销。拣货关单不走本工具的短发。module.reservation 启用时，出库进入只预检的状态会按行占用可用量，其他出库单不能再拿走；发货或取消时释放。停用后新的拣货不再占用，已有占用仍会在发货或取消时释放。module.picking 启用时，出库从已创建进入拣货中（只预检）。拣货单关单后进入已拣货并按实拣扣减，再到本工具从已拣货发货（这一步不再扣库存）。不能用本工具直接发货、标成已拣货或完成。停用后已创建直接发货（预检并扣减），已经在拣货中的单仍可发货或取消，已经是已拣货的单仍可发货。有未关拣货单时，直接发货会被拒绝。module.putaway 启用时，已收货的入库单不能直接完成，要先用 wms.order.putaway 上架（可归位）；停用后已收货直接完成。已经上架的单仍可完成。module.qc 启用时，已收货要先质检（wms.order.transition 到 inspected），不能直接上架或完成；停用后收货后按上架开关继续。已经质检的单仍可上架或完成。module.wave 启用时，已创建要先组波到 waved，不能直接拣货、发货或完成；停用后从已创建继续。已经组波的单仍可拣货、发货或取消。module.review 启用时，要先到 reviewed 才能打包、装车或发货。module.pack 启用时，要先到 packed 才能装车或发货。module.load 启用时，要先到 loaded 才能发货。复核、打包和装车不扣库存。拣货已经扣过的，发货不再扣。停用后新单跳过该步，已经进入该步的单仍可继续。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -579,18 +684,20 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
       '已完成和已取消整单不能改。有未裁决的状态冲突时先接受或驳回。' +
       '退货单改明细时仍按原单可退数量校验，不能改指向的原单。' +
       '出库明细按提交的行保存，不会重新做 fifo/fefo 拆分。' +
+      '出库改明细时按落定后的每一桶校验余量、别人的拣货占用、冻结和过期拦截，不够就拒绝。' +
       '只传要改的字段；note / partnerCode / expectedAt 传 null 表示清空。lines 在场则整份替换，不能为空。',
     permission: 'write',
     parameters: {
       type: 'object',
       properties: {
         orderNo: { type: 'string', description: '单据号' },
-        note: { type: 'string', description: '备注。null 表示清空。不传表示不改' },
+        note: { type: 'string', nullable: true, description: '备注。null 表示清空。不传表示不改' },
         partnerCode: {
           type: 'string',
+          nullable: true,
           description: '往来单位编码。入库单要供应商，出库单要客户。null 表示去掉。不传表示不改',
         },
-        expectedAt: { type: 'string', description: '预计到货日 YYYY-MM-DD，仅到货预报。null 表示清空' },
+        expectedAt: { type: 'string', nullable: true, description: '预计到货日 YYYY-MM-DD，仅到货预报。null 表示清空' },
         lines: {
           type: 'array',
           description: '整份明细。在场则替换原明细。每行 { skuCode, quantity, locationCode?, batchNo?, batchExpiryDate?, serials? }',
@@ -736,6 +843,18 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
             })),
             posted: source ? postedOf(ws, source) : undefined,
           });
+        }
+        if (order.direction === 'out') {
+          assertOutboundBuckets(
+            ws,
+            resolved.map((line) => ({
+              skuId: line.skuId,
+              locationId: line.locationId,
+              batchNo: line.batchNo,
+              quantity: line.quantity,
+            })),
+            [order.id],
+          );
         }
         payload.lines = resolved;
       }

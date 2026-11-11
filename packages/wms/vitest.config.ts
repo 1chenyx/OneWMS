@@ -10,6 +10,9 @@ import { defineConfig } from 'vitest/config';
  * 此配置与之共存无冲突。
  */
 export default defineConfig({
+  test: {
+    setupFiles: ['./test/setup.ts'],
+  },
   resolve: {
     alias: {
       '@one/core': fileURLToPath(new URL('../core/dist/index.js', import.meta.url)),

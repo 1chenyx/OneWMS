@@ -7,6 +7,7 @@ import {
   InsufficientStockError,
   DEFAULT_LOCATION_ID,
 } from '../src/index.js';
+import { allowDirectShip } from './direct-ship.js';
 
 /**
  * 分配策略设置配置化 + 过期出库拦截（M13）：
@@ -101,13 +102,19 @@ describe('设置种子与兜底（M13）', () => {
 
   it('老库无 settings（remove 模拟 M12 老库）→ 兜底 strict：不传参建单不分配', async () => {
     setSettings([{ op: 'remove', path: '/modules/core.wms/settings' }]);
+    await seed('DEFAULT', 5);
     await seed('B-1', 10, dateOffset(30));
     const orderNo = await createOut([{ skuCode: 'A-1', quantity: 5 }]);
     expect(orderLines(orderNo)).toEqual([['DEFAULT', 5]]); // 严格桶：行未被改写
-    // DEFAULT 桶空、B-1 有货不救 → picking 拒（证明兜底的是 strict）
+    // DEFAULT 只有 5，再要 6；B-1 有货不救 → 建单拒（证明兜底的是 strict）
+    const before = countEvents();
     await expect(
-      ws.tools.invoke('wms.order.transition', { orderNo, to: 'picking' }),
+      ws.tools.invoke('wms.order.create', {
+        direction: 'out',
+        lines: [{ skuCode: 'A-1', quantity: 6 }],
+      }),
     ).rejects.toThrow(InsufficientStockError);
+    expect(countEvents()).toBe(before);
   });
 
   it('脏值兜底：defaultAllocation 非法值回落 strict，blockExpiredOutbound 非 true 回落 false', async () => {
@@ -115,12 +122,14 @@ describe('设置种子与兜底（M13）', () => {
       { op: 'replace', path: '/modules/core.wms/settings/defaultAllocation', value: 'lifo' },
       { op: 'replace', path: '/modules/core.wms/settings/blockExpiredOutbound', value: 'yes' },
     ]);
+    await seed('DEFAULT', 5);
     await seed('B-OLD', 10, dateOffset(-1));
     const orderNo = await createOut([{ skuCode: 'A-1', quantity: 5 }]);
     expect(orderLines(orderNo)).toEqual([['DEFAULT', 5]]); // strict 兜底：不分配
     // blockExpiredOutbound='yes' ≠ true → 不拦：过期批次显式出库成功
     const orderNo2 = await createOut([{ skuCode: 'A-1', quantity: 5, batchNo: 'B-OLD' }]);
     await ws.tools.invoke('wms.order.transition', { orderNo: orderNo2, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: orderNo2, to: 'shipped' });
     expect(qty('B-OLD')).toBe(5);
   });
@@ -193,10 +202,12 @@ describe('全局缺省分配策略（M13）', () => {
   });
 
   it('慢通道改值即时生效：种子 strict 建单不分配 → 改 fifo 后下一单即按 fifo 拆行', async () => {
+    await seed('DEFAULT', 3);
     await seed('B-1', 10, dateOffset(60));
     await seed('B-2', 5, dateOffset(30));
     const before = await createOut([{ skuCode: 'A-1', quantity: 3 }]);
     expect(orderLines(before)).toEqual([['DEFAULT', 3]]); // 新库种子 = strict
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: -3 });
     setSettings([
       { op: 'replace', path: '/modules/core.wms/settings/defaultAllocation', value: 'fifo' },
     ]);
@@ -206,21 +217,23 @@ describe('全局缺省分配策略（M13）', () => {
 });
 
 describe('过期出库拦截（M13）', () => {
-  it('拦截开启：显式过期批次 → picking 拒 ExpiredBatchError（code WMS_BATCH_EXPIRED），零事件', async () => {
+  it('拦截开启：显式过期批次 → 建单拒 ExpiredBatchError（code WMS_BATCH_EXPIRED），零事件', async () => {
     setSettings([
       { op: 'replace', path: '/modules/core.wms/settings/blockExpiredOutbound', value: true },
     ]);
     await seed('B-OLD', 10, dateOffset(-1)); // 昨天到期
-    const orderNo = await createOut([{ skuCode: 'A-1', quantity: 5, batchNo: 'B-OLD' }]);
     const before = countEvents();
     try {
-      await ws.tools.invoke('wms.order.transition', { orderNo, to: 'picking' });
+      await ws.tools.invoke('wms.order.create', {
+        direction: 'out',
+        lines: [{ skuCode: 'A-1', quantity: 5, batchNo: 'B-OLD' }],
+      });
       expect.unreachable();
     } catch (e) {
       expect(e).toBeInstanceOf(ExpiredBatchError);
       expect((e as ExpiredBatchError).code).toBe('WMS_BATCH_EXPIRED');
     }
-    expect(ws.orders.byNo(orderNo)!.state).toBe('created');
+    expect(ws.orders.list('out')).toHaveLength(0);
     expect(countEvents()).toBe(before);
   });
 
@@ -231,6 +244,7 @@ describe('过期出库拦截（M13）', () => {
     await seed('B-TODAY', 10, dateOffset(0));
     const orderNo = await createOut([{ skuCode: 'A-1', quantity: 5, batchNo: 'B-TODAY' }]);
     await ws.tools.invoke('wms.order.transition', { orderNo, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo, to: 'shipped' });
     expect(qty('B-TODAY')).toBe(5);
   });
@@ -245,6 +259,7 @@ describe('过期出库拦截（M13）', () => {
     const orderNo = await createOut([{ skuCode: 'A-1', quantity: 6 }]);
     expect(orderLines(orderNo)).toEqual([['B-OK', 6]]); // 全从 B-OK 扣
     await ws.tools.invoke('wms.order.transition', { orderNo, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo, to: 'shipped' });
     expect(qty('B-OLD')).toBe(10); // 过期桶不动
     expect(qty('B-OK')).toBe(2);
@@ -273,6 +288,7 @@ describe('过期出库拦截（M13）', () => {
     setSettings([
       { op: 'replace', path: '/modules/core.wms/settings/blockExpiredOutbound', value: true },
     ]);
+    allowDirectShip(ws);
     const before = countEvents();
     await expect(
       ws.tools.invoke('wms.order.transition', { orderNo, to: 'shipped' }),
@@ -285,6 +301,7 @@ describe('过期出库拦截（M13）', () => {
     await seed('B-OLD', 10, dateOffset(-1));
     const orderNo = await createOut([{ skuCode: 'A-1', quantity: 5, batchNo: 'B-OLD' }]);
     await ws.tools.invoke('wms.order.transition', { orderNo, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo, to: 'shipped' });
     expect(qty('B-OLD')).toBe(5);
   });

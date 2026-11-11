@@ -1,6 +1,7 @@
 import type { ModuleManifest, ToolDefinition, WorkflowDef } from '@one/core';
 import { WMS_RECORDS } from './builtin-records.js';
 import { PICKING_BYPASS_WHEN, PICKING_ENTRY_WHEN } from './picking-manifest.js';
+import { PUTAWAY_BYPASS_WHEN } from './putaway-manifest.js';
 import { ORDER_TRANSITIONS } from './state/order-state-machine.js';
 
 /** 状态中文标签（Profile 流程的展示名） */
@@ -25,11 +26,15 @@ function defaultWorkflows(): Record<string, WorkflowDef> {
     );
     // states[0] 为初始态（约定）：created 恒在首位
     const ordered = ['created', ...stateIds.filter((id) => id !== 'created')];
-    const transitions: WorkflowDef['transitions'] = ORDER_TRANSITIONS[direction].map((t) =>
-      direction === 'out' && t.from === 'created' && t.to === 'picking'
-        ? { from: t.from, to: t.to, when: PICKING_ENTRY_WHEN }
-        : { from: t.from, to: t.to },
-    );
+    const transitions: WorkflowDef['transitions'] = ORDER_TRANSITIONS[direction].map((t) => {
+      if (direction === 'out' && t.from === 'created' && t.to === 'picking') {
+        return { from: t.from, to: t.to, when: PICKING_ENTRY_WHEN };
+      }
+      if (direction === 'in' && t.from === 'received' && t.to === 'done') {
+        return { from: t.from, to: t.to, when: PUTAWAY_BYPASS_WHEN };
+      }
+      return { from: t.from, to: t.to };
+    });
     if (direction === 'out') {
       transitions.push({ from: 'created', to: 'shipped', when: PICKING_BYPASS_WHEN });
     }

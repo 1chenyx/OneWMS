@@ -64,7 +64,7 @@ export function listOrdersWithLines(
   return ws.orders.list(direction).map((order) => withOrderLines(ws, order));
 }
 
-/** 界面清单分页：排序与 list() 相同（order_no），q 只匹配单号。明细仍按页装配。 */
+/** 界面清单分页：排序与 list() 相同（更新时间倒序），q 只匹配单号。明细仍按页装配。 */
 export function listOrdersWithLinesPage(
   ws: WmsWorkspace,
   opts: { direction?: OrderDirection; q?: string; limit: number; offset: number },

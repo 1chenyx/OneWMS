@@ -104,6 +104,7 @@ describe('wms.order.query：单据分页查询与详情', () => {
         { skuCode: 'B-2', quantity: 2 },
       ],
     });
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 1 });
     await ws.tools.invoke('wms.order.create', {
       direction: 'out',
       orderNo: 'OUT-LQ-1',

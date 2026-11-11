@@ -16,6 +16,8 @@ export interface FlowNodeDef {
   lane: FlowLane;
   label: string;
   moduleId?: string;
+  /** 跟某个模块一起出现，但不在这个方块上再放一个开关 */
+  toggle?: boolean;
 }
 
 /** 挂在已有方块上的开关，不新增方块。 */
@@ -38,8 +40,13 @@ export interface CapabilityCardCopy {
 
 export const MODULE_PRESENT: Record<string, ModulePresentation> = {
   'module.asn': { name: '到货预报', line: '货没到可以先预报，到了再收' },
-  'module.putaway': { name: '上架作业', line: '收货之后可以上架归位' },
-  'module.picking': { name: '拣货', line: '出库先拣货，再发货' },
+  'module.qc': { name: '质检', line: '收货之后必须质检，再上架' },
+  'module.putaway': { name: '上架作业', line: '收货之后必须上架，再结束' },
+  'module.wave': { name: '波次', line: '出库先组波，再拣货' },
+  'module.picking': { name: '拣货', line: '出库先拣货，拣完是已拣货，再发货' },
+  'module.review': { name: '复核', line: '拣完之后必须复核，再打包' },
+  'module.pack': { name: '打包', line: '复核之后必须打包' },
+  'module.load': { name: '装车', line: '发货前必须装车' },
   'module.reservation': { name: '拣货占用', line: '进入拣货时先占住可用量' },
   'module.partial': { name: '短收短发', line: '收货或发货可以按实数入账' },
   'module.reversal': { name: '单据冲销', line: '已收货、已发货仍可取消并回冲' },
@@ -57,10 +64,16 @@ export const FLOW_NODES: readonly FlowNodeDef[] = [
   { id: 'created', lane: 'inbound', label: '建单' },
   { id: 'announced', lane: 'inbound', label: '预报', moduleId: 'module.asn' },
   { id: 'received', lane: 'inbound', label: '收货' },
+  { id: 'inspected', lane: 'inbound', label: '质检', moduleId: 'module.qc' },
   { id: 'putaway', lane: 'inbound', label: '上架', moduleId: 'module.putaway' },
   { id: 'done', lane: 'inbound', label: '完成' },
   { id: 'created', lane: 'outbound', label: '建单' },
+  { id: 'waved', lane: 'outbound', label: '波次', moduleId: 'module.wave' },
   { id: 'picking', lane: 'outbound', label: '拣货', moduleId: 'module.picking' },
+  { id: 'picked', lane: 'outbound', label: '已拣货', moduleId: 'module.picking', toggle: false },
+  { id: 'reviewed', lane: 'outbound', label: '复核', moduleId: 'module.review' },
+  { id: 'packed', lane: 'outbound', label: '打包', moduleId: 'module.pack' },
+  { id: 'loaded', lane: 'outbound', label: '装车', moduleId: 'module.load' },
   { id: 'shipped', lane: 'outbound', label: '发货' },
   { id: 'done', lane: 'outbound', label: '完成' },
 ];
@@ -75,8 +88,34 @@ export const FLOW_TAGS: readonly FlowTagDef[] = [
 
 const FLOW_RESULT: Record<string, { on: string; off: string }> = {
   'module.asn': { on: '打开后，收货前先预报', off: '关掉后，从建单直接到收货' },
-  'module.putaway': { on: '打开后，收货后先上架再结束', off: '关掉后，收完直接结束' },
-  'module.picking': { on: '打开后，出库先拣货再发货', off: '关掉后，建单直接发货。已经在拣货中的单仍可发货或取消' },
+  'module.qc': {
+    on: '打开后，收货后必须先质检。质检在质检页做',
+    off: '关掉后，收货后直接上架或结束。已经质检的单仍可继续',
+  },
+  'module.wave': {
+    on: '打开后，建单后必须先组波。组波在波次页做',
+    off: '关掉后，从建单直接拣货或发货。已经组波的单仍可继续',
+  },
+  'module.putaway': {
+    on: '打开后，收货后必须先上架再结束。上架在上架页做',
+    off: '关掉后，收完直接结束。已经上架的单仍可结束',
+  },
+  'module.picking': {
+    on: '打开后，出库单进入拣货中。拣完关单后是已拣货，再到出库单发货。不能直接发货或完成',
+    off: '关掉后，跳过拣货和已拣货。已经在拣货中的单仍可发货或取消，已经拣完的单仍可发货',
+  },
+  'module.review': {
+    on: '打开后，发货前必须复核。复核在复核页做',
+    off: '关掉后，跳过复核。已经复核的单仍可继续',
+  },
+  'module.pack': {
+    on: '打开后，发货前必须打包。打包在打包页做',
+    off: '关掉后，跳过打包。已经打包的单仍可继续',
+  },
+  'module.load': {
+    on: '打开后，发货前必须装车。装车在装车页做',
+    off: '关掉后，跳过装车。已经装车的单仍可发货',
+  },
   'module.reservation': { on: '打开后，拣货时先占住这部分货', off: '关掉后，拣货不再占库存' },
   'module.partial': { on: '打开后，收货和发货可以按实数', off: '关掉后，收货和发货都按单上的数量' },
   'module.reversal': { on: '打开后，收货或发货之后可以取消并冲回库存', off: '关掉后，收货或发货之后不能再冲销' },

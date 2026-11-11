@@ -15,6 +15,7 @@ import {
   ReturnQtyExceededError,
   WmsDomain,
 } from '../src/index.js';
+import { allowDirectShip, restorePicking } from './direct-ship.js';
 
 /**
  * module.return：客退是入库单，退供是出库单。不新增状态。
@@ -71,11 +72,13 @@ async function shipOut(
 ): Promise<void> {
   await ws.tools.invoke('wms.order.create', { direction: 'out', orderNo, lines });
   await ws.tools.invoke('wms.order.transition', { orderNo, to: 'picking' });
+  allowDirectShip(ws);
   await ws.tools.invoke('wms.order.transition', {
     orderNo,
     to: 'shipped',
     ...(postLines ? { lines: postLines } : {}),
   });
+  restorePicking(ws);
 }
 
 describe('module.return', () => {
@@ -165,16 +168,15 @@ describe('module.return', () => {
     await ws.tools.invoke('wms.order.transition', { orderNo: 'IN-1', to: 'received' });
     expect(qty('A-1', 'A-01')).toBe(10);
 
-    await ws.tools.invoke('wms.order.create', {
-      direction: 'out',
-      orderNo: 'RT-EMPTY',
-      returnOf: 'IN-1',
-      lines: [{ skuCode: 'A-1', quantity: 3 }],
-    });
     await expect(
-      ws.tools.invoke('wms.order.transition', { orderNo: 'RT-EMPTY', to: 'picking' }),
+      ws.tools.invoke('wms.order.create', {
+        direction: 'out',
+        orderNo: 'RT-EMPTY',
+        returnOf: 'IN-1',
+        lines: [{ skuCode: 'A-1', quantity: 3 }],
+      }),
     ).rejects.toThrow(InsufficientStockError);
-    expect(ws.orders.byNo('RT-EMPTY')!.state).toBe('created');
+    expect(ws.orders.byNo('RT-EMPTY')).toBeUndefined();
 
     await ws.tools.invoke('wms.order.create', {
       direction: 'out',
@@ -183,7 +185,9 @@ describe('module.return', () => {
       lines: [{ skuCode: 'A-1', quantity: 3, locationCode: 'A-01' }],
     });
     await ws.tools.invoke('wms.order.transition', { orderNo: 'RT-1', to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: 'RT-1', to: 'shipped' });
+    restorePicking(ws);
     expect(qty('A-1', 'A-01')).toBe(7);
 
     await expect(
@@ -195,7 +199,14 @@ describe('module.return', () => {
     ).rejects.toThrow(ReturnQtyExceededError);
 
     // 未拣成的退货仍占着订单数量；取消后释放。短发按实发（出库净量是负数）占额度。
-    await ws.tools.invoke('wms.order.transition', { orderNo: 'RT-EMPTY', to: 'canceled' });
+    await ws.tools.invoke('wms.order.create', {
+      direction: 'out',
+      orderNo: 'RT-HOLD',
+      returnOf: 'IN-1',
+      lines: [{ skuCode: 'A-1', quantity: 3, locationCode: 'A-01' }],
+    });
+    expect(getReturnable(ws, 'IN-1').lines[0]!.remaining).toBe(4);
+    await ws.tools.invoke('wms.order.transition', { orderNo: 'RT-HOLD', to: 'canceled' });
     expect(getReturnable(ws, 'IN-1').lines[0]!.remaining).toBe(7);
     await ws.tools.invoke('wms.order.create', {
       direction: 'out',
@@ -204,6 +215,7 @@ describe('module.return', () => {
       lines: [{ skuCode: 'A-1', quantity: 4, locationCode: 'A-01' }],
     });
     await ws.tools.invoke('wms.order.transition', { orderNo: 'RT-PART', to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', {
       orderNo: 'RT-PART',
       to: 'shipped',

@@ -2,6 +2,8 @@ import type { OplogStore } from '../oplog/oplog-store.js';
 import type { FieldRegistry, UnregisterReport } from '../registry/field-registry.js';
 import { qualifyKey } from '../registry/key-naming.js';
 import type { ProfileService } from '../profile/profile-service.js';
+import { ProposalStore } from '../profile/proposal-store.js';
+import type { ImpactItem, ImpactReport } from '../profile/impact.js';
 import type { ToolBus } from '../bus/tool-bus.js';
 import {
   ModuleConflictError,
@@ -9,9 +11,9 @@ import {
   ModuleNotFoundError,
   ModuleValidationError,
 } from '../errors.js';
-import type { PatchOp } from '../profile/profile-types.js';
-import { compareSemver, validateManifest } from './manifest-validate.js';
-import { CORE_VERSION, type InstalledModule, type ModuleLifecyclePayload, type ModuleManifest } from './manifest-types.js';
+import type { ModuleConfig, PatchOp, ProfileSnapshot } from '../profile/profile-types.js';
+import { compareSemver, validateDynamicRecords, validateManifest } from './manifest-validate.js';
+import { CORE_VERSION, DYN_RECORD_PREFIX, type InstalledModule, type ModuleLifecyclePayload, type ModuleManifest } from './manifest-types.js';
 
 /** 模块生命周期审计事件类型（§8.2 事件目录：强一致） */
 export const MODULE_INSTALLED_EVENT = 'module.installed';
@@ -51,6 +53,13 @@ export class ModuleRegistry {
     private readonly registry: FieldRegistry,
     private readonly profile: ProfileService,
     private readonly bus: ToolBus,
+    /**
+     * 提议登记（B.1）。必须与 ProfileService 注入**同一个实例**——
+     * 声明式模块的注册提议与配置补丁提议共用一个待确认队列，
+     * 前端 `GET /api/proposals` 一处看到全部，confirm 由 WorkspaceFacade 按 kind 分派。
+     * 缺省自建（只服务于直接 install() 的调用方，此时提议能力形同关闭）。
+     */
+    private readonly proposals: ProposalStore = new ProposalStore(),
   ) {}
 
   // ── 进程 manifest 目录（代码装载方：领域包 attach 期调用）────
@@ -199,6 +208,14 @@ export class ModuleRegistry {
       }
     }
 
+    // 预检 7（B.1，仅当 manifest 声明了 dyn 命名空间的实体时生效）：
+    // 命名空间完整性 + 实体名不与任何已声明实体撞名。
+    // ⚠️ 内置模块的 records 一律不受本预检影响（没有 `dyn.` 前缀就直接跳过），
+    // 否则既有内置 manifest 之间合法的 id/别名重叠会突然变成安装失败。
+    if ((manifest.records ?? []).some((r) => r.id.startsWith(DYN_RECORD_PREFIX))) {
+      this.#assertDynamicRecords(workspaceId, manifest);
+    }
+
     // ── 落事件（顺序固定：轨道 A → 轨道 B → 审计）────────
     // 轨道 A：字段（已存在且类型兼容 → DO NOTHING + usedBy 追加，§7.1 后装共享语义）
     for (const p of manifest.fields?.provides ?? []) {
@@ -230,8 +247,16 @@ export class ModuleRegistry {
     for (const [k, prop] of Object.entries(manifest.settings?.schema.properties ?? {})) {
       if (prop.default !== undefined) settings[k] = prop.default;
     }
+    // 代码不在场的模块（= 声明式模块）把整份 manifest 一起落账：进程目录随重启清空，
+    // config 是它唯一的持久化载体。内置模块不写——代码才是真相，再存一份就是两份真相。
+    const moduleConfig: ModuleConfig = {
+      enabled: true,
+      version: manifest.version,
+      settings,
+      ...(this.#manifests.has(manifest.id) ? {} : { manifest }),
+    };
     const patch: PatchOp[] = [
-      { op: 'add', path: `/modules/${manifest.id}`, value: { enabled: true, version: manifest.version, settings } },
+      { op: 'add', path: `/modules/${manifest.id}`, value: moduleConfig },
     ];
     for (const [wfId, def] of Object.entries(manifest.workflows?.base ?? {})) {
       if (snapshot.workflows[wfId]) continue; // base 守卫：目标流程已存在（老库）则跳过
@@ -328,6 +353,93 @@ export class ModuleRegistry {
     return { moduleId, fields, newVersion };
   }
 
+  // ── 声明式模块提案（B.1：慢通道 confirm/reject 复用 Profile 管线）──────
+
+  /**
+   * 为一份声明式 manifest 登记 `dyn.module.register` 提议（不落任何事件）。
+   *
+   * 提案期把**静态可判定**的全部拦下（结构 / 命名空间 / 撞名），因为确认界面展示的
+   * 必须是「点了确认就能装上」的东西——把失败推迟到 confirm 会让用户点了才看到报错，
+   * 影响报告失去意义（§7.3 所见即所得）。
+   *
+   * ⚠️ 安装期的 6 道预检**故意不在这里跑**：依赖是否在场、工具 handler 是否已注册
+   * 都会随时间变化，propose 时通过不代表 confirm 时通过。confirm 由 install() 重新判定，
+   * 失败会抛结构化错误而不是静默装上半个模块。
+   */
+  proposeInstall(
+    workspaceId: string,
+    manifest: ModuleManifest,
+    opts: { proposedBy?: string; note?: string } = {},
+  ): { proposalId: string; report: ImpactReport } {
+    const { errors } = validateManifest(manifest);
+    if (errors.length > 0) {
+      throw new ModuleValidationError(
+        `manifest 校验未通过（${errors.length} 项）：\n` + errors.map((e) => `- ${e.message}`).join('\n'),
+      );
+    }
+    this.#assertDynamicRecords(workspaceId, manifest);
+
+    const snapshot = this.profile.getSnapshot(workspaceId);
+    const report = buildDynInstallReport(manifest, snapshot);
+    const proposal = this.proposals.create({
+      workspaceId,
+      proposedBy: opts.proposedBy ?? `module:${manifest.id}@${this.nodeId}`,
+      note: opts.note,
+      kind: 'dyn.module.register',
+      manifest,
+      baseVersion: snapshot.version,
+      // dyn 提议没有 patch，不参与 ProfileService.confirm 的字段指纹新鲜度检查；
+      // 它的新鲜度由 install() 的幂等/冲突预检在 confirm 时刻重新判定。
+      baseFieldFingerprint: '',
+      report,
+    });
+    return { proposalId: proposal.proposalId, report };
+  }
+
+  /**
+   * 声明式 records 的命名空间与撞名断言（提案期 + 安装预检 7 共用）。
+   * 撞名比对的是**全部已声明实体**——包括尚未安装的内置模块：
+   * 现在放行，等那个内置模块装上就会被顶掉查询入口（query-tools 按 id/label/alias 解析 entity）。
+   */
+  #assertDynamicRecords(workspaceId: string, manifest: ModuleManifest): void {
+    const nsErrors = validateDynamicRecords(manifest);
+    if (nsErrors.length > 0) {
+      throw new ModuleValidationError(
+        `声明式实体校验未通过（${nsErrors.length} 项）：\n` + nsErrors.map((e) => `- ${e.message}`).join('\n'),
+      );
+    }
+    const taken = this.#recordNames(workspaceId, manifest.id);
+    for (const record of manifest.records ?? []) {
+      for (const name of [record.id, ...(record.aliases ?? [])]) {
+        if (taken.has(name.trim().toLowerCase())) {
+          throw new ModuleValidationError(
+            `实体名「${name}」已被现有模块占用——声明式模块的 id/别名只能落在 ` +
+              `${DYN_RECORD_PREFIX}${manifest.id}.{recordId} 命名空间内（别名同样不得与内置实体重名）`,
+          );
+        }
+      }
+    }
+  }
+
+  /** 现有实体的全部可寻址名（id + aliases，小写归一）。excludeModuleId 用于放行「自己覆盖自己」 */
+  #recordNames(workspaceId: string, excludeModuleId?: string): Set<string> {
+    const names = new Set<string>();
+    const collect = (m: ModuleManifest): void => {
+      if (m.id === excludeModuleId) return;
+      for (const r of m.records ?? []) {
+        names.add(r.id.trim().toLowerCase());
+        for (const a of r.aliases ?? []) names.add(a.trim().toLowerCase());
+      }
+    };
+    for (const m of this.#manifests.values()) collect(m);
+    // 进程目录覆盖不到的部分：已安装的声明式模块（manifest 随 config 落账，重启后目录里没有）
+    const snapshot = this.profile.getSnapshot(workspaceId);
+    for (const [id, config] of Object.entries(snapshot.modules)) {
+      if (config.manifest && !this.#manifests.has(id)) collect(config.manifest);
+    }
+    return names;
+  }
+
   // ── 查询 ────────────────────────────────────────────────
 
   /** 已安装模块清单（modules 段状态 + 进程目录 manifest 元数据的聚合视图） */
@@ -338,7 +450,117 @@ export class ModuleRegistry {
       enabled: config.enabled,
       version: config.version ?? '',
       settings: config.settings ?? {},
-      manifest: this.#manifests.get(id),
+      // 进程目录优先（内置模块的真相是代码），落账的 manifest 兜底
+      // （声明式模块重启后目录为空，只有 config 里有）
+      manifest: this.#manifests.get(id) ?? config.manifest,
     }));
   }
+
+  /**
+   * 生效的 manifest 全集 = 进程目录（代码在场的内置模块）+ 已落账的声明式模块 manifest。
+   *
+   * query-tools 的目录装配必须用它替代 listManifests()，否则声明式模块对 AI 完全不可见
+   * （进程目录里压根没有它的条目）。同 id 时进程目录优先——代码是真相。
+   */
+  effectiveManifests(workspaceId: string): ModuleManifest[] {
+    const snapshot = this.profile.getSnapshot(workspaceId);
+    const out = new Map<string, ModuleManifest>(this.#manifests);
+    for (const [id, config] of Object.entries(snapshot.modules)) {
+      if (config.manifest && !out.has(id)) out.set(id, config.manifest);
+    }
+    return [...out.values()];
+  }
+}
+
+/**
+ * 声明式模块注册提议的影响报告（§7.3：确认界面展示的全部内容都从这里来）。
+ *
+ * 与 buildImpactReport 分开写，因为那条路消费的是 patch 列表，
+ * 而 dyn 提议的载荷是整份 manifest——没有 patch 可推。
+ */
+function buildDynInstallReport(manifest: ModuleManifest, snapshot: ProfileSnapshot): ImpactReport {
+  const items: ImpactItem[] = [];
+
+  for (const record of manifest.records ?? []) {
+    items.push({
+      severity: 'info',
+      kind: 'record.added',
+      target: record.id,
+      description: `新增声明式实体「${record.label}」（${record.fields?.length ?? 0} 列）`,
+    });
+  }
+  for (const f of manifest.fields?.provides ?? []) {
+    items.push({
+      severity: 'info',
+      kind: 'field.added',
+      target: `${f.entity}.${f.key}`,
+      description: `模块 ${manifest.id} 提供扩展字段「${f.label}」`,
+    });
+  }
+  for (const wfId of Object.keys(manifest.workflows?.base ?? {})) {
+    const exists = Boolean(snapshot.workflows[wfId]);
+    items.push({
+      severity: 'info',
+      kind: exists ? 'workflow.skipped' : 'workflow.added',
+      target: wfId,
+      description: exists ? `流程「${wfId}」已存在，base 种子跳过` : `新增基础流程「${wfId}」`,
+    });
+  }
+  for (const [wfId, c] of Object.entries(manifest.workflows?.contributes ?? {})) {
+    items.push({
+      severity: 'info',
+      kind: 'workflow.contributed',
+      target: wfId,
+      description: `向流程「${wfId}」贡献 ${c.states.length} 个状态 / ${c.transitions.length} 条转移`,
+    });
+  }
+  for (const t of manifest.tools ?? []) {
+    items.push({
+      severity: 'info',
+      kind: 'tool.declared',
+      target: t.id,
+      description: `声明工具「${t.label}」。handler 须已由代码装载方在总线上就位，否则确认时预检拒绝`,
+    });
+  }
+
+  const current = snapshot.modules[manifest.id];
+  if (current) {
+    items.push({
+      severity: 'warning',
+      kind: 'module.conflict',
+      target: manifest.id,
+      description:
+        current.version === manifest.version
+          ? `模块 ${manifest.id} 已安装同版本，确认后为幂等操作（不产生事件）`
+          : `模块 ${manifest.id} 已安装（版本 ${current.version ?? '未知'}）。当前版本无原地升级，确认时会被冲突预检拒绝`,
+    });
+  }
+  for (const depId of manifest.dependencies?.modules ?? []) {
+    if (!snapshot.modules[depId]?.enabled) {
+      items.push({
+        severity: 'warning',
+        kind: 'module.dependency',
+        target: depId,
+        description: `依赖模块 ${depId} 未安装或未启用，确认时会被依赖预检拒绝`,
+      });
+    }
+  }
+  if ((manifest.tools ?? []).length > 0) {
+    items.push({
+      severity: 'warning',
+      kind: 'tool.handler',
+      target: manifest.id,
+      description: '工具声明依赖代码侧已注册的 handler：纯 JSON 模块不能自带工具实现',
+    });
+  }
+
+  const counts = [
+    manifest.records?.length ? `${manifest.records.length} 个实体` : '',
+    manifest.fields?.provides?.length ? `${manifest.fields.provides.length} 个扩展字段` : '',
+    manifest.tools?.length ? `${manifest.tools.length} 个工具声明` : '',
+  ].filter(Boolean);
+  return {
+    summary: `新增声明式模块「${manifest.name}」（${manifest.id}@${manifest.version}）${counts.length ? `：${counts.join('、')}` : ''}`,
+    items,
+  };
 }

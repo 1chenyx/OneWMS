@@ -21,6 +21,9 @@ export {
   PROJECTION_META_PREFIX,
 } from './projection/projection-version.js';
 export type { ProjectionVersionDecision } from './projection/projection-version.js';
+// 投影组元数据：组名 + 版本 + 本组拥有的表，整组清理按清单驱动（不再硬编码 DELETE）
+export { clearProjectionTables } from './projection/projection-group.js';
+export type { ProjectionGroupSpec, ProjectionTable } from './projection/projection-group.js';
 export { EventsView } from './workspace/events-view.js';
 export { FieldsView } from './workspace/fields-view.js';
 export { ToolsView } from './workspace/tools-view.js';

@@ -148,7 +148,7 @@ export default function PalletsPage() {
   const current = rows.find((row) => row.lpnCode === selected) ?? null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div className="app-fill list-page" style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
         title="托盘"
         subtitle="托盘占用某个库位上已经有的货。移动时整托一起走，不另算一套库存。"
@@ -170,7 +170,7 @@ export default function PalletsPage() {
         <Card>托盘已关闭。到设置里重新启用 module.lpn 后可以装托和按托盘移库。</Card>
       ) : (
         <>
-          <Card>
+          <Card className="list-card">
             {lpns.error ? (
               <Typography.Paragraph type="danger">{errorText(lpns.error, '托盘加载失败')}</Typography.Paragraph>
             ) : null}
@@ -190,6 +190,7 @@ export default function PalletsPage() {
           </Card>
           {selected ? (
             <Card
+              className="list-card"
               title={`${selected}${current ? ` · ${current.locationCode}` : ''}`}
               extra={
                 <Space>

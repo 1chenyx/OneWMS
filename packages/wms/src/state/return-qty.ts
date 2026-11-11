@@ -11,12 +11,12 @@ import type { OrderDirection } from './order-state-machine.js';
 import { QTY_EPS, quantizeQty } from './inventory-policy.js';
 
 /**
- * 退货不新增状态。客退是入库单，指向已发货的出库单；退供是出库单，指向已收货的入库单。
+ * 退货不新增状态。客退是入库单，指向已拣货、已发货或已完成的出库单；退供是出库单，指向已收货的入库单。
  * 额度按 SKU + 批次，不看库位：货可以退回到别的库位，也可以从别的库位退走。
  */
 
 const INBOUND_POSTED = new Set(['received', 'putaway', 'done']);
-const OUTBOUND_POSTED = new Set(['shipped', 'done']);
+const OUTBOUND_POSTED = new Set(['picked', 'shipped', 'done']);
 
 export function sourceIsPosted(direction: OrderDirection, state: string): boolean {
   return direction === 'in' ? INBOUND_POSTED.has(state) : OUTBOUND_POSTED.has(state);

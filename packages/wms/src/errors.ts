@@ -401,6 +401,13 @@ export class PutawayOnlyInboundError extends CoreError {
   }
 }
 
+/** 一行分到多个库位时，数量没写清或超过本行 */
+export class PutawayQuantityError extends CoreError {
+  constructor(detail: string) {
+    super('WMS_PUTAWAY_QUANTITY', detail);
+  }
+}
+
 /** 上架目标行未找到（sku+源库位+批次 匹配不到入库单行） */
 export class PutawayLineNotFoundError extends CoreError {
   constructor(orderNo: string, lineKey: string) {
@@ -617,6 +624,61 @@ export class PickingStillOpenError extends CoreError {
       'WMS_PICKING_STILL_OPEN',
       `出库单 ${orderNo} 还有未关的拣货单 ${pickingNo}。要直接发货，先取消这张拣货单。`,
     );
+  }
+}
+
+/** 上架开着时，已收货不能直接完成 */
+export class PutawayRequiredError extends CoreError {
+  constructor(orderNo: string) {
+    super(
+      'WMS_PUTAWAY_REQUIRED',
+      `入库单 ${orderNo} 已开启上架。收货后要先上架，不能直接完成。`,
+    );
+  }
+}
+
+/** 拣货开着时，不能靠单据流转直接发货或完成 */
+export class PickingRequiredError extends CoreError {
+  constructor(orderNo: string) {
+    super(
+      'WMS_PICKING_REQUIRED',
+      `出库单 ${orderNo} 已开启拣货。先在拣货单里拣完并关单（进入已拣货），再在出库单上发货。不能直接发货或完成。`,
+    );
+  }
+}
+
+/** 质检开着时，已收货不能直接上架或完成 */
+export class QcRequiredError extends CoreError {
+  constructor(orderNo: string) {
+    super('WMS_QC_REQUIRED', `入库单 ${orderNo} 已开启质检。收货后要先质检，不能直接上架或完成。`);
+  }
+}
+
+/** 波次开着时，已创建不能直接拣货、发货或完成 */
+export class WaveRequiredError extends CoreError {
+  constructor(orderNo: string) {
+    super('WMS_WAVE_REQUIRED', `出库单 ${orderNo} 已开启波次。要先组波，不能直接拣货、发货或完成。`);
+  }
+}
+
+/** 复核开着时，不能跳过复核去打包、装车、发货或完成 */
+export class ReviewRequiredError extends CoreError {
+  constructor(orderNo: string) {
+    super('WMS_REVIEW_REQUIRED', `出库单 ${orderNo} 已开启复核。要先复核，不能直接打包、装车、发货或完成。`);
+  }
+}
+
+/** 打包开着时，不能跳过打包去装车、发货或完成 */
+export class PackRequiredError extends CoreError {
+  constructor(orderNo: string) {
+    super('WMS_PACK_REQUIRED', `出库单 ${orderNo} 已开启打包。要先打包，不能直接装车、发货或完成。`);
+  }
+}
+
+/** 装车开着时，不能跳过装车去发货或完成 */
+export class LoadRequiredError extends CoreError {
+  constructor(orderNo: string) {
+    super('WMS_LOAD_REQUIRED', `出库单 ${orderNo} 已开启装车。要先装车，不能直接发货或完成。`);
   }
 }
 

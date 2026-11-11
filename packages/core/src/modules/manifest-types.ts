@@ -23,6 +23,15 @@ export const MODULE_CAPABILITIES = [
 
 export type ModuleCapability = (typeof MODULE_CAPABILITIES)[number];
 
+/**
+ * 声明式模块的实体 id 命名空间前缀（B.1）。
+ *
+ * 为什么用点分前缀而不是放宽内置正则：内置实体 id 受 RECORD_ID_RE（不含点号）约束，
+ * 所以 `dyn.` 开头的 id 结构上不可能与任何内置实体撞名——两条命名规则各自独立演进，
+ * 互不污染。完整形态 `dyn.{moduleId}.{recordId}`，校验见 manifest-validate.ts。
+ */
+export const DYN_RECORD_PREFIX = 'dyn.';
+
 /** manifest 字段分区：provides 声明（§7.1：不存在则创建并成为 owner） */
 export interface ManifestFieldProvide {
   entity: string;
@@ -42,11 +51,24 @@ export interface ManifestFieldRequire {
   expectType?: ProfileFieldType;
 }
 
-/** 固定列的一列。不是扩展字段，不能用 profile.propose 增删 */
+/**
+ * 固定列的一列。不是扩展字段，不能用 profile.propose 增删。
+ *
+ * type / queryable 是 B.1 为声明式模块新增的可选字段：
+ *  - 内置模块的固定列由真实建表语句定义，列类型是代码事实，写在这里只会造成两份真相
+ *    → 内置 manifest 不声明（缺省即「由代码决定」）；
+ *  - 声明式模块没有建表语句，列类型必须靠 manifest 说清（存 JSON、校验入参、拼装 AI 描述）；
+ *  - queryable=true 的列才会在 dyn_index 落索引行（B.2）——索引表按行存储，
+ *    不加这个开关就等于「每个字段都建一条索引」，写入放大且没人查。
+ */
 export interface ManifestRecordField {
   key: string;
   label: string;
   description?: string;
+  /** 列的数据类型（声明式模块必填语义，见上；白名单 = ProfileFieldType） */
+  type?: ProfileFieldType;
+  /** 是否建索引以支持过滤查询（仅声明式模块的记录存储消费，B.2） */
+  queryable?: boolean;
 }
 
 /**
@@ -126,6 +148,11 @@ export interface ModuleManifest {
   /**
    * 固定列。不是扩展字段，不能用 profile.propose 增删。
    * 用户问「某某有哪些字段」时，profile.field.query 从这里回答。
+   *
+   * B.1 起声明式模块也能提供 records——但整份 manifest 必须经
+   * `dyn.module.register` 提案走人工确认，且实体 id 必须落在
+   * `dyn.{moduleId}.{recordId}` 命名空间内（见 DYN_RECORD_PREFIX）。
+   * 内置模块用裸 id（如 inventory），两者由 manifest-validate 分别校验。
    */
   records?: ManifestRecord[];
 

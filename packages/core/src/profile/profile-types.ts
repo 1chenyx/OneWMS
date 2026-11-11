@@ -6,6 +6,10 @@
  * 基础流程内容（如 inbound/outbound）由领域包以种子数据注入。
  */
 
+// manifest-types 反向 type-import 本文件的 ProfileFieldType/WorkflowEffect。
+// 两边都是 import type（编译期擦除），运行时不存在依赖环——不要改成值导入。
+import type { ModuleManifest } from '../modules/manifest-types.js';
+
 /** 扩展字段的数据类型（与注册表 FieldDataType 结构一致，独立声明以保持层间独立） */
 export type ProfileFieldType = 'string' | 'number' | 'boolean' | 'date' | 'json';
 
@@ -62,6 +66,16 @@ export interface ModuleConfig {
   enabled: boolean;
   version?: string;
   settings?: Record<string, unknown>;
+  /**
+   * 声明式模块的整份 manifest（B.1）。**只有代码不在场的模块才写这个字段**——
+   * 内置模块的 manifest 真相是进程目录（registerManifest），再存一份就是两份真相。
+   *
+   * 为什么塞进 modules 段而不是新增 PATCH_ROOT：`profile_state` 表恰好三列
+   * （workflows/modules/roles），新增根 = 改表结构 + 改 ConfigState + 改重放；
+   * 而挂在 `/modules/{id}.manifest` 上，随 config.change 进 oplog，
+   * 重启/同步/重放/迁移全部免费获得，一行 DDL 都不用动。
+   */
+  manifest?: ModuleManifest;
 }
 
 /**

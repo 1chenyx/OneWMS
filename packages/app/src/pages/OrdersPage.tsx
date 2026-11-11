@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { DownOutlined, PlusOutlined, RollbackOutlined, VerticalAlignTopOutlined } from '@ant-design/icons';
+import { DownOutlined, PlusOutlined, RollbackOutlined } from '@ant-design/icons';
 import { Alert, App as AntApp, Button, Card, Dropdown, Input, InputNumber, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ProfileSnapshot } from '@one/core';
@@ -9,7 +9,6 @@ import { ApiError } from '../api/client';
 import type { Order } from '../api/client';
 import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
 import OrderDetailDrawer from '../components/OrderDetailDrawer';
-import PutawayModal from '../components/PutawayModal';
 import ReturnModal from '../components/ReturnModal';
 import PageHeader from '../components/PageHeader';
 import { OrderSheetPort } from '../components/sheet-specs';
@@ -25,8 +24,8 @@ import OrderCreatePage from './OrderCreatePage';
  * 候选目标状态 = workflows[inbound|outbound].transitions.filter(from === 当前态
  * 且 when 条件满足——M21 起模块停用会掐掉其贡献的转移)。
  * 行为权威仍是服务端状态机：非法转移被 400 WMS_INVALID_TRANSITION 兜底。
- * 上架（M21）：入库单 received 态且 module.putaway 启用时出现「上架」按钮
- * （弹窗可选归位目标库位；服务端工具 wms.order.putaway 是行为权威）。
+ * 质检、上架打开时，已收货不能在这里跳过，到质检页和上架页做。
+ * 波次、拣货、打包、装车打开时，出库单按这个顺序做，发货仍回到这张单。
  * P1 表格规范：单号等宽列；明细在详情里看，主表只留主干；流转按钮收进
  * Dropdown（点选目标态 → modal.confirm 二次确认——出入库动库存，不裸点）；
  * 清单按页向服务端要，单号过滤走 q。点单号或「详情」打开抽屉。
@@ -36,7 +35,7 @@ import OrderCreatePage from './OrderCreatePage';
  */
 export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
   const { message, modal } = AntApp.useApp();
-  const { takeInitialFilter } = useAppNav();
+  const { takeInitialFilter, navigate } = useAppNav();
   const [orderNoFilter, setOrderNoFilter] = useState(() => takeInitialFilter()?.orderNo ?? '');
   const noKw = orderNoFilter.trim();
   const list = useListPage(`${direction}|${noKw}`);
@@ -58,7 +57,6 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
   const acceptConflict = useAcceptConflict();
   const dismissConflict = useDismissConflict();
   const [creating, setCreating] = useState(false);
-  const [putawayOrder, setPutawayOrder] = useState<Order | null>(null);
   const [returnOrder, setReturnOrder] = useState<Order | null>(null);
   const session = usePrintSession<Order>();
   /** 勾选范围是当前页。翻页或改筛选后清空，避免打出已经不在列表里的单。 */
@@ -130,6 +128,26 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
         }));
         const changed = lines.some((l, i) => l.quantity !== order.lines[i]!.quantity);
         return doTransition(order.orderNo, to, changed ? lines : undefined);
+      },
+    });
+  };
+
+  const goPick = (order: Order) => {
+    if (order.state === 'picking') {
+      navigate('pickings', { orderNo: order.orderNo });
+      return;
+    }
+    modal.confirm({
+      title: `把 ${order.orderNo} 转入拣货？`,
+      content: '转入后打开拣货单。拣货在详情里做。关单后这张单进入已拣货，再回来发货。',
+      onOk: async () => {
+        try {
+          await transition.mutateAsync({ orderNo: order.orderNo, to: 'picking' });
+          message.success(`${order.orderNo} → ${stateLabel(snapshot.data, 'picking', 'out')}`);
+          navigate('pickings', { orderNo: order.orderNo });
+        } catch (e) {
+          message.error(e instanceof ApiError ? e.message : `操作失败：${String(e)}`);
+        }
       },
     });
   };
@@ -217,11 +235,11 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
     },
     { title: '备注', dataIndex: 'note', key: 'note', render: (v: string | null) => v ?? '-' },
     {
-      title: '创建时间',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
+      title: '更新时间',
+      dataIndex: 'updatedAt',
+      key: 'updatedAt',
       render: (v: string) => v.slice(0, 19).replace('T', ' '),
-      sorter: (a, b) => a.createdAt.localeCompare(b.createdAt),
+      sorter: (a, b) => a.updatedAt.localeCompare(b.updatedAt),
     },
     {
       title: '详情',
@@ -239,10 +257,50 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
       width: 220,
       render: (_, r) => {
         const nexts = nextStates(snapshot.data, r.direction, r.state);
-        const canPutaway =
-          r.direction === 'in' && r.state === 'received' && nexts.includes('putaway');
+        const moduleOn = (id: string) => snapshot.data?.modules[id]?.enabled === true;
+        const putawayOn = moduleOn('module.putaway');
+        const pickingOn = moduleOn('module.picking');
+        const qcOn = moduleOn('module.qc');
+        const waveOn = moduleOn('module.wave');
+        const reviewOn = moduleOn('module.review');
+        const packOn = moduleOn('module.pack');
+        const loadOn = moduleOn('module.load');
+        const canQc = qcOn && r.direction === 'in' && r.state === 'received' && nexts.includes('inspected');
+        const canPutaway = r.direction === 'in' && nexts.includes('putaway') && !(qcOn && r.state === 'received');
+        const canWave = waveOn && r.direction === 'out' && r.state === 'created' && nexts.includes('waved');
+        const canGoPick =
+          pickingOn &&
+          r.direction === 'out' &&
+          (r.state === 'picking' ||
+            ((r.state === 'waved' || (r.state === 'created' && !waveOn)) && nexts.includes('picking')));
+        const canReview =
+          reviewOn && r.direction === 'out' && nexts.includes('reviewed') && !canWave && !canGoPick;
+        const canPack = packOn && r.direction === 'out' && nexts.includes('packed') && !canReview;
+        const canLoad = loadOn && r.direction === 'out' && nexts.includes('loaded') && !canReview && !canPack;
+        const shipState = snapshot.data
+          ? settingState(snapshot.data, 'outboundDecreaseState', 'shipped')
+          : 'shipped';
+        let flowNexts = nexts.filter((to) => !['putaway', 'inspected', 'waved', 'reviewed', 'packed', 'loaded'].includes(to));
+        if (canQc || (putawayOn && (r.state === 'received' || r.state === 'inspected'))) {
+          flowNexts = flowNexts.filter((to) => to !== 'done');
+        }
+        if (canWave || canGoPick || canReview || canPack || canLoad) {
+          flowNexts = flowNexts.filter((to) => to !== 'picking' && to !== 'picked' && to !== shipState && to !== 'done');
+        }
         const showReturn = canStartReturn(snapshot.data, r);
-        if (nexts.length === 0 && !showReturn) return <Typography.Text type="secondary">—</Typography.Text>;
+        if (
+          flowNexts.length === 0 &&
+          !showReturn &&
+          !canPutaway &&
+          !canGoPick &&
+          !canQc &&
+          !canWave &&
+          !canReview &&
+          !canPack &&
+          !canLoad
+        ) {
+          return <Typography.Text type="secondary">—</Typography.Text>;
+        }
         return (
           <>
             {showReturn ? (
@@ -257,25 +315,78 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
                 </Button>
               </Tooltip>
             ) : null}
+            {canQc ? (
+              <Tooltip title="到质检页确认。开启质检后，这一步必做。">
+                <Button size="small" type="primary" ghost style={{ marginRight: 8 }} onClick={() => navigate('qc', { orderNo: r.orderNo })}>
+                  去质检
+                </Button>
+              </Tooltip>
+            ) : null}
             {canPutaway ? (
-              <Tooltip title="确认上架，可选归位目标库位（module.putaway）">
+              <Tooltip title="到上架页确认上架。开启上架后，这一步必做。">
                 <Button
                   size="small"
                   type="primary"
                   ghost
-                  icon={<VerticalAlignTopOutlined />}
                   style={{ marginRight: 8 }}
-                  onClick={() => setPutawayOrder(r)}
+                  onClick={() => navigate('putaway', { orderNo: r.orderNo })}
                 >
-                  上架
+                  去上架
                 </Button>
               </Tooltip>
             ) : null}
-            {nexts.length > 0 ? (
+            {canWave ? (
+              <Tooltip title="到波次页组波。开启波次后，不能直接拣货或发货。">
+                <Button size="small" type="primary" ghost style={{ marginRight: 8 }} onClick={() => navigate('wave', { orderNo: r.orderNo })}>
+                  去波次
+                </Button>
+              </Tooltip>
+            ) : null}
+            {canGoPick ? (
+              <Tooltip
+                title={
+                  r.state === 'picking'
+                    ? '到拣货单详情里逐行拣货。关单后这张出库单进入已拣货，再回来发货。'
+                    : '转入拣货并打开拣货单。拣货在详情里做，不能直接发货或完成。'
+                }
+              >
+                <Button
+                  size="small"
+                  type="primary"
+                  ghost
+                  style={{ marginRight: 8 }}
+                  onClick={() => goPick(r)}
+                >
+                  去拣货
+                </Button>
+              </Tooltip>
+            ) : null}
+            {canReview ? (
+              <Tooltip title="到复核页确认。开启复核后，不能直接打包、装车或发货。">
+                <Button size="small" type="primary" ghost style={{ marginRight: 8 }} onClick={() => navigate('review', { orderNo: r.orderNo })}>
+                  去复核
+                </Button>
+              </Tooltip>
+            ) : null}
+            {canPack ? (
+              <Tooltip title="到打包页确认。开启打包后，不能直接装车或发货。">
+                <Button size="small" type="primary" ghost style={{ marginRight: 8 }} onClick={() => navigate('pack', { orderNo: r.orderNo })}>
+                  去打包
+                </Button>
+              </Tooltip>
+            ) : null}
+            {canLoad ? (
+              <Tooltip title="到装车页确认。开启装车后，不能直接发货。">
+                <Button size="small" type="primary" ghost style={{ marginRight: 8 }} onClick={() => navigate('load', { orderNo: r.orderNo })}>
+                  去装车
+                </Button>
+              </Tooltip>
+            ) : null}
+            {flowNexts.length > 0 ? (
             <Dropdown
               trigger={['click']}
               menu={{
-                items: nexts.map((to) => ({
+                items: flowNexts.map((to) => ({
                   key: to,
                   label: stateLabel(snapshot.data, to, r.direction),
                 })),
@@ -303,13 +414,16 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div
+      className="app-fill list-page"
+      style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}
+    >
       <PageHeader
         title={direction === 'in' ? '入库单' : '出库单'}
         subtitle={
           direction === 'in'
-            ? '收货、上架和到货预报。新建时把货和库位写清楚。'
-            : '拣货和发货。新建时先看每一件货还剩多少，再决定出哪一桶。'
+            ? '收货和到货预报。开启质检、上架后，到对应页面做完，不能直接完成。'
+            : '开启波次、拣货、复核、打包、装车后按这个顺序做。拣完关单是已拣货，发货仍在这里。'
         }
         extra={
           <>
@@ -370,7 +484,7 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
           }
         />
       ) : null}
-      <Card>
+      <Card className="list-card">
         <PrintSelectionBar count={selectedOrders.length} onPrint={() => session.printNow(selectedOrders)} />
         <Table<Order>
           rowKey="id"
@@ -388,7 +502,6 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
           })}
           locale={{ emptyText: '还没有单据' }}
         />
-        <PutawayModal open={putawayOrder !== null} order={putawayOrder} onClose={() => setPutawayOrder(null)} />
         <ReturnModal open={returnOrder !== null} order={returnOrder} onClose={() => setReturnOrder(null)} />
       </Card>
 
@@ -454,7 +567,7 @@ function allowsPartialQty(
 function canStartReturn(snapshot: ProfileSnapshot | undefined, order: Order): boolean {
   if (snapshot?.modules['module.return']?.enabled !== true) return false;
   if (order.returnOfOrderNo) return false;
-  if (order.direction === 'out') return order.state === 'shipped' || order.state === 'done';
+  if (order.direction === 'out') return order.state === 'picked' || order.state === 'shipped' || order.state === 'done';
   return order.state === 'received' || order.state === 'putaway' || order.state === 'done';
 }
 

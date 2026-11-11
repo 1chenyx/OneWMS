@@ -27,10 +27,12 @@ const PAGE_STYLE = `
   gap: 16px;
   flex: 1;
   min-height: 0;
+  min-width: 0;
   width: 100%;
 }
 .flow-body {
-  max-width: 920px;
+  min-width: 0;
+  width: 100%;
 }
 .lane-title {
   margin: 4px 0 10px;
@@ -39,15 +41,21 @@ const PAGE_STYLE = `
 .lane + .lane {
   margin-top: 28px;
 }
+.chart-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  padding-bottom: 6px;
+}
 .chart {
   display: flex;
   align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 10px 0;
+  flex-wrap: nowrap;
+  width: max-content;
+  min-width: 100%;
 }
 .node {
-  min-width: 96px;
-  padding: 10px 12px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
   border: 1px solid #1677ff;
   border-radius: 10px;
   background: #f0f7ff;
@@ -60,6 +68,7 @@ const PAGE_STYLE = `
 .node-label {
   font-weight: 600;
   text-align: center;
+  white-space: nowrap;
 }
 .node.is-off .node-label {
   color: rgba(0, 0, 0, 0.45);
@@ -74,10 +83,15 @@ const PAGE_STYLE = `
 }
 .edge {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   align-items: center;
-  min-width: 48px;
-  padding: 14px 8px 0;
+  min-width: 28px;
+  padding: 10px 4px 0;
+}
+.flow-page .change-confirm {
+  width: 240px;
+  box-sizing: border-box;
 }
 .edge-arrow {
   color: #1677ff;
@@ -129,7 +143,8 @@ function Lane({
   return (
     <section className="lane" aria-label={laneTitle(lane)}>
       <div className="lane-title">{laneTitle(lane)}</div>
-      <div className="chart" data-testid={`${lane}-chart`}>
+      <div className="chart-scroll">
+        <div className="chart" data-testid={`${lane}-chart`}>
         {live.map((node, index) => {
           const prev = live[index - 1];
           const skipped = prev ? nodesBetween(nodes, prev, node).filter((item) => !active(item)) : [];
@@ -142,6 +157,7 @@ function Lane({
             </Fragment>
           );
         })}
+        </div>
       </div>
     </section>
   );
@@ -195,7 +211,7 @@ function FlowBox({
   return (
     <div className={off ? 'node is-off' : 'node'} data-node={node.label} data-active={off ? 'false' : 'true'}>
       <div className="node-label">{node.label}</div>
-      {own && node.moduleId ? (
+      {own && node.moduleId && node.toggle !== false ? (
         <NodeSwitch card={own} label={node.label} place={place(node.moduleId)} review={review} />
       ) : null}
       {tags.map((tag) => {

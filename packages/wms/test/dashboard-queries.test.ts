@@ -34,6 +34,7 @@ async function receive(skuCode: string, qty: number, batchNo?: string, expiry?: 
     lines: [{ skuCode, quantity: qty, ...(batchNo ? { batchNo } : {}), ...(expiry ? { batchExpiryDate: expiry } : {}) }],
   })) as { orderNo: string };
   await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'received' });
+  await ws.tools.invoke('wms.order.putaway', { orderNo: r.orderNo });
   await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'done' });
 }
 

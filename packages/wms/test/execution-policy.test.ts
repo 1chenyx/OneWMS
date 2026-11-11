@@ -6,7 +6,7 @@ import {
   getReturnable,
   InsufficientStockError,
   PickingIncompleteError,
-  PickingStillOpenError,
+  PickingRequiredError,
   PickingSubstitutionError,
   PutawayCapacityError,
   ReturnLineNotFoundError,
@@ -14,6 +14,7 @@ import {
   StockReservedError,
   WmsDomain,
 } from '../src/index.js';
+import { allowDirectShip } from './direct-ship.js';
 
 /**
  * 承诺、建议、实绩。
@@ -234,17 +235,21 @@ describe('拣货改桶', () => {
   });
 });
 
-describe('未关拣货单挡住直接发货', () => {
-  it('有拣货单时直接发货被拒绝；取消拣货单后可以发', async () => {
+describe('拣货开着时不能直接发货', () => {
+  it('有没有拣货单都不能从出库单直接发货；关掉拣货后，已取消拣货单的出库单可以发', async () => {
     await putStock('A-01', 'B-1', 4);
     await outbound({ orderNo: 'OUT-1', quantity: 4, locationCode: 'A-01', batchNo: 'B-1' });
     const pickingNo = await openPicking('OUT-1');
     await expect(ws.tools.invoke('wms.order.transition', { orderNo: 'OUT-1', to: 'shipped' })).rejects.toThrow(
-      PickingStillOpenError,
+      PickingRequiredError,
     );
     expect(ws.orders.byNo('OUT-1')!.state).toBe('picking');
     expect(qty('A-01', 'B-1')).toBe(4);
     await ws.tools.invoke('wms.picking.cancel', { pickingNo });
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: 'OUT-1', to: 'shipped' })).rejects.toThrow(
+      PickingRequiredError,
+    );
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: 'OUT-1', to: 'shipped' });
     expect(ws.orders.byNo('OUT-1')!.state).toBe('shipped');
     expect(qty('A-01', 'B-1')).toBe(0);
@@ -264,7 +269,7 @@ describe('短发', () => {
       pickedQty: 2,
     });
     await ws.tools.invoke('wms.picking.close', { pickingNo: shortNo });
-    expect(ws.orders.byNo('OUT-SHORT')!.state).toBe('shipped');
+    expect(ws.orders.byNo('OUT-SHORT')!.state).toBe('picked');
     expect(ws.orders.lines(ws.orders.byNo('OUT-SHORT')!.id)[0]!.fulfilledQty).toBe(-2);
     expect(getReturnable(ws, 'OUT-SHORT').lines[0]!.remaining).toBe(2);
     expect(qty('A-01', 'B-1')).toBe(13);
@@ -470,6 +475,7 @@ describe('占用桶上的调整', () => {
     })) as { warning?: string };
     expect(adjusted.warning).toContain('出库单 OUT-1 占用着');
     expect(qty('A-01', 'B-1')).toBe(0);
+    allowDirectShip(ws);
     await expect(ws.tools.invoke('wms.order.transition', { orderNo: 'OUT-1', to: 'shipped' })).rejects.toThrow(
       InsufficientStockError,
     );

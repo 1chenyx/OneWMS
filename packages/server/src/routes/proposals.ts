@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { AppContext } from '../context.js';
+import { resolveActor } from '../actor.js';
 
 /**
  * 提议确认端点——人类的确认入口（REST），永不注册为 AI 工具
@@ -12,7 +13,7 @@ export function proposalRoutes(ctx: AppContext): Hono {
     .post('/:id/confirm', async (c) => {
       const body = await c.req.json().catch(() => ({}) as { by?: string });
       // 默认确认者带节点后缀（同步通道唯一）；body.by 预留未来多用户身份
-      const by = typeof body.by === 'string' && body.by ? body.by : `user:local@${ctx.core.nodeId}`;
+      const by = typeof body.by === 'string' && body.by ? body.by : resolveActor(ctx, c);
       const result = ctx.ws.profile.confirm(c.req.param('id'), by);
       return c.json(result);
     })

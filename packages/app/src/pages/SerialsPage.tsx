@@ -56,7 +56,7 @@ export default function SerialsPage() {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div className="app-fill list-page" style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
         title="序列号"
         subtitle="一件一个号。收货或调整库存时登记，这里按 SKU 和状态查看。"
@@ -91,7 +91,7 @@ export default function SerialsPage() {
       {snapshot.isSuccess && !serialOn ? (
         <Card>序列号已关闭。到设置里重新启用 module.serial 后可以查看已经记下的号。</Card>
       ) : (
-        <Card>
+        <Card className="list-card">
           {serials.error ? (
             <Typography.Paragraph type="danger">
               {serials.error instanceof ApiError ? serials.error.message : '序列号加载失败'}

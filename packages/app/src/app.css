@@ -23,6 +23,75 @@ body {
   overflow: hidden;
 }
 
+/* 清单页：页面本身不滚，滚动只发生在表格里（表头吸顶、分页条常驻）。
+   用法：页面根节点加 list-page（配合 app-fill），装主表的 Card 加 list-card。
+   Card 用 flex: 0 1 auto —— 行少时卡片跟着内容收，行多时才撑满并内部滚动。 */
+.list-page > .list-card {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 带 title 的卡片：卡头固定，只有卡体伸缩 */
+.list-page > .list-card > .ant-card-head {
+  flex: none;
+}
+
+.list-page > .list-card > .ant-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 卡片里的工具条、提示等不参与滚动，只有表格伸缩 */
+.list-page > .list-card > .ant-card-body > :not(.ant-table-wrapper) {
+  flex: none;
+}
+
+.list-page .list-card .ant-table-wrapper {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.list-page .list-card .ant-spin-nested-loading {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.list-page .list-card .ant-spin-container {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.list-page .list-card .ant-table {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* 表头吸顶。固定列的 th 本来就是 sticky（横向），不去覆盖它。 */
+.list-page
+  .list-card
+  .ant-table-thead
+  > tr
+  > th:not(.ant-table-cell-fix-left):not(.ant-table-cell-fix-right) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.list-page .list-card .ant-table-pagination.ant-pagination {
+  flex: none;
+  margin: 16px 0 0;
+}
+
 /* 助手回复。antd reset 去掉了列表圆点，这里加回来。HTML 不进 innerHTML。 */
 .chat-md {
   line-height: 1.7;
@@ -164,11 +233,17 @@ body {
   .ant-layout-content,
   .app-content,
   .app-page,
-  .app-page > .app-fill {
+  .app-page > .app-fill,
+  .list-page > .list-card,
+  .list-page .list-card .ant-table {
     height: auto !important;
     max-height: none !important;
     min-height: 0 !important;
     overflow: visible !important;
+  }
+
+  .list-page .list-card .ant-table-thead > tr > th {
+    position: static !important;
   }
 
   .chat-dock {

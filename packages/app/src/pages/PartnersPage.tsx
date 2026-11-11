@@ -80,7 +80,7 @@ export default function PartnersPage() {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div className="app-fill list-page" style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
         title="往来单位"
         subtitle="供应商与客户主数据：入库单关联供应商、出库单关联客户"
@@ -115,7 +115,7 @@ export default function PartnersPage() {
           </>
         }
       />
-      <Card>
+      <Card className="list-card">
         <Table<Partner>
           rowKey="id"
           columns={columns}

@@ -32,6 +32,7 @@ import {
 } from '../state/inventory-policy.js';
 import {
   assertTransition,
+  canTransition,
   WORKFLOW_BY_DIRECTION,
 } from '../state/order-state-machine.js';
 import type { PickingLineRecord } from '../views/picking-view.js';
@@ -43,10 +44,10 @@ import { def, type WorkspaceResolver } from './tool-def.js';
  *  - create：逐行生成建议桶（显式批次 → 该桶；DEFAULT 虚拟批次 → 按策略
  *    从行库位的余量桶装载首个——建议桶只是建议，硬校验在 close）；
  *  - pick：记实拣事实（不落库存流水）；pickedQty 是累计实拣量（后到者胜）；
- *  - close：全部行拣满 → 逐单按 outbound 流程（when 过滤后）断言可 shipped →
+ *  - close：全部行拣满 → 拣货开着时出库单进入已拣货，否则进入已发货 →
  *    assertOutboundBuckets 以实拣桶硬校验（过期/余量/冻结）→ runAtomic 原子落
- *    orderStateChanged(→shipped) + 逐行 inventoryAdjusted(−, reason picking:{no})
- *    + pickingClosed；
+ *    orderStateChanged + 逐行 inventoryAdjusted(−, reason picking:{no})
+ *    + pickingClosed。已拣货再到出库单发货，不再扣第二次；
  *  - cancel：open 才可，已拣记录保留审计；订单留在拣货中人工处理；
  *  - query（read）：单张带行 / 全部清单。
  * 生命周期词汇固定 created → closed / canceled（M17 盘点先例，不进 Profile
@@ -315,7 +316,7 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
     id: 'wms.picking.close',
     label: '拣货关单',
     description:
-      '关单并按实拣扣减。没开短发时每一行都要拣满。开了短发也要先录入实拣，没动过的行不能关成 0。短发按实拣数量入账，占用释放。以实拣桶做过期、余量、冻结和占用校验。原子落账。',
+      '关单并按实拣扣减。拣货开着时出库单进入已拣货，库存按实拣扣掉；发货要再到出库单上做，不再扣第二次。拣货关着、单还停在拣货中时，关单直接发货并扣减。没开短发时每一行都要拣满。开了短发也要先录入实拣，没动过的行不能关成 0。短发按实拣数量入账，占用释放。以实拣桶做过期、余量、冻结和占用校验。原子落账。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -347,6 +348,8 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
       const ordersById = new Map<string, NonNullable<ReturnType<typeof ws.orders.byId>>>();
       const outbound: { skuId: string; locationId: string; batchNo: string; quantity: number }[] = [];
       const bucketsByLine = new Map<string, { locationId: string; batchNo: string; quantity: number }[]>();
+      // 拣货开着时关单进入已拣货；边被拿掉或模块停用后，仍停在拣货中的单直接发货。
+      const toState = canTransition(activeTransitions, 'picking', 'picked') ? 'picked' : 'shipped';
       for (const line of lines) {
         let order = ordersById.get(line.orderId);
         if (!order) {
@@ -354,7 +357,7 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
           if (!found) throw new OrderNotFoundError(line.orderNo);
           order = found;
           ordersById.set(line.orderId, order);
-          assertTransition(activeTransitions, 'out', order.state, 'shipped');
+          assertTransition(activeTransitions, 'out', order.state, toState);
         }
         const buckets = pickedBuckets(ws, line);
         bucketsByLine.set(line.id, buckets);
@@ -394,7 +397,7 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
             orderNo: order.orderNo,
             direction: 'out',
             from: order.state,
-            to: 'shipped',
+            to: toState,
             ...(fulfillments.length > 0 ? { fulfillments } : {}),
           });
           for (const release of planReservationReleases(ws, order)) {
@@ -437,7 +440,7 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
       return {
         pickingNo: picking.pickingNo,
         state: 'closed',
-        orders: [...ordersById.values()].map((o) => ({ orderNo: o.orderNo, from: o.state, to: 'shipped' })),
+        orders: [...ordersById.values()].map((o) => ({ orderNo: o.orderNo, from: o.state, to: toState })),
         adjustedLines,
       };
     },

@@ -16,6 +16,15 @@ afterEach(() => {
 
 function setup(): ReturnType<typeof createApp> {
   ctx = createAppContext({ dbPath: ':memory:', workspaceId: 'ws-wms-routes-test' });
+  // 这些端点测的是收货、上架、拣货和发货。质检、波次、复核、打包、装车默认开着且必做，先关掉。
+  const snapshot = ctx.ws.profile.getSnapshot();
+  const patch: PatchOp[] = ['module.qc', 'module.wave', 'module.review', 'module.pack', 'module.load']
+    .filter((id) => snapshot.modules[id]?.enabled === true)
+    .map((id) => ({ op: 'replace', path: `/modules/${id}/enabled`, value: false }));
+  if (patch.length > 0) {
+    const proposed = ctx.ws.profile.propose('user:tester', patch, '测试跳过质检、波次、复核、打包、装车');
+    ctx.ws.profile.confirm(proposed.proposalId, 'user:tester');
+  }
   return createApp(ctx);
 }
 
@@ -776,15 +785,14 @@ describe('冻结端点（M19）', () => {
     expect(over.status).toBe(400);
     expect(((await over.json()) as { code: string }).code).toBe('WMS_HOLD_EXCEEDS_STOCK');
 
-    // 冻结 6 → 可用 4；出库 5 的单进拣货被拦
+    // 冻结 6 → 可用 4；出库 5 在建单就被拦
     await post(app, '/api/holds', { skuCode: 'A-1', quantity: 6 });
-    const order = (await (await post(app, '/api/orders', {
+    const order = await post(app, '/api/orders', {
       direction: 'out',
       lines: [{ skuCode: 'A-1', quantity: 5 }],
-    })).json()) as { orderNo: string };
-    const pick = await post(app, `/api/orders/${order.orderNo}/transition`, { to: 'picking' });
-    expect(pick.status).toBe(400);
-    expect(((await pick.json()) as { code: string }).code).toBe('WMS_STOCK_HELD');
+    });
+    expect(order.status).toBe(400);
+    expect(((await order.json()) as { code: string }).code).toBe('WMS_STOCK_HELD');
   });
 });
 
@@ -899,6 +907,12 @@ describe('退货端点（module.return）', () => {
     expect(plain.status).toBe(201);
 
     await post(app, '/api/orders/OUT-1/transition', { to: 'picking' });
+    const proposed = ctx!.ws.profile.propose(
+      'user:tester',
+      [{ op: 'replace', path: '/modules/module.picking/enabled', value: false }],
+      '测试直接发货',
+    );
+    ctx!.ws.profile.confirm(proposed.proposalId, 'user:tester');
     const shipped = await post(app, '/api/orders/OUT-1/transition', { to: 'shipped' });
     expect(shipped.status).toBe(200);
 

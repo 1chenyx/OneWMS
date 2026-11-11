@@ -15,9 +15,14 @@ import { DataVersionError } from '../errors.js';
  * 你要改的那个投影文件里（WMS_PROJECTION_VERSION / MEMORY_PROJECTION_VERSION /
  * CORE_PROJECTION_VERSION）。判定与重建全自动，不需要迁移脚本。
  *
- * 粒度：**投影组 × 工作区**。一个域的所有投影共用一个版本号——组内整建，
+ * 粒度：**投影组 × 工作区**。一组内的投影互相依赖时共用一个版本号——组内整建，
  * 不搞逐表版本。理由是投影之间互相依赖（单据 → 库存 → 批次），单独重建一张
  * 会得到跨表不一致的中间态；而全量重放本来就是幂等的自检路径，成本可接受。
+ *
+ * **一个域可以声明多组**，各组各打各的戳、各自只重建自己的表：WMS 十表是一组，
+ * 声明式模块的动态投影每个模块自成一组（`dyn.{moduleId}`）。新增一组并 bump 它，
+ * 不会把整个域拖着全量重放。「本组拥有哪些表」登记在 ProjectionGroupSpec.tables，
+ * 整组清理照清单执行（projection-group.ts :: clearProjectionTables），不再手写 DELETE。
  *
  * 戳存在 meta 表（key = `projection.<group>.<workspaceId>`）。meta 是全局单值表、
  * 无工作区维度，所以工作区编码进键名——多工作区同库时各算各的。

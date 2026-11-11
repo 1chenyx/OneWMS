@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { OneCore, type PatchOp } from '@one/core';
 import { InsufficientStockError, StockReservedError, WmsDomain } from '../src/index.js';
+import { allowDirectShip, restorePicking } from './direct-ship.js';
 
 /**
  * module.reservation：拣货占用可用量，物理库存仍在发货时扣。
@@ -48,18 +49,16 @@ describe('module.reservation', () => {
     expect(ws.inventory.quantityOf(skuId())).toBe(10);
     expect(ws.inventory.reservedOfSku(skuId())).toBe(6);
 
-    const b = await outbound(6, 'OUT-B');
     const before = ws.events.count();
-    await expect(ws.tools.invoke('wms.order.transition', { orderNo: b, to: 'picking' })).rejects.toThrow(
-      StockReservedError,
-    );
+    await expect(outbound(6, 'OUT-B')).rejects.toThrow(StockReservedError);
     expect(ws.events.count()).toBe(before);
-    expect(ws.orders.byNo(b)!.state).toBe('created');
+    expect(ws.orders.byNo('OUT-B')).toBeUndefined();
 
     const small = await outbound(4, 'OUT-C');
     await ws.tools.invoke('wms.order.transition', { orderNo: small, to: 'picking' });
     expect(ws.inventory.reservedOfSku(skuId())).toBe(10);
 
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: a, to: 'shipped' });
     expect(ws.inventory.quantityOf(skuId())).toBe(4);
     expect(ws.inventory.listReservations(ws.orders.byNo(a)!.id)).toHaveLength(0);
@@ -73,11 +72,13 @@ describe('module.reservation', () => {
   it('短发释放全部占用，未发的数量回到可用', async () => {
     const a = await outbound(10, 'OUT-SHORT');
     await ws.tools.invoke('wms.order.transition', { orderNo: a, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', {
       orderNo: a,
       to: 'shipped',
       lines: [{ skuCode: 'A-1', quantity: 3 }],
     });
+    restorePicking(ws);
     expect(ws.inventory.quantityOf(skuId())).toBe(7);
     expect(ws.inventory.reservedOfSku(skuId())).toBe(0);
 
@@ -103,10 +104,10 @@ describe('module.reservation', () => {
     expect(q.reserved).toBe(6);
     expect(q.available).toBe(0);
 
-    const other = await outbound(1, 'OUT-OTHER');
-    await expect(ws.tools.invoke('wms.order.transition', { orderNo: other, to: 'picking' })).rejects.toThrow(
-      StockReservedError,
-    );
+    const beforeOther = ws.events.count();
+    await expect(outbound(1, 'OUT-OTHER')).rejects.toThrow(StockReservedError);
+    expect(ws.events.count()).toBe(beforeOther);
+    expect(ws.orders.byNo('OUT-OTHER')).toBeUndefined();
   });
 
   it('停用后新的拣货不再占用；停用前已占用的仍拦住别人，发货时照样释放', async () => {
@@ -116,6 +117,7 @@ describe('module.reservation', () => {
     await ws.tools.invoke('wms.order.transition', { orderNo: a, to: 'picking' });
     await ws.tools.invoke('wms.order.transition', { orderNo: b, to: 'picking' });
     expect(ws.inventory.reservedOfSku(skuId())).toBe(0);
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: a, to: 'shipped' });
     expect(ws.inventory.quantityOf(skuId())).toBe(2);
     await expect(ws.tools.invoke('wms.order.transition', { orderNo: b, to: 'shipped' })).rejects.toThrow(
@@ -130,10 +132,11 @@ describe('module.reservation', () => {
     const held = await outbound(8, 'OUT-HELD');
     await ws.tools.invoke('wms.order.transition', { orderNo: held, to: 'picking' });
     disableReservation();
-    const late = await outbound(8, 'OUT-LATE');
-    await expect(ws.tools.invoke('wms.order.transition', { orderNo: late, to: 'picking' })).rejects.toThrow(
-      StockReservedError,
-    );
+    const beforeLate = ws.events.count();
+    await expect(outbound(8, 'OUT-LATE')).rejects.toThrow(StockReservedError);
+    expect(ws.events.count()).toBe(beforeLate);
+    expect(ws.orders.byNo('OUT-LATE')).toBeUndefined();
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: held, to: 'shipped' });
     expect(ws.inventory.quantityOf(skuId())).toBe(2);
     expect(ws.inventory.reservedOfSku(skuId())).toBe(0);
@@ -144,6 +147,7 @@ describe('module.reservation', () => {
     await ws.tools.invoke('wms.order.transition', { orderNo: a, to: 'picking' });
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: -5 });
     expect(ws.inventory.reservedOfSku(skuId())).toBe(6);
+    allowDirectShip(ws);
     await expect(ws.tools.invoke('wms.order.transition', { orderNo: a, to: 'shipped' })).rejects.toThrow(
       InsufficientStockError,
     );
@@ -158,6 +162,7 @@ describe('module.reservation', () => {
     expect(ws.orders.byNo(a)!.state).toBe('picking');
     expect(ws.inventory.reservedOfSku(skuId())).toBe(4);
 
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: a, to: 'shipped' });
     ws.replay();
     expect(ws.inventory.quantityOf(skuId())).toBe(6);
@@ -175,7 +180,7 @@ describe('module.reservation', () => {
       pickedQty: 4,
     });
     await ws.tools.invoke('wms.picking.close', { pickingNo: created.pickingNo });
-    expect(ws.orders.byNo(a)!.state).toBe('shipped');
+    expect(ws.orders.byNo(a)!.state).toBe('picked');
     expect(ws.inventory.quantityOf(skuId())).toBe(6);
     expect(ws.inventory.listReservations()).toHaveLength(0);
 

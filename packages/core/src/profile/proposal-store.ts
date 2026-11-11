@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { ProposalNotFoundError, ProposalStateError } from '../errors.js';
+import type { ModuleManifest } from '../modules/manifest-types.js';
 import type { ImpactReport } from './impact.js';
 import type { PatchOp } from './profile-types.js';
 
@@ -16,6 +17,19 @@ import type { PatchOp } from './profile-types.js';
  */
 export type ProposalStatus = 'pending' | 'applied' | 'rejected';
 
+/**
+ * 提议的种类（B.1 引入）。
+ *  - `patch`：配置补丁，confirm 时走 ProfileService 的双轨热应用；
+ *  - `dyn.module.register`：声明式模块注册，confirm 时走 ModuleRegistry.install
+ *    （载荷是整份 manifest，不是 patch）。
+ *
+ * 为什么加 kind 而不是把 manifest 硬塞成 patch：install 的 6 道预检
+ * （依赖在场 / slot 占位 / 状态冲突 / 字段现状 / 工具在场）需要读实时状态并抛结构化错误，
+ * 这些语义无法由 applyPatch 表达。两条路共用同一个确认队列与同一个 ProposalStore，
+ * 前端「待确认提议」列表一处就能看到全部。
+ */
+export type ProposalKind = 'patch' | 'dyn.module.register';
+
 export interface Proposal {
   proposalId: string;
   workspaceId: string;
@@ -23,7 +37,12 @@ export interface Proposal {
   proposedBy: string;
   /** 提议说明（AI 给出的意图描述，进确认界面） */
   note?: string;
+  /** 提议种类；缺省 'patch'（既有调用方零改动） */
+  kind: ProposalKind;
+  /** kind='patch' 时的配置补丁 */
   patch: PatchOp[];
+  /** kind='dyn.module.register' 时的模块声明（整份 manifest） */
+  manifest?: ModuleManifest;
   /** propose 时刻的 profileVersion（confirm 时的新鲜度基准之一） */
   baseVersion: number;
   /** propose 时刻 patch 涉及字段的现状指纹（新鲜度基准之二） */
@@ -38,6 +57,7 @@ export interface ProposalSummary {
   proposalId: string;
   proposedBy: string;
   note?: string;
+  kind: ProposalKind;
   baseVersion: number;
   summary: string;
   status: ProposalStatus;
@@ -53,7 +73,9 @@ export class ProposalStore {
     workspaceId: string;
     proposedBy: string;
     note?: string;
-    patch: PatchOp[];
+    kind?: ProposalKind;
+    patch?: PatchOp[];
+    manifest?: ModuleManifest;
     baseVersion: number;
     baseFieldFingerprint: string;
     report: ImpactReport;
@@ -63,7 +85,9 @@ export class ProposalStore {
       workspaceId: params.workspaceId,
       proposedBy: params.proposedBy,
       note: params.note,
-      patch: params.patch,
+      kind: params.kind ?? 'patch',
+      patch: params.patch ?? [],
+      manifest: params.manifest,
       baseVersion: params.baseVersion,
       baseFieldFingerprint: params.baseFieldFingerprint,
       report: params.report,
@@ -87,10 +111,11 @@ export class ProposalStore {
     return [...this.#proposals.values()]
       .filter((p) => p.workspaceId === workspaceId && p.status === 'pending')
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map(({ proposalId, proposedBy, note, baseVersion, report, status, createdAt, patch }) => ({
+      .map(({ proposalId, proposedBy, note, kind, baseVersion, report, status, createdAt, patch }) => ({
         proposalId,
         proposedBy,
         note,
+        kind,
         baseVersion,
         summary: report.summary,
         status,

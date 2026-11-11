@@ -108,7 +108,7 @@ export default function ExpiryPage() {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div className="app-fill list-page" style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
         title="效期看板"
         subtitle={`临期分层预警（截至 ${data?.today ?? '…'}，按效期升序）`}
@@ -148,7 +148,7 @@ export default function ExpiryPage() {
           </Card>
         ))}
       </Space>
-      <Card>
+      <Card className="list-card">
         <Table<ExpiryBatchRow>
           rowKey={(r) => `${r.skuId} ${r.batchNo}`}
           columns={columns}

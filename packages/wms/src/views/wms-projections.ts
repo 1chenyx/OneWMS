@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { EventEnvelope } from '@one/core';
+import { clearProjectionTables, type EventEnvelope, type ProjectionGroupSpec } from '@one/core';
 import { InventoryView } from './inventory-view.js';
 import { LocationView } from './location-view.js';
 import { OrderView } from './order-view.js';
@@ -24,6 +24,40 @@ import { LpnView } from './lpn-view.js';
  * + DROP」的地方——探测代码只能覆盖你想起来的那几种改动，版本号覆盖全部。
  */
 export const WMS_PROJECTION_VERSION = 1;
+
+/**
+ * WMS 投影组的元数据：组名 + 版本 + 本组拥有的 20 张表。
+ *
+ * **加一张投影表就在这个清单里加一行**（建表在 db/migrations.ts），clear() 不用碰——
+ * 漏登记会被 wms/test/projection-group.test.ts 对着 sqlite_master 查出来。
+ * 顺序保持「先子表后主表」：外键当前没开强制，但确定性顺序让重放期的中间态可复现。
+ */
+export const WMS_PROJECTION_GROUP: ProjectionGroupSpec = {
+  group: 'wms',
+  codeVersion: WMS_PROJECTION_VERSION,
+  tables: [
+    { table: 'wms_sku' },
+    { table: 'wms_location' },
+    { table: 'wms_warehouse' },
+    { table: 'wms_serial' },
+    { table: 'wms_lpn_line' },
+    { table: 'wms_lpn' },
+    { table: 'wms_partner' },
+    { table: 'wms_order_line' },
+    { table: 'wms_order_conflict' },
+    { table: 'wms_order_apply' },
+    { table: 'wms_order' },
+    { table: 'wms_inventory_ledger' },
+    { table: 'wms_inventory_hold' },
+    { table: 'wms_inventory_reservation' },
+    { table: 'wms_inventory' },
+    { table: 'wms_stocktake_line' },
+    { table: 'wms_stocktake' },
+    { table: 'wms_picking_line' },
+    { table: 'wms_picking_allocation' },
+    { table: 'wms_picking' },
+  ],
+};
 
 /** WMS 投影组：统一事件应用顺序与投影清理，供增量追账和全量重放共用。 */
 export class WmsProjections {
@@ -69,27 +103,13 @@ export class WmsProjections {
     this.pickings.applyEvent(envelope);
   }
 
+  /**
+   * 清空本组全部投影表（按 WMS_PROJECTION_GROUP.tables 清单驱动）。
+   * 含 wms_order_apply：那是「已入账」标记，不清掉的话全量重放时 applyEvent
+   * 会认为单据已入账而整段跳过，单据再也写不回来。
+   * 由 replay() 在事务内调用。
+   */
   clear(): void {
-    this.db.prepare(`DELETE FROM wms_sku WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_location WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_warehouse WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_serial WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_lpn_line WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_lpn WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_partner WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_order WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_order_line WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_inventory_ledger WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_inventory WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_inventory_hold WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_inventory_reservation WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_stocktake WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_stocktake_line WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_picking WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_picking_line WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_picking_allocation WHERE workspace_id = ?`).run(this.workspaceId);
-    this.db.prepare(`DELETE FROM wms_order_conflict WHERE workspace_id = ?`).run(this.workspaceId);
-    // 清掉已入账标记，全量重放才能把单据再写回来（标记还在的话 applyEvent 会整段跳过）。
-    this.db.prepare(`DELETE FROM wms_order_apply WHERE workspace_id = ?`).run(this.workspaceId);
+    clearProjectionTables(this.db, this.workspaceId, WMS_PROJECTION_GROUP.tables);
   }
 }

@@ -4,6 +4,7 @@ import { migrate } from './db/migrations.js';
 import { OplogStore } from './oplog/oplog-store.js';
 import { FieldRegistry } from './registry/field-registry.js';
 import { ProfileService } from './profile/profile-service.js';
+import { ProposalStore } from './profile/proposal-store.js';
 import { createProfileProposeTool } from './profile/propose-tool.js';
 import { createProfileQueryTools } from './profile/query-tools.js';
 import { createOplogQueryTool } from './oplog/oplog-query-tool.js';
@@ -35,14 +36,20 @@ export class OneCore {
   readonly #registry: FieldRegistry;
   readonly #profile: ProfileService;
   readonly #bus = new ToolBus();
+  /**
+   * 提议登记（B.1）：ProfileService 与 ModuleRegistry 共享同一实例，
+   * 于是「配置补丁提议」和「声明式模块注册提议」落在同一个待确认队列里，
+   * 前端一处看到全部，confirm 按 kind 分派（见 WorkspaceFacade）。
+   */
+  readonly #proposals = new ProposalStore();
 
   private constructor(db: Database.Database, nodeId: string) {
     this.#db = db;
     this.nodeId = nodeId;
     this.#oplog = new OplogStore(db);
     this.#registry = new FieldRegistry(db, this.#oplog);
-    this.#profile = new ProfileService(db, this.#oplog, this.#registry);
-    this.#modules = new ModuleRegistry(nodeId, this.#oplog, this.#registry, this.#profile, this.#bus);
+    this.#profile = new ProfileService(db, this.#oplog, this.#registry, this.#proposals);
+    this.#modules = new ModuleRegistry(nodeId, this.#oplog, this.#registry, this.#profile, this.#bus, this.#proposals);
     this.sync = new SyncService(nodeId, this.#oplog, this.#profile);
     this.migration = new MigrationService(nodeId, this.#oplog, this.#profile);
     // 慢通道工具（M4）：AI 提议配置变更的唯一入口；confirm/reject 不注册——

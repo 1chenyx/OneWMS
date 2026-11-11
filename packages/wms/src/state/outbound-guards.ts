@@ -13,8 +13,9 @@ import { assertLooseEnough } from './lpn-policy.js';
  *  4. SKU 冻结聚合（M19）：同 SKU 多行先聚合再校验（逐行各自通过而合计
  *     超可用也要拒）；可用量 = 全库位合计余量 − 冻结合计 − 别人的占用。
  * exceptOrderIds 是正在履约的单据，它们自己的占用不算在别人头上。
- * 只拦单据出库（order-tools 的 transition 与 picking 的 close）——调整/移库/
- * 盘点修正是物理修正通道，不拦。纯校验（不落事件），拒绝发生在落账前。
+ * 出库建单、改明细、履约（order-tools 的 create / revise / transition）和拣货关单
+ * 都走这里。调整、移库、盘点修正是物理修正通道，不拦。纯校验（不落事件），
+ * 拒绝发生在落账前。
  */
 
 export interface OutboundBucketLine {

@@ -12,6 +12,7 @@ import {
   SerialStockError,
   WmsDomain,
 } from '../src/index.js';
+import { allowDirectShip } from './direct-ship.js';
 
 /**
  * module.serial：一件一个号。库存主键仍是工作区 + SKU + 库位 + 批次。
@@ -160,6 +161,7 @@ describe('module.serial', () => {
     expect(typesAfter(second)).toEqual([]);
 
     await ws.tools.invoke('wms.order.transition', { orderNo: outbound.orderNo, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: outbound.orderNo, to: 'shipped' });
     expect(qty()).toBe(0);
     expect(ws.serials.byNo('S-1')?.status).toBe('out');

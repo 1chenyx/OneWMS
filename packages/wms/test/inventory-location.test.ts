@@ -11,6 +11,7 @@ import {
   DEFAULT_LOCATION_ID,
   DEFAULT_BATCH_NO,
 } from '../src/index.js';
+import { allowDirectShip } from './direct-ship.js';
 
 /**
  * 库位维度与联动（M10）：
@@ -208,13 +209,11 @@ describe('单据行库位联动', () => {
       delta: 100,
       locationCode: 'A-01',
     }); // DEFAULT 桶余量 0
-    const no = await createOrder('out', [{ skuCode: 'A-1', quantity: 40 }]); // 行库位 = DEFAULT
     const before = countEvents();
-
     await expect(
-      ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'picking' }),
+      createOrder('out', [{ skuCode: 'A-1', quantity: 40 }]), // 行库位 = DEFAULT
     ).rejects.toThrow(InsufficientStockError);
-    expect(ws.orders.byNo(no)!.state).toBe('created');
+    expect(ws.orders.list('out')).toHaveLength(0);
     expect(countEvents()).toBe(before);
   });
 
@@ -227,6 +226,7 @@ describe('单据行库位联动', () => {
     const no = await createOrder('out', [{ skuCode: 'A-1', quantity: 40, locationCode: 'A-01' }]);
 
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'shipped' });
     expect(qty('A-1', 'A-01')).toBe(60);
     expect(qty('A-1')).toBe(0);

@@ -6,6 +6,7 @@ import {
   PartialQtyExceededError,
   WmsDomain,
 } from '../src/index.js';
+import { allowDirectShip } from './direct-ship.js';
 
 /**
  * module.partial：收货/发货可以少入账。不传实数时仍按订单数量。
@@ -129,6 +130,7 @@ describe('module.partial', () => {
       lines: [{ skuCode: 'A-1', quantity: 10 }],
     })) as { orderNo: string };
     await ws.tools.invoke('wms.order.transition', { orderNo: created.orderNo, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', {
       orderNo: created.orderNo,
       to: 'shipped',

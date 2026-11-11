@@ -259,6 +259,18 @@ export class ProfileService {
     return this.#proposals.get(proposalId, workspaceId);
   }
 
+  /**
+   * 仅把提议置为已应用终态（B.1）。
+   *
+   * 给 `dyn.module.register` 提议用：那种提议的 patch 是空的、载荷是整份 manifest，
+   * 由 WorkspaceFacade 分派给 ModuleRegistry.install 执行，执行成功后来这里收尾。
+   * 不能走 confirm()——那条路会重跑 patch 校验并尝试落 config.change，对空 patch 毫无意义，
+   * 而模块安装的落账是 install() 自己的轨道 B 职责。
+   */
+  markProposalApplied(workspaceId: string, proposalId: string): void {
+    this.#proposals.markApplied(proposalId, workspaceId);
+  }
+
   // ── 领域种子（幂等）────────────────────────────────────
 
   /**

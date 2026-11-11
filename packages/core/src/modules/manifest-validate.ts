@@ -12,12 +12,12 @@ import type {
   ManifestRecord,
   ModuleManifest,
 } from './manifest-types.js';
-import { MODULE_CAPABILITIES } from './manifest-types.js';
+import { DYN_RECORD_PREFIX, MODULE_CAPABILITIES } from './manifest-types.js';
 import type { ValidationIssue } from '../profile/validate.js';
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'date', 'json'] as const;
 const SHARINGS = ['shared', 'private'] as const;
-/** 固定列主体 id：小写字母开头，只含小写字母、数字、下划线 */
+/** 固定列主体 id：小写字母开头，只含小写字母、数字、下划线（不含点号——`dyn.` 命名空间靠这一点与内置天然隔离） */
 const RECORD_ID_RE = /^[a-z][a-z0-9_]*$/;
 /** 流程 id：小写字母开头，允许数字、下划线、连字符 */
 const WORKFLOW_ID_RE = /^[a-z][a-z0-9_-]*$/;
@@ -111,7 +111,7 @@ export function validateManifest(manifest: ModuleManifest): { errors: Validation
     }
   }
 
-  validateRecords(manifest.records, errors);
+  validateRecords(manifest.records, manifest.id, errors);
   validateAliases(manifest.aliases, manifest.id, errors);
   validateWorkflowAliases(manifest.workflowAliases, errors);
 
@@ -259,7 +259,34 @@ function validateWorkflowAliases(
   }
 }
 
-function validateRecords(records: ManifestRecord[] | undefined, errors: ValidationIssue[]): void {
+/**
+ * 实体 id 是否合法（两条互不污染的规则，按前缀分流）：
+ *  - `dyn.` 开头 → 声明式模块命名空间，须为 `dyn.{本模块id}.{recordId}`；
+ *  - 其余 → 内置规则 RECORD_ID_RE（不含点号）。
+ *
+ * ⚠️ 内置 manifest 若声明了 `dyn.` 开头的 id，会因为对不上自己的模块 id 而被拒——
+ * 这是有意的：`dyn.` 前缀是声明式模块的保留命名空间。
+ */
+function isLegalRecordId(id: string, moduleId: string): boolean {
+  return id.startsWith(DYN_RECORD_PREFIX) ? isDynamicRecordId(id, moduleId) : RECORD_ID_RE.test(id);
+}
+
+/** 声明式实体 id 的完整校验（导出供 ModuleRegistry 提案期与撞名检查复用） */
+export function isDynamicRecordId(id: string, moduleId: string): boolean {
+  const prefix = `${DYN_RECORD_PREFIX}${moduleId}.`;
+  return id.startsWith(prefix) && RECORD_ID_RE.test(id.slice(prefix.length));
+}
+
+function recordIdIssue(id: unknown, moduleId: string): ValidationIssue {
+  return err(
+    'MANIFEST_RECORDS',
+    `固定列 id 非法: "${String(id)}"（内置模块须小写字母开头、仅含小写字母/数字/_；` +
+      `声明式模块须为 ${DYN_RECORD_PREFIX}${moduleId}.{recordId}）`,
+    `/records/${String(id)}`,
+  );
+}
+
+function validateRecords(records: ManifestRecord[] | undefined, moduleId: string, errors: ValidationIssue[]): void {
   if (records === undefined) return;
   if (!Array.isArray(records)) {
     errors.push(err('MANIFEST_RECORDS', 'records 必须是数组', '/records'));
@@ -267,7 +294,7 @@ function validateRecords(records: ManifestRecord[] | undefined, errors: Validati
   }
   const ids = new Set<string>();
   for (const record of records) {
-    if (!isNonEmptyString(record?.id) || !RECORD_ID_RE.test(record.id)) continue;
+    if (!isNonEmptyString(record?.id) || !isLegalRecordId(record.id, moduleId)) continue;
     if (ids.has(record.id)) {
       errors.push(err('MANIFEST_RECORDS', `固定列 id 重复: ${record.id}`, `/records/${record.id}`));
     }
@@ -276,8 +303,8 @@ function validateRecords(records: ManifestRecord[] | undefined, errors: Validati
   const aliases = new Set<string>();
   for (const record of records) {
     const at = `/records/${String(record?.id)}`;
-    if (!isNonEmptyString(record?.id) || !RECORD_ID_RE.test(record.id)) {
-      errors.push(err('MANIFEST_RECORDS', `固定列 id 非法: "${String(record?.id)}"（须小写字母开头，仅含小写字母/数字/_）`, at));
+    if (!isNonEmptyString(record?.id) || !isLegalRecordId(record.id, moduleId)) {
+      errors.push(recordIdIssue(record?.id, moduleId));
     }
     if (!isNonEmptyString(record?.label)) {
       errors.push(err('MANIFEST_RECORDS', `固定列 ${String(record?.id)} 缺少 label`, at));
@@ -311,9 +338,72 @@ function validateRecords(records: ManifestRecord[] | undefined, errors: Validati
         errors.push(err('MANIFEST_RECORDS', `固定列 ${record.id}.${field.key} 重复`, `${at}/fields`));
       }
       keys.add(field.key);
+      if (field.type !== undefined && !(FIELD_TYPES as readonly string[]).includes(field.type)) {
+        errors.push(
+          err(
+            'MANIFEST_RECORDS',
+            `固定列 ${record.id}.${field.key} 的类型非法: "${String(field.type)}"（白名单：${FIELD_TYPES.join('/')}）`,
+            `${at}/fields`,
+          ),
+        );
+      }
+      if (field.queryable !== undefined && typeof field.queryable !== 'boolean') {
+        errors.push(
+          err('MANIFEST_RECORDS', `固定列 ${record.id}.${field.key} 的 queryable 必须是布尔`, `${at}/fields`),
+        );
+      }
     }
   }
 }
+
+/**
+ * 声明式模块的 records 专属校验（B.1，提案期与安装期各跑一次）。
+ *
+ * validateManifest 只保证「每个 id 形态合法」，这里补两条它管不到的：
+ *  1. **不许混用命名空间**——一份走人工确认装入的 manifest 若声明裸 id（如 inventory），
+ *     就能顶掉内置实体的查询入口（query-tools 按 id/label/alias 解析 entity），属于逃逸；
+ *  2. **列类型必填**——声明式实体没有建表语句，类型是存储、入参校验、AI 描述拼装的唯一依据，
+ *     缺了就只能猜。内置模块不要求（列类型是代码事实，写在 manifest 里反而制造两份真相）。
+ */
+export function validateDynamicRecords(manifest: ModuleManifest): ValidationIssue[] {
+  const errors: ValidationIssue[] = [];
+  for (const record of manifest.records ?? []) {
+    const id = String(record?.id ?? '');
+    const at = `/records/${id}`;
+    if (!id.startsWith(DYN_RECORD_PREFIX)) {
+      errors.push(
+        err(
+          'DYN_RECORD_NS',
+          `声明式模块的实体 id 必须落在 ${DYN_RECORD_PREFIX}{模块id}.{recordId} 命名空间内，实际 "${id}"`,
+          at,
+        ),
+      );
+      continue;
+    }
+    if (!isDynamicRecordId(id, manifest.id)) {
+      errors.push(
+        err(
+          'DYN_RECORD_NS',
+          `实体 id "${id}" 的命名空间与模块 id ${manifest.id} 不匹配（须为 ${DYN_RECORD_PREFIX}${manifest.id}.{recordId}）`,
+          at,
+        ),
+      );
+    }
+    for (const field of record?.fields ?? []) {
+      if (field?.type === undefined) {
+        errors.push(
+          err(
+            'DYN_RECORD_FIELD_TYPE',
+            `声明式实体 ${id} 的列 ${String(field?.key)} 缺少 type（白名单：${FIELD_TYPES.join('/')}）`,
+            `${at}/fields`,
+          ),
+        );
+      }
+    }
+  }
+  return errors;
+}
+
 
 function validateRequire(f: ManifestFieldRequire, errors: ValidationIssue[]): void {
   const at = `/fields/requires/${f?.entity}.${f?.key}`;

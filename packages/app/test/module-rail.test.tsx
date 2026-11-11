@@ -78,6 +78,7 @@ describe('ModuleRail：悬停浮出功能网格', () => {
     expect(screen.getByText('入库单')).toBeInTheDocument();
     expect(screen.getByText('出库单')).toBeInTheDocument();
     expect(screen.queryByText('拣货单')).not.toBeInTheDocument();
+    expect(screen.queryByText('上架')).not.toBeInTheDocument();
     expect(screen.queryByText('序列号')).not.toBeInTheDocument();
     expect(screen.queryByText('托盘')).not.toBeInTheDocument();
     expect(screen.getByTestId('module-flyout-grid').style.gridTemplateColumns).toBe('1fr 1fr');
@@ -116,12 +117,14 @@ describe('ModuleRail：悬停浮出功能网格', () => {
         'module.serial': { enabled: true, version: '0.1.0' },
         'module.lpn': { enabled: true, version: '0.1.0' },
         'module.picking': { enabled: true, version: '0.1.0' },
+        'module.putaway': { enabled: true, version: '0.1.0' },
       },
       roles: {},
     };
     renderRail(profile);
     await user.click(screen.getByRole('button', { name: '作业' }));
     expect(screen.getByText('拣货单')).toBeInTheDocument();
+    expect(screen.getByText('上架')).toBeInTheDocument();
     expect(screen.getByText('序列号')).toBeInTheDocument();
     expect(screen.getByText('托盘')).toBeInTheDocument();
     await user.click(screen.getByText('托盘'));

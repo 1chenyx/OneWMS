@@ -215,13 +215,26 @@ function validateSemantics(s: ProfileSnapshot, errors: ValidationIssue[], warnin
     validateWorkflow(wfId, wf, errors, warnings);
   }
 
-  // modules：enabled 布尔 + settings 对象
+  // modules：enabled 布尔 + settings 对象 + manifest 归属一致
   for (const [modId, mod] of Object.entries(s.modules)) {
     if (typeof mod.enabled !== 'boolean') {
       errors.push(issue('MODULE_ENABLED', `模块 ${modId} 的 enabled 必须是布尔`));
     }
     if (mod.settings !== undefined && (typeof mod.settings !== 'object' || mod.settings === null || Array.isArray(mod.settings))) {
       errors.push(issue('MODULE_SETTINGS', `模块 ${modId} 的 settings 必须是对象`));
+    }
+    // 声明式模块的 manifest 随 modules 段落账（B.1）。这里**不跑完整 validateManifest**：
+    // 一是安装时 ModuleRegistry 已经跑过，二是那会让 profile 层反向依赖 modules 层。
+    // 只守一条重放期能静默错账的不变量——manifest.id 必须与 modules 段的 key 一致，
+    // 否则 listInstalled/effectiveManifests 会把 manifest 挂到别的模块 id 上。
+    if (mod.manifest !== undefined) {
+      if (typeof mod.manifest !== 'object' || mod.manifest === null || Array.isArray(mod.manifest)) {
+        errors.push(issue('MODULE_MANIFEST', `模块 ${modId} 的 manifest 必须是对象`));
+      } else if (mod.manifest.id !== modId) {
+        errors.push(
+          issue('MODULE_MANIFEST', `模块 ${modId} 的 manifest.id 是 "${String(mod.manifest.id)}"，与配置键不一致`, `/modules/${modId}/manifest`),
+        );
+      }
     }
   }
 

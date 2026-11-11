@@ -8,6 +8,7 @@ import {
   StockHeldError,
   WMS_EVENT_TYPES,
 } from '../src/index.js';
+import { allowDirectShip } from './direct-ship.js';
 
 let core: OneCore;
 let ws: ReturnType<WmsDomain['workspace']>;
@@ -164,26 +165,28 @@ describe('冻结：hold/release 基础链路（M19）', () => {
 });
 
 describe('冻结：出库拦截（M19）', () => {
-  it('picking 预检拒（可用量不足）；释放后同单可流转', async () => {
+  it('建单即拒可用量不足；释放后可以开单并拣货', async () => {
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 10 });
     await ws.tools.invoke('wms.inventory.hold', { skuCode: 'A-1', quantity: 6 });
 
-    const order = (await ws.tools.invoke('wms.order.create', {
-      direction: 'out',
-      lines: [{ skuCode: 'A-1', quantity: 5 }],
-    })) as { orderNo: string };
     const before = countEvents();
-
     await expect(
-      ws.tools.invoke('wms.order.transition', { orderNo: order.orderNo, to: 'picking' }),
+      ws.tools.invoke('wms.order.create', {
+        direction: 'out',
+        lines: [{ skuCode: 'A-1', quantity: 5 }],
+      }),
     ).rejects.toThrow(StockHeldError);
-    expect(countEvents()).toBe(before); // 拒绝零事件
+    expect(countEvents()).toBe(before);
+    expect(ws.orders.list('out')).toHaveLength(0);
 
-    // 逐笔释放到可用 ≥ 需求后放行
     const holds = (await ws.tools.invoke('wms.inventory.holds', { skuCode: 'A-1' })) as Array<{
       holdId: string;
     }>;
     await ws.tools.invoke('wms.inventory.release', { holdId: holds[0].holdId });
+    const order = (await ws.tools.invoke('wms.order.create', {
+      direction: 'out',
+      lines: [{ skuCode: 'A-1', quantity: 5 }],
+    })) as { orderNo: string };
     const t = (await ws.tools.invoke('wms.order.transition', {
       orderNo: order.orderNo,
       to: 'picking',
@@ -191,27 +194,30 @@ describe('冻结：出库拦截（M19）', () => {
     expect(t.to).toBe('picking');
   });
 
-  it('shipped 扣减同拦；可用量恰好等于需求放行', async () => {
+  it('可用量不足建单即拒；恰好等于需求可以建单并发货', async () => {
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 10 });
     await ws.tools.invoke('wms.inventory.hold', { skuCode: 'A-1', quantity: 5 }); // 可用 5
 
-    const order = (await ws.tools.invoke('wms.order.create', {
-      direction: 'out',
-      lines: [{ skuCode: 'A-1', quantity: 6 }],
-    })) as { orderNo: string };
-
     await expect(
-      ws.tools.invoke('wms.order.transition', { orderNo: order.orderNo, to: 'picking' }),
+      ws.tools.invoke('wms.order.create', {
+        direction: 'out',
+        lines: [{ skuCode: 'A-1', quantity: 6 }],
+      }),
     ).rejects.toThrow(StockHeldError);
+    expect(ws.orders.list('out')).toHaveLength(0);
 
-    // 出库单绕过 picking 直接 ship 不合法（状态机）；改为可用恰好 = 需求的边界单
     await ws.tools.invoke('wms.inventory.release', {
       holdId: ((await ws.tools.invoke('wms.inventory.holds', { skuCode: 'A-1' })) as Array<{
         holdId: string;
       }>)[0].holdId,
     });
     await ws.tools.invoke('wms.inventory.hold', { skuCode: 'A-1', quantity: 4 }); // 可用 6 = 需求
+    const order = (await ws.tools.invoke('wms.order.create', {
+      direction: 'out',
+      lines: [{ skuCode: 'A-1', quantity: 6 }],
+    })) as { orderNo: string };
     await ws.tools.invoke('wms.order.transition', { orderNo: order.orderNo, to: 'picking' });
+    allowDirectShip(ws);
     const ship = (await ws.tools.invoke('wms.order.transition', {
       orderNo: order.orderNo,
       to: 'shipped',
@@ -226,17 +232,19 @@ describe('冻结：出库拦截（M19）', () => {
     await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 5, batchNo: 'B2' });
     await ws.tools.invoke('wms.inventory.hold', { skuCode: 'A-1', quantity: 5 });
 
-    // 两行各 3：逐桶 3 ≤ 5 各自通过，合计 6 > 可用 5 → 拒（聚合校验兜住）
-    const order = (await ws.tools.invoke('wms.order.create', {
-      direction: 'out',
-      lines: [
-        { skuCode: 'A-1', quantity: 3, batchNo: 'B1' },
-        { skuCode: 'A-1', quantity: 3, batchNo: 'B2' },
-      ],
-    })) as { orderNo: string };
+    // 两行各 3：逐桶 3 ≤ 5，合计 6 > 可用 5 → 建单拒（聚合校验兜住）
+    const before = countEvents();
     await expect(
-      ws.tools.invoke('wms.order.transition', { orderNo: order.orderNo, to: 'picking' }),
+      ws.tools.invoke('wms.order.create', {
+        direction: 'out',
+        lines: [
+          { skuCode: 'A-1', quantity: 3, batchNo: 'B1' },
+          { skuCode: 'A-1', quantity: 3, batchNo: 'B2' },
+        ],
+      }),
     ).rejects.toThrow(StockHeldError);
+    expect(countEvents()).toBe(before);
+    expect(ws.orders.list('out')).toHaveLength(0);
   });
 
   it('调整（负 delta）与移库不受冻结拦截——物理修正通道', async () => {

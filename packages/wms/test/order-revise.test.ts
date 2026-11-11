@@ -84,10 +84,34 @@ describe('修订出入库单', () => {
     expect(ws.orders.byNo(created.orderNo)!.note).toBe('收货后补了一句');
     expect(ws.orders.lines(ws.orders.byNo(created.orderNo)!.id)[0]!.quantity).toBe(8);
 
+    await ws.tools.invoke('wms.order.putaway', { orderNo: created.orderNo });
     await ws.tools.invoke('wms.order.transition', { orderNo: created.orderNo, to: 'done' });
     await expect(
       ws.tools.invoke('wms.order.revise', { orderNo: created.orderNo, note: '想再改' }),
     ).rejects.toThrow(/已结束/);
+  });
+
+  it('出库单可以按界面那样用 null 清空备注和往来单位', async () => {
+    await ws.tools.invoke('wms.partner.create', { partnerCode: 'C-1', kind: 'customer', name: '华北客户' });
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 5, reason: '期初' });
+    const created = (await ws.tools.invoke('wms.order.create', {
+      direction: 'out',
+      partnerCode: 'C-1',
+      note: '原备注',
+      lines: [{ skuCode: 'A-1', quantity: 2 }],
+    })) as { orderNo: string };
+
+    await ws.tools.invoke('wms.order.revise', {
+      orderNo: created.orderNo,
+      note: null,
+      partnerCode: null,
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+
+    const order = ws.orders.byNo(created.orderNo)!;
+    expect(order.note).toBeNull();
+    expect(order.partnerId).toBeNull();
+    expect(ws.orders.lines(order.id)[0]!.quantity).toBe(1);
   });
 
   it('出库进入拣货后不能改明细，备注仍可改', async () => {

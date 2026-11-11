@@ -184,6 +184,10 @@ export class PickingView {
           if (row.quantity <= QTY_EPS) continue;
           insertAlloc.run(this.workspaceId, p.lineId, row.locationId, row.batchNo, row.quantity);
         }
+        // 实拣改的是行，清单按单头更新时间排，所以单头一起推进
+        this.db
+          .prepare(`UPDATE wms_picking SET updated_at = ? WHERE workspace_id = ? AND id = ?`)
+          .run(env.createdAt, this.workspaceId, p.pickingId);
         break;
       }
       case WMS_EVENT_TYPES.pickingStateChanged: {
@@ -210,17 +214,17 @@ export class PickingView {
     return row ? rowToRecord(row) : undefined;
   }
 
-  /** 全部拣货单（新单在前；同刻按单号稳定化），可按状态过滤 */
+  /** 全部拣货单（最近更新在前；同刻按单号稳定化），可按状态过滤 */
   list(state?: string): PickingRecord[] {
     const rows = state
       ? (this.db
           .prepare<unknown[], PickingRow>(
-            `SELECT * FROM wms_picking WHERE workspace_id = ? AND state = ? ORDER BY created_at DESC, picking_no`,
+            `SELECT * FROM wms_picking WHERE workspace_id = ? AND state = ? ORDER BY updated_at DESC, picking_no`,
           )
           .all(this.workspaceId, state) as unknown as PickingRow[])
       : (this.db
           .prepare<unknown[], PickingRow>(
-            `SELECT * FROM wms_picking WHERE workspace_id = ? ORDER BY created_at DESC, picking_no`,
+            `SELECT * FROM wms_picking WHERE workspace_id = ? ORDER BY updated_at DESC, picking_no`,
           )
           .all(this.workspaceId) as unknown as PickingRow[]);
     return rows.map(rowToRecord);

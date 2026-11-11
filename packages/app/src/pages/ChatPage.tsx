@@ -32,7 +32,9 @@ import PageHeader from '../components/PageHeader';
  *    按 Markdown 排版。模型写来的 HTML 只当文字显示；
  *  - 成功的操作展开后仍可去对应管理页；
  *  - 输入区可以带上 Excel、CSV 或文本，用户说怎么处理，助手就怎么处理。
+ *    发送在输入框内的右下角，和助手、模型、导入文件同一行。
  *  - variant=dock：右侧浮窗里的同一块面板，不带页头，输入框矮一档。
+ *    底栏不换行，助手和模型变窄后省略过长的名字。
  */
 
 /** 已配置过的厂商，按第一次出现的顺序。名字用预设，没有预设就用保存时的称呼。 */
@@ -53,7 +55,7 @@ function credentialFor(profiles: AiProfilePublic[], vendorId: string, modelId: s
   return saved.find((item) => item.model === modelId) ?? saved.find((item) => item.apiKeySet) ?? saved[0];
 }
 
-/** 输入框底栏的可点控件：浅底圆角，悬停再深一点 */
+/** 输入框底栏的可点控件：浅底圆角，悬停再深一点。窄宽度时文字省略，不把底栏撑高。 */
 const ComposerChip = forwardRef<HTMLButtonElement, ButtonProps>(function ComposerChip(
   { children, style, disabled, onMouseEnter, onMouseLeave, ...rest },
   ref,
@@ -78,13 +80,37 @@ const ComposerChip = forwardRef<HTMLButtonElement, ButtonProps>(function Compose
         background: disabled ? '#f5f5f5' : hover ? '#e4e4e4' : '#f0f0f0',
         borderRadius: 999,
         paddingInline: 12,
+        display: 'inline-flex',
+        alignItems: 'center',
+        maxWidth: '100%',
+        minWidth: 0,
+        overflow: 'hidden',
         ...style,
       }}
     >
-      {children}
+      <span
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          minWidth: 0,
+          width: '100%',
+          overflow: 'hidden',
+        }}
+      >
+        {children}
+      </span>
     </Button>
   );
 });
+
+function ChipText({ children }: { children: string }) {
+  return (
+    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '1 1 auto' }}>
+      {children}
+    </span>
+  );
+}
 
 export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'dock' }) {
   const { message } = AntApp.useApp();
@@ -320,7 +346,7 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
             </Button>
           </div>
         ) : null}
-        <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+        <div style={{ marginTop: 12 }}>
           <div
             aria-label="对话输入"
             onDragEnter={(e) => {
@@ -387,63 +413,116 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
               style={{ display: 'none' }}
               onChange={(e) => onPickFiles(e.target.files)}
             />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: dock ? 'wrap' : undefined }}>
-              <Dropdown
-                trigger={['click']}
-                disabled={chat.isStreaming || agents.length === 0}
-                menu={{
-                  selectable: true,
-                  selectedKeys: [chat.agentId],
-                  items: agents.map((agent) => ({
-                    key: agent.id,
-                    label: agent.name,
-                    title: agent.description || undefined,
-                  })),
-                  onClick: ({ key }) => chat.setAgentId(String(key)),
+            <div
+              className="composer-bar"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                flexWrap: 'nowrap',
+                gap: dock ? 4 : 8,
+                minWidth: 0,
+              }}
+            >
+              <div
+                className="composer-slot"
+                style={{
+                  display: 'flex',
+                  overflow: 'hidden',
+                  flexGrow: dock ? 1 : 0,
+                  flexShrink: 1,
+                  flexBasis: dock ? 0 : 'auto',
+                  minWidth: 0,
                 }}
               >
-                <ComposerChip>
-                  {agentName ? `助手：${agentName}` : '助手'} <DownOutlined aria-hidden />
-                </ComposerChip>
-              </Dropdown>
-              <Dropdown
-                trigger={['click']}
-                disabled={chat.isStreaming || profiles.length === 0 || vendors.length === 0}
-                menu={{
-                  selectable: true,
-                  triggerSubMenuAction: 'click',
-                  selectedKeys: shownModel ? [shownModel] : [],
-                  style: { maxHeight: 320, overflow: 'auto' },
-                  items: vendors.map((item) => {
-                    const saved = profiles.filter((profile) => profile.vendorId === item.vendorId);
-                    return {
-                      key: item.vendorId,
-                      label: item.name,
-                      children: modelsForVendor(item.vendorId, saved.map((profile) => profile.model)).map(
-                        (modelId) => ({ key: modelId, label: modelId }),
-                      ),
-                    };
-                  }),
-                  onClick: ({ key, keyPath }) => {
-                    const vendorId = keyPath[keyPath.length - 1];
-                    if (vendorId) chooseModel(vendorId, String(key));
-                  },
+                <Dropdown
+                  trigger={['click']}
+                  disabled={chat.isStreaming || agents.length === 0}
+                  menu={{
+                    selectable: true,
+                    selectedKeys: [chat.agentId],
+                    items: agents.map((agent) => ({
+                      key: agent.id,
+                      label: agent.name,
+                      title: agent.description || undefined,
+                    })),
+                    onClick: ({ key }) => chat.setAgentId(String(key)),
+                  }}
+                >
+                  <ComposerChip title={agentName ? `助手：${agentName}` : '助手'} style={dock ? { width: '100%', paddingInline: 8 } : undefined}>
+                    <ChipText>{agentName ? `助手：${agentName}` : '助手'}</ChipText>
+                    <DownOutlined aria-hidden style={{ flex: 'none' }} />
+                  </ComposerChip>
+                </Dropdown>
+              </div>
+              <div
+                className="composer-slot"
+                style={{
+                  display: 'flex',
+                  overflow: 'hidden',
+                  flexGrow: dock ? 1.4 : 0,
+                  flexShrink: 1,
+                  flexBasis: dock ? 0 : 'auto',
+                  minWidth: 0,
+                  maxWidth: dock ? undefined : 320,
                 }}
               >
-                <ComposerChip style={{ maxWidth: dock ? 180 : 320 }}>
-                  {shownVendorName ? `${shownVendorName} · ${shownModel ?? '模型'}` : (shownModel ?? '模型')}{' '}
-                  <DownOutlined aria-hidden />
-                </ComposerChip>
-              </Dropdown>
-              <div style={{ flex: 1 }} />
-              <ComposerChip icon={<PaperClipOutlined />} disabled={!acceptDrop} onClick={() => fileRef.current?.click()}>
-                导入文件
+                <Dropdown
+                  trigger={['click']}
+                  disabled={chat.isStreaming || profiles.length === 0 || vendors.length === 0}
+                  menu={{
+                    selectable: true,
+                    triggerSubMenuAction: 'click',
+                    selectedKeys: shownModel ? [shownModel] : [],
+                    style: { maxHeight: 320, overflow: 'auto' },
+                    items: vendors.map((item) => {
+                      const saved = profiles.filter((profile) => profile.vendorId === item.vendorId);
+                      return {
+                        key: item.vendorId,
+                        label: item.name,
+                        children: modelsForVendor(item.vendorId, saved.map((profile) => profile.model)).map(
+                          (modelId) => ({ key: modelId, label: modelId }),
+                        ),
+                      };
+                    }),
+                    onClick: ({ key, keyPath }) => {
+                      const vendorId = keyPath[keyPath.length - 1];
+                      if (vendorId) chooseModel(vendorId, String(key));
+                    },
+                  }}
+                >
+                  <ComposerChip
+                    title={shownVendorName ? `${shownVendorName} · ${shownModel ?? '模型'}` : (shownModel ?? '模型')}
+                    style={dock ? { width: '100%', paddingInline: 8 } : { maxWidth: 320 }}
+                  >
+                    <ChipText>
+                      {shownVendorName ? `${shownVendorName} · ${shownModel ?? '模型'}` : (shownModel ?? '模型')}
+                    </ChipText>
+                    <DownOutlined aria-hidden style={{ flex: 'none' }} />
+                  </ComposerChip>
+                </Dropdown>
+              </div>
+              {dock ? null : <div style={{ flex: 1 }} />}
+              <ComposerChip
+                icon={<PaperClipOutlined />}
+                disabled={!acceptDrop}
+                onClick={() => fileRef.current?.click()}
+                style={{ flex: 'none', ...(dock ? { paddingInline: 8 } : {}) }}
+              >
+                <ChipText>导入文件</ChipText>
               </ComposerChip>
+              <Button
+                type="primary"
+                size="small"
+                icon={<SendOutlined />}
+                aria-label="发送"
+                onClick={send}
+                loading={chat.isStreaming || readingFile}
+                style={{ flex: 'none', borderRadius: 999, paddingInline: dock ? 8 : 12 }}
+              >
+                发送
+              </Button>
             </div>
           </div>
-          <Button type="primary" icon={<SendOutlined />} onClick={send} loading={chat.isStreaming || readingFile}>
-            发送
-          </Button>
         </div>
       </Card>
     </div>

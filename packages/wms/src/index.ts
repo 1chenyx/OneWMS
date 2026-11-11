@@ -94,7 +94,7 @@ export type {
 
 export { migrateWms } from './db/migrations.js';
 /** 投影组版本号：改派生语义时 +1，用户下次启动自动整组重建（机制见 @one/core） */
-export { WMS_PROJECTION_VERSION } from './views/wms-projections.js';
+export { WMS_PROJECTION_GROUP, WMS_PROJECTION_VERSION } from './views/wms-projections.js';
 
 export { createWmsTools } from './tools/wms-tools.js';
 export { readWmsSettings } from './config/wms-settings.js';
@@ -205,6 +205,7 @@ export {
   PartnerNotFoundError,
   PartnerKindMismatchError,
   PutawayLineNotFoundError,
+  PutawayQuantityError,
   PutawaySourceShortError,
   PartialDisabledError,
   PartialLineNotFoundError,
@@ -250,5 +251,12 @@ export {
   PickingNoOrdersError,
   PickingSubstitutionError,
   PickingStillOpenError,
+  PickingRequiredError,
+  PutawayRequiredError,
+  QcRequiredError,
+  WaveRequiredError,
+  ReviewRequiredError,
+  PackRequiredError,
+  LoadRequiredError,
   PutawayCapacityError,
 } from './errors.js';

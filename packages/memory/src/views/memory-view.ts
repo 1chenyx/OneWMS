@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { EventEnvelope } from '@one/core';
 import {
@@ -93,8 +93,41 @@ const ORDER_BY =
  * 章节规则、T0/T2 渲染依赖的字段口径、applyEvent 的应用顺序。只加列、只改查询 → 不用动。
  * +1 之后不需要写迁移脚本：用户下次启动自动清空并从 oplog 全量重放
  * （见 core/projection/projection-version.ts）。
+ *
+ * 2：legacy 收容章节的主键从 randomUUID() 改为按自然键确定性派生
+ * （随机 id 会让全量重放不确定——同一份账本重放两次得到不同 id）。
  */
-export const MEMORY_PROJECTION_VERSION = 1;
+export const MEMORY_PROJECTION_VERSION = 2;
+
+/**
+ * legacy 章节 id 的派生命名空间（RFC 4122 v5）。
+ *
+ * ⚠️ 永不可改：改了等于给所有存量 legacy 章节换主键，重放后按 id 引用的东西全部悬空。
+ */
+const LEGACY_ID_NAMESPACE = 'a3f1c2d4-6e6f-5e61-8000-6f6e65776d73';
+
+/**
+ * legacy 收容章节的主键：由自然键 (workspace_id, scope, section_key) 确定性派生。
+ *
+ * 为什么不能 randomUUID()：正式章节的 id 由事件携带（payload.sectionId），重放天然复现；
+ * legacy 章节没有对应事件——它是投影从 v1 条目事件凭空长出来的，随机 id 会让
+ * 「同一份账本全量重放两次得到同一份投影」这条铁律失效（重放后 id 变了）。
+ * 确定性派生同时让多节点各自重放出同一个 id，同步合并不会撞出两份同键章节。
+ *
+ * 形状仍是 uuid（migrations.ts 主键约定：uuid，禁自增 int）——sha1 摘要前 16 字节
+ * 按 RFC 4122 v5 置 version/variant 位。
+ */
+function legacySectionId(workspaceId: string, scope: MemoryScope, sectionKey: string): string {
+  const hash = createHash('sha1')
+    .update(Buffer.from(LEGACY_ID_NAMESPACE.replace(/-/g, ''), 'hex'))
+    .update(`${workspaceId}\u0000${scope}\u0000${sectionKey}`)
+    .digest();
+  const bytes = Uint8Array.from(hash.subarray(0, 16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50; // version = 5
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // variant = RFC 4122
+  const hex = Buffer.from(bytes).toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 export class MemorySectionView {
   constructor(
@@ -249,7 +282,7 @@ export class MemorySectionView {
     const line = `- ${marker} ${p.content}`;
     this.#upsert(
       {
-        sectionId: existing?.id ?? randomUUID(),
+        sectionId: existing?.id ?? legacySectionId(this.workspaceId, p.scope, key),
         scope: p.scope,
         sectionKey: key,
         title: existing?.title ?? '历史条目（未归并）',

@@ -75,6 +75,15 @@ describe('右侧 AI 浮窗', () => {
     const dialog = screen.getByRole('dialog', { name: 'AI 对话' });
     expect(dialog).toHaveTextContent('试试说');
     expect(screen.getByRole('textbox')).toHaveAttribute('rows', '2');
+    const dockBox = screen.getByLabelText('对话输入');
+    const dockBar = dockBox.querySelector('.composer-bar') as HTMLElement;
+    expect(dockBox.contains(screen.getByRole('button', { name: '发送' }))).toBe(true);
+    expect(dockBar.style.flexWrap).toBe('nowrap');
+    const dockSlots = [...dockBar.querySelectorAll('.composer-slot')] as HTMLElement[];
+    expect(dockSlots[0]?.style.flexGrow).toBe('1');
+    expect(dockSlots[0]?.style.minWidth).toBe('0');
+    expect(dockSlots[1]?.style.flexGrow).toBe('1.4');
+    expect(dockSlots[1]?.style.minWidth).toBe('0');
     expect(screen.getByRole('button', { name: '收起 AI 对话' })).toHaveAttribute('aria-expanded', 'true');
 
     await user.click(screen.getByRole('button', { name: '关闭 AI 对话' }));
@@ -89,5 +98,9 @@ describe('右侧 AI 浮窗', () => {
     expect(document.querySelector('.chat-dock')).toBeNull();
     expect(screen.getByRole('heading', { name: 'AI 对话' })).toBeInTheDocument();
     expect(screen.getByRole('textbox')).toHaveAttribute('rows', '3');
+    const pageBox = screen.getByLabelText('对话输入');
+    expect(pageBox.contains(screen.getByRole('button', { name: '发送' }))).toBe(true);
+    expect((pageBox.querySelector('.composer-bar') as HTMLElement).style.flexWrap).toBe('nowrap');
+    expect((pageBox.querySelector('.composer-slot') as HTMLElement).style.flexGrow).toBe('0');
   });
 });

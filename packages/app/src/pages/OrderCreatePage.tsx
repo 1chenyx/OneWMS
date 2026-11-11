@@ -19,18 +19,15 @@ import { useDraftNumber } from '../components/use-seeded-code';
 import ScanInput from '../components/ScanInput';
 import { fmtQty } from '../lib/format';
 import { monoCell, numCell } from '../components/table-style';
-import {
-  ALLOCATION_LABEL,
-  readAllocation,
-  readBlockExpired,
-  readSpecified,
-} from './use-outbound-rules';
+import { readAllocation } from './use-outbound-rules';
 
 /**
  * 新建入库单或出库单。方向由所在页面定死，这一页不再切换。
  * 出库选商品时摊开每一桶的库位、批次、效期和数量。点「用这桶」填上库位和批次。
+ * 出库行的库位和批次只展示不给改，换桶就是改这两格；入库行才自己写库位、批次和效期。
  * 批次怎么扣、写了的批次和库位能不能换，在规则页配置。这张单只提示当前规则，不再另选。
  * 提交走 wms.order.create。单号按规则预先填好，可以改；留空则保存时再生成。这一步不改库存。
+ * 出库在保存时按所选桶的实物和商品可用量预检，不够就报错、不建单。服务端再按同样的桶复核。
  */
 
 type Direction = 'in' | 'out';
@@ -87,13 +84,6 @@ function withScan(lines: LineDraft[], skuCode: string): { lines: LineDraft[]; ke
   return { key: added.key, lines: [...lines, added] };
 }
 
-/** 入库批次是收货事实。出库只有按序列号的商品要自己写批次，其余按仓库规则扣。 */
-function linePinsBatch(line: LineDraft, direction: Direction, serialOn: boolean, skus: Sku[]): boolean {
-  if (direction === 'in') return true;
-  if (!serialOn) return false;
-  return skus.find((sku) => sku.skuCode === line.skuCode)?.serialTracked === true;
-}
-
 export default function OrderCreatePage({
   direction,
   onClose,
@@ -124,9 +114,6 @@ export default function OrderCreatePage({
   const reservationOn = modules?.['module.reservation']?.enabled === true;
   const wmsSettings = modules?.['core.wms']?.settings;
   const warehouseAllocation = readAllocation(wmsSettings);
-  const blockExpired = readBlockExpired(wmsSettings);
-  const batchRule = readSpecified(wmsSettings, 'specifiedBatchConstraint');
-  const locationRule = readSpecified(wmsSettings, 'specifiedLocationConstraint');
   const skuRows = (skus ?? []).filter((sku) => (sku.status ?? 'active') !== 'archived');
   const locationRows = (Array.isArray(locations) ? locations : []) as Location[];
   const stockRows = (Array.isArray(inventory) ? inventory : []) as InventoryRow[];
@@ -147,6 +134,8 @@ export default function OrderCreatePage({
     expectedAt,
     serialOn,
     allocation: inbound ? 'strict' : warehouseAllocation,
+    buckets: bucketRows,
+    stock: stockRows,
   });
   const focused = lines.find((line) => line.key === focusKey && line.skuCode) ?? kept[0] ?? null;
 
@@ -167,7 +156,9 @@ export default function OrderCreatePage({
 
   const save = async () => {
     if (problems.length > 0) {
-      message.warning(problems[0]);
+      const first = problems[0] ?? '';
+      if (first.includes('不够出') || first.includes('可用只有')) message.error(first);
+      else message.warning(first);
       return;
     }
     const orderNo = orderNoDraft.value.trim();
@@ -192,13 +183,12 @@ export default function OrderCreatePage({
     {
       title: '商品',
       dataIndex: 'skuCode',
-      width: 240,
       render: (_value, line) => (
         <Select
           showSearch
           optionFilterProp="label"
           placeholder="选择商品"
-          style={{ width: '100%' }}
+          style={{ width: '100%', minWidth: 220 }}
           value={line.skuCode || undefined}
           onChange={(value) => {
             patchLine(setLines, line.key, { skuCode: value });
@@ -213,7 +203,6 @@ export default function OrderCreatePage({
     },
     {
       title: '名称',
-      width: 140,
       render: (_value, line) => {
         const sku = skuRows.find((item) => item.skuCode === line.skuCode);
         if (!sku) return <Typography.Text type="secondary">—</Typography.Text>;
@@ -238,7 +227,6 @@ export default function OrderCreatePage({
     },
     {
       title: '数量',
-      width: 150,
       onCell: numCell,
       render: (_value, line) => {
         const sku = skuRows.find((item) => item.skuCode === line.skuCode);
@@ -248,7 +236,7 @@ export default function OrderCreatePage({
               min={0.001}
               precision={3}
               value={line.quantity}
-              style={{ flex: 1 }}
+              style={{ flex: 1, minWidth: 100 }}
               onChange={(value) => patchLine(setLines, line.key, { quantity: typeof value === 'number' ? value : 0 })}
             />
             {sku?.unit ? <span>{sku.unit}</span> : null}
@@ -258,37 +246,40 @@ export default function OrderCreatePage({
     },
     {
       title: '库位',
-      width: 170,
-      render: (_value, line) => (
-        <Select
-          showSearch
-          optionFilterProp="label"
-          style={{ width: '100%' }}
-          value={line.locationCode}
-          onChange={(value) => patchLine(setLines, line.key, { locationCode: value })}
-          options={locationOptions}
-        />
-      ),
+      render: (_value, line) =>
+        inbound ? (
+          <Select
+            showSearch
+            optionFilterProp="label"
+            style={{ width: '100%' }}
+            value={line.locationCode}
+            onChange={(value) => patchLine(setLines, line.key, { locationCode: value })}
+            options={locationOptions}
+          />
+        ) : (
+          <span>{locationLabel(line.locationCode, locationRows)}</span>
+        ),
     },
     {
       title: '批次',
-      width: 140,
       onCell: monoCell,
-      render: (_value, line) => (
-        <Input
-          placeholder={
-            !inbound && linePinsBatch(line, direction, serialOn, skuRows) ? '按序列号，要写批次' : '空 = 默认批次'
-          }
-          value={line.batchNo}
-          onChange={(e) => patchLine(setLines, line.key, { batchNo: e.target.value })}
-        />
-      ),
+      render: (_value, line) =>
+        inbound ? (
+          <Input
+            placeholder="空 = 默认批次"
+            value={line.batchNo}
+            onChange={(e) => patchLine(setLines, line.key, { batchNo: e.target.value })}
+          />
+        ) : line.batchNo.trim() ? (
+          <span>{line.batchNo}</span>
+        ) : (
+          <Typography.Text type="secondary">默认批次</Typography.Text>
+        ),
     },
     ...(inbound
       ? [
           {
             title: '效期',
-            width: 150,
             render: (_value: unknown, line: LineDraft) => (
               <Input
                 placeholder="YYYY-MM-DD"
@@ -301,7 +292,6 @@ export default function OrderCreatePage({
       : [
           {
             title: '可用',
-            width: 180,
             render: (_value: unknown, line: LineDraft) => (
               <AvailableCell line={line} stock={stockRows.find((row) => row.skuCode === line.skuCode)} />
             ),
@@ -311,11 +301,11 @@ export default function OrderCreatePage({
       ? [
           {
             title: '序列号',
-            width: 220,
             render: (_value: unknown, line: LineDraft) => (
               <Input.TextArea
                 rows={2}
                 placeholder="每行一个，或用逗号、空格分开"
+                style={{ minWidth: 180 }}
                 value={line.serialsText}
                 onChange={(e) => patchLine(setLines, line.key, { serialsText: e.target.value })}
               />
@@ -348,7 +338,7 @@ export default function OrderCreatePage({
       : '单号已按出库规则填好，可以改。留空则保存时再生成。保存后待发货，发货才扣库存。';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0, height: '100%' }}>
       <PageHeader
         title={title}
         subtitle={subtitle}
@@ -361,17 +351,52 @@ export default function OrderCreatePage({
           </>
         }
       />
-      <Card title="单据">
-        <div style={{ maxWidth: 360 }}>
-          <Typography.Text strong>单号</Typography.Text>
-          <Input
-            aria-label="单号"
-            style={{ marginTop: 4 }}
-            placeholder="留空则按编号规则生成"
-            value={orderNoDraft.value}
-            onChange={(event) => orderNoDraft.onChange(event.target.value)}
-          />
+      <Card title="单据" style={{ flex: 'none' }}>
+        {/* 单号、往来单位、备注横排一行，把纵向高度让给下面的明细 */}
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 220px', minWidth: 200 }}>
+            <Typography.Text strong>单号</Typography.Text>
+            <Input
+              aria-label="单号"
+              style={{ marginTop: 4 }}
+              placeholder="留空则按编号规则生成"
+              value={orderNoDraft.value}
+              onChange={(event) => orderNoDraft.onChange(event.target.value)}
+            />
+          </div>
+          <div style={{ flex: '1 1 240px', minWidth: 220 }}>
+            <Typography.Text strong>{inbound ? '供应商' : '客户'}</Typography.Text>
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              style={{ width: '100%', marginTop: 4 }}
+              placeholder={inbound ? '选择供应商，可以不填' : '选择客户，可以不填'}
+              value={partnerCode || undefined}
+              onChange={(value) => setPartnerCode(value ?? '')}
+              options={partnerOptions.map((item) => ({
+                value: item.partnerCode,
+                label: `${item.partnerCode} · ${item.name}`,
+              }))}
+              notFoundContent={
+                <Typography.Text type="secondary">
+                  还没有{inbound ? '供应商' : '客户'}。到档案里的往来单位新建。
+                </Typography.Text>
+              }
+            />
+          </div>
+          <div style={{ flex: '2 1 320px', minWidth: 260 }}>
+            <Typography.Text strong>备注</Typography.Text>
+            <Input.TextArea
+              style={{ marginTop: 4 }}
+              autoSize={{ minRows: 1, maxRows: 3 }}
+              placeholder={inbound ? '例如采购单号、到货说明' : '例如客户订单号、发货要求'}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
         </div>
+        {partner ? <PartnerFacts partner={partner} /> : null}
         {inbound && asnOn ? (
           <div style={{ marginTop: 16 }}>
             <Typography.Text strong>到货情况</Typography.Text>
@@ -406,85 +431,57 @@ export default function OrderCreatePage({
             ) : null}
           </div>
         ) : null}
-
-        <div style={{ marginTop: 16, maxWidth: 520 }}>
-          <Typography.Text strong>{inbound ? '供应商' : '客户'}</Typography.Text>
-          <Select
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            style={{ width: '100%', marginTop: 8 }}
-            placeholder={inbound ? '选择供应商，可以不填' : '选择客户，可以不填'}
-            value={partnerCode || undefined}
-            onChange={(value) => setPartnerCode(value ?? '')}
-            options={partnerOptions.map((item) => ({
-              value: item.partnerCode,
-              label: `${item.partnerCode} · ${item.name}`,
-            }))}
-            notFoundContent={
-              <Typography.Text type="secondary">
-                还没有{inbound ? '供应商' : '客户'}。到档案里的往来单位新建。
-              </Typography.Text>
-            }
-          />
-          {partner ? <PartnerFacts partner={partner} /> : null}
-        </div>
-
-        <div style={{ marginTop: 16 }}>
-          <Typography.Text strong>备注</Typography.Text>
-          <Input.TextArea
-            style={{ marginTop: 8 }}
-            rows={3}
-            placeholder={inbound ? '例如采购单号、到货说明' : '例如客户订单号、发货要求'}
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-          />
-        </div>
       </Card>
 
-      <Card title="明细">
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
-          <ScanInput
-            size="large"
-            onScan={handleScan}
-            placeholder="扫条码或编码，回车加入。同一商品再扫一次，数量加 1"
-            style={{ flex: '1 1 320px', width: 'auto', maxWidth: 640 }}
-          />
-          <Button icon={<PlusOutlined />} onClick={() => setLines((prev) => [...prev, blankLine()])}>
-            添加明细行
-          </Button>
+      <Card
+        title="明细"
+        style={{ flex: 1, minHeight: 260, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+        styles={{ body: { flex: 1, minHeight: 0, padding: 0, display: 'flex', flexDirection: 'column' } }}
+      >
+        {/* 扫码条固定在明细卡顶部，明细行在它下面滚 */}
+        <div style={{ flex: 'none', padding: '16px 24px 12px' }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <ScanInput
+              size="large"
+              onScan={handleScan}
+              placeholder="扫条码或编码，回车加入。同一商品再扫一次，数量加 1"
+              style={{ flex: '1 1 320px', width: 'auto', maxWidth: 640 }}
+            />
+            <Button icon={<PlusOutlined />} onClick={() => setLines((prev) => [...prev, blankLine()])}>
+              添加明细行
+            </Button>
+          </div>
         </div>
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          {inbound
-            ? '库位是这行货收进来放的位置，空着就是默认库位。批次空着就是默认批次。写了效期以后，同一种货的同一批次要保持同一个日期。同一商品可以分多行，只要库位或批次不同。'
-            : `批次怎么扣、写了批次或库位能不能换，在系统的规则页配置。当前是${ALLOCATION_LABEL[warehouseAllocation]}。写了批次的行${batchRule === 'lock' ? '不能换' : '可以换'}。写了库位的行${locationRule === 'lock' ? '不能换' : '可以换'}。${blockExpired ? '过期批次不能出。' : '过期批次可以出。'}下拉里能看到可用量。库位是这行从哪出。下面列出每一桶，点「用这桶」填上库位和批次。${serialOn ? '按序列号的商品要自己写批次，这种商品不能按规则拆开。' : ''}`}
-        </Typography.Paragraph>
-        <Table<LineDraft>
-          size="middle"
-          rowKey="key"
-          pagination={false}
-          dataSource={lines}
-          columns={columns}
-          scroll={{ x: serialOn ? 1280 : 1100 }}
-          onRow={(line) => ({ onClick: () => line.skuCode && setFocusKey(line.key) })}
-        />
-        {!inbound && focused ? (
-          <StockBuckets
-            line={focused}
-            sku={skuRows.find((item) => item.skuCode === focused.skuCode)}
-            stock={stockRows.find((row) => row.skuCode === focused.skuCode)}
-            buckets={bucketRows.filter((row) => row.skuCode === focused.skuCode)}
-            demand={kept
-              .filter((row) => row.skuCode === focused.skuCode)
-              .reduce((sum, row) => sum + (row.quantity || 0), 0)}
-            onUse={(bucket) => {
-              patchLine(setLines, focused.key, {
-                locationCode: bucket.locationCode,
-                batchNo: bucket.batchNo && bucket.batchNo !== 'DEFAULT' ? bucket.batchNo : '',
-              });
-            }}
+        {/* 滚动收在明细区里：表头吸顶、横向滚动条吸底，页面外层不再出滚动条 */}
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 24px 24px' }}>
+          <Table<LineDraft>
+            size="middle"
+            rowKey="key"
+            pagination={false}
+            dataSource={lines}
+            columns={columns}
+            scroll={{ x: 'max-content' }}
+            sticky
+            onRow={(line) => ({ onClick: () => line.skuCode && setFocusKey(line.key) })}
           />
-        ) : null}
+          {!inbound && focused ? (
+            <StockBuckets
+              line={focused}
+              sku={skuRows.find((item) => item.skuCode === focused.skuCode)}
+              stock={stockRows.find((row) => row.skuCode === focused.skuCode)}
+              buckets={bucketRows.filter((row) => row.skuCode === focused.skuCode)}
+              demand={kept
+                .filter((row) => row.skuCode === focused.skuCode)
+                .reduce((sum, row) => sum + (row.quantity || 0), 0)}
+              onUse={(bucket) => {
+                patchLine(setLines, focused.key, {
+                  locationCode: bucket.locationCode,
+                  batchNo: bucket.batchNo && bucket.batchNo !== 'DEFAULT' ? bucket.batchNo : '',
+                });
+              }}
+            />
+          ) : null}
+        </div>
       </Card>
     </div>
   );
@@ -585,6 +582,13 @@ function outboundSkuLabel(sku: Sku, stockRows: InventoryRow[]): string {
   const stock = stockRows.find((row) => row.skuCode === sku.skuCode);
   if (!stock) return `${sku.skuCode} · ${sku.name} · 无库存`;
   return `${sku.skuCode} · ${sku.name} · 可用 ${fmtQty(stock.available, stock.unit)}`;
+}
+
+/** 出库行的库位只给看，要换库位就在下面点另一桶。 */
+function locationLabel(code: string, rows: Location[]): string {
+  if (!code || code === 'DEFAULT') return '默认库位';
+  const found = rows.find((row) => row.locationCode === code);
+  return found ? `${found.locationCode} · ${found.name}` : code;
 }
 
 function Choice({
@@ -690,14 +694,35 @@ function collectProblems(input: {
   expectedAt: string;
   serialOn: boolean;
   allocation: 'strict' | 'fifo' | 'fefo';
+  buckets: InventoryBucketRow[];
+  stock: InventoryRow[];
 }): string[] {
   const problems: string[] = [];
   if (input.lines.length === 0) problems.push('至少留一行商品');
   const effective = input.allocation;
   const seen = new Set<string>();
+  const demand = new Map<string, number>();
   input.lines.forEach((line, index) => {
     const n = index + 1;
     if (!(line.quantity > 0)) problems.push(`第 ${n} 行数量要大于 0`);
+    else if (input.direction === 'out' && line.skuCode) {
+      demand.set(line.skuCode, (demand.get(line.skuCode) ?? 0) + line.quantity);
+      const namedBatch = line.batchNo.trim();
+      if (namedBatch || effective === 'strict') {
+        const locationCode = line.locationCode || 'DEFAULT';
+        const batchNo = namedBatch || 'DEFAULT';
+        const bucket = input.buckets.find(
+          (row) =>
+            row.skuCode === line.skuCode &&
+            row.locationCode === locationCode &&
+            (row.batchNo || 'DEFAULT') === batchNo,
+        );
+        const onHand = bucket?.quantity ?? 0;
+        if (line.quantity > onHand) {
+          problems.push(`第 ${n} 行 ${line.skuCode} 这一桶只有 ${fmtQty(onHand)}，不够出 ${fmtQty(line.quantity)}`);
+        }
+      }
+    }
     const sku = input.skus.find((item) => item.skuCode === line.skuCode);
     const serials = splitSerials(line.serialsText);
     if (input.serialOn && sku?.serialTracked) {
@@ -719,6 +744,12 @@ function collectProblems(input: {
     if (seen.has(key)) problems.push(`第 ${n} 行与前面的商品、库位、批次重复，请合并数量`);
     seen.add(key);
   });
+  if (input.direction === 'out') {
+    for (const [skuCode, quantity] of demand) {
+      const available = input.stock.find((row) => row.skuCode === skuCode)?.available ?? 0;
+      if (quantity > available) problems.push(`${skuCode} 合计要出 ${fmtQty(quantity)}，可用只有 ${fmtQty(available)}`);
+    }
+  }
   if (input.asn && input.expectedAt.trim() && !/^\d{4}-\d{2}-\d{2}$/.test(input.expectedAt.trim())) {
     problems.push('预计到货日请用 YYYY-MM-DD');
   }

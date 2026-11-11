@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { OneCore, type PatchOp } from '@one/core';
-import { WmsDomain, InvalidTransitionError, WorkflowNotFoundError } from '../src/index.js';
+import { PickingRequiredError, WmsDomain, InvalidTransitionError, WorkflowNotFoundError } from '../src/index.js';
+import { allowDirectShip } from './direct-ship.js';
 
 /**
  * 流程引擎行为闭环测试（里程碑 8，ARCHITECTURE.md「流程引擎行为闭环」）：
@@ -16,11 +17,11 @@ beforeEach(async () => {
   const domain = WmsDomain.attach(core);
   ws = domain.workspace('ws-wf');
   await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: '螺丝' });
+  await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 100 });
   await ws.tools.invoke('wms.order.create', {
     direction: 'out',
     lines: [{ skuCode: 'A-1', quantity: 5 }],
   });
-  await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 100 }); // M9：出库 picking 预检需余量
 });
 
 afterEach(() => {
@@ -49,6 +50,10 @@ describe('流程引擎行为闭环（配置即权威）', () => {
       { op: 'add', path: '/workflows/outbound/transitions/-', value: { from: 'created', to: 'done' } },
     ]);
 
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo, to: 'done' })).rejects.toThrow(
+      PickingRequiredError,
+    );
+    allowDirectShip(ws);
     const r = (await ws.tools.invoke('wms.order.transition', { orderNo, to: 'done' })) as {
       from: string;
       to: string;
@@ -64,6 +69,10 @@ describe('流程引擎行为闭环（配置即权威）', () => {
       { op: 'add', path: '/workflows/outbound/transitions/-', value: { from: 'created', to: 'quarantine' } },
     ]);
 
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo, to: 'quarantine' })).rejects.toThrow(
+      PickingRequiredError,
+    );
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo, to: 'quarantine' });
     expect(ws.orders.byNo(orderNo)!.state).toBe('quarantine');
   });
@@ -74,16 +83,12 @@ describe('流程引擎行为闭环（配置即权威）', () => {
     const eventCountBefore = countEvents();
 
     // 去掉 picking→canceled（canceled 仍可从 created 到达——连通性校验通过）
+    const outbound = ws.profile.getSnapshot().workflows.outbound!;
     applyPatch([
       {
         op: 'replace',
         path: '/workflows/outbound/transitions',
-        value: [
-          { from: 'created', to: 'picking' },
-          { from: 'picking', to: 'shipped' },
-          { from: 'shipped', to: 'done' },
-          { from: 'created', to: 'canceled' },
-        ],
+        value: outbound.transitions.filter((edge) => !(edge.from === 'picking' && edge.to === 'canceled')),
       },
     ]);
 

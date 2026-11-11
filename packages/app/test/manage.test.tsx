@@ -42,6 +42,12 @@ let reservationEnabled = false;
 /** 多仓开关。默认关，库存页不出现「按仓库」。 */
 let warehouseEnabled = false;
 
+/** 上架开关。默认关，入库单不出现「去上架」。 */
+let putawayEnabled = false;
+
+/** 拣货开关。默认关，出库单不出现「去拣货」。 */
+let pickingEnabled = false;
+
 /** 单据冲突队列。默认空，避免其它用例被警告条干扰。 */
 let conflictsFixture: {
   eventId: string;
@@ -123,7 +129,7 @@ const ordersFixture = [
   {
     id: 'o-1',
     orderNo: 'IN-20261030-1',
-    direction: 'in' as const,
+    direction: 'in' as 'in' | 'out',
     state: 'created',
     note: null,
     createdAt: '2026-10-30T08:00:00.000Z',
@@ -160,12 +166,28 @@ vi.mock('../src/api/hooks', () => ({
     isLoading: false,
     data: {
       ...snapshotFixture,
+      workflows: putawayEnabled
+        ? {
+            ...snapshotFixture.workflows,
+            inbound: {
+              states: [...snapshotFixture.workflows.inbound.states, { id: 'putaway', label: '已上架' }],
+              transitions: [
+                { from: 'created', to: 'received' },
+                { from: 'received', to: 'putaway', when: 'module.putaway.enabled' },
+                { from: 'putaway', to: 'done' },
+                { from: 'received', to: 'done', when: '!module.putaway.enabled' },
+              ],
+            },
+          }
+        : snapshotFixture.workflows,
       modules: {
         ...(partialEnabled ? { 'module.partial': { enabled: true, version: '0.1.0', settings: {} } } : {}),
         ...(reservationEnabled
           ? { 'module.reservation': { enabled: true, version: '0.1.0', settings: {} } }
           : {}),
         ...(warehouseEnabled ? { 'module.warehouse': { enabled: true, version: '0.1.0', settings: {} } } : {}),
+        ...(putawayEnabled ? { 'module.putaway': { enabled: true, version: '0.1.0', settings: {} } } : {}),
+        ...(pickingEnabled ? { 'module.picking': { enabled: true, version: '0.1.0', settings: {} } } : {}),
       },
     },
   }),
@@ -185,6 +207,7 @@ vi.mock('../src/api/hooks', () => ({
   useAcceptConflict: () => ({ mutate: acceptConflictMock, mutateAsync: vi.fn(), isPending: false }),
   useDismissConflict: () => ({ mutate: dismissConflictMock, mutateAsync: vi.fn(), isPending: false }),
   useLocations: () => ({ isLoading: false, data: [] }),
+  useInventoryBuckets: () => ({ isLoading: false, data: [] }),
   useInventory: () => ({
     isLoading: false,
     data: reservationEnabled
@@ -295,6 +318,11 @@ afterEach(() => {
   partialEnabled = false;
   reservationEnabled = false;
   warehouseEnabled = false;
+  putawayEnabled = false;
+  pickingEnabled = false;
+  ordersFixture[0]!.state = 'created';
+  ordersFixture[0]!.direction = 'in';
+  ordersFixture[0]!.orderNo = 'IN-20261030-1';
 });
 
 describe('SkusPage：动态列（Profile 消费闭环）', () => {
@@ -378,6 +406,25 @@ describe('OrdersPage：workflows 驱动流转', () => {
     transitionMock.mockReset();
     acceptConflictMock.mockReset();
     dismissConflictMock.mockReset();
+  });
+
+  it('上架打开后，已收货的单去上架页，流转里没有已上架', async () => {
+    putawayEnabled = true;
+    ordersFixture[0]!.state = 'received';
+    render(wrap(<OrdersPage direction="in" />));
+    expect(screen.getByRole('button', { name: '去上架' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '上架' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /流转/ })).not.toBeInTheDocument();
+  });
+
+  it('拣货打开后，出库单去拣货，流转里没有发货和完成', async () => {
+    pickingEnabled = true;
+    ordersFixture[0]!.direction = 'out';
+    ordersFixture[0]!.orderNo = 'OUT-1';
+    ordersFixture[0]!.state = 'picking';
+    render(wrap(<OrdersPage direction="out" />));
+    expect(screen.getByRole('button', { name: '去拣货' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /流转/ })).not.toBeInTheDocument();
   });
 
   it('状态标签来自 workflows.states；流转菜单只含合法后继', async () => {

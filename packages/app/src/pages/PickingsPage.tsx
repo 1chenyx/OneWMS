@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
-import { CheckSquareOutlined, CloseOutlined, EyeOutlined, PlusOutlined } from '@ant-design/icons';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { EyeOutlined, PlusOutlined } from '@ant-design/icons';
 import {
   Alert,
   App as AntApp,
   Button,
   Card,
   Input,
-  InputNumber,
   Modal,
   Progress,
   Select,
@@ -16,46 +15,32 @@ import {
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import {
-  useClosePicking,
-  useCreatePicking,
-  useOrders,
-  useLocations,
-  usePickPickingLine,
-  usePickings,
-  useProfileSnapshot,
-  useCancelPicking,
-} from '../api/hooks';
+import { useCreatePicking, useOrders, usePickings, useProfileSnapshot } from '../api/hooks';
 import { ApiError } from '../api/client';
-import type { Picking, PickingLine } from '../api/client';
+import type { Picking } from '../api/client';
+import PickingDetail from '../components/PickingDetail';
 import PageHeader from '../components/PageHeader';
 import { useDraftNumber } from '../components/use-seeded-code';
 import { PrintPreviewModal, PrintRoot, PrintSelectionBar, PrintStyle, usePrintSession } from '../components/print-preview';
 import { PickingPrintSheet, pickingPrintTitle } from '../components/print-sheets';
-import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
-import { fmtQty } from '../lib/format';
+import { TABLE_PAGINATION, monoCell } from '../components/table-style';
+import { useAppNav } from '../app-nav';
 
 /**
- * 拣货单管理页（M21）——聚合「拣货中」出库单的作业单。
- *  - 新建：多选出库单（state=picking）聚合；
- *  - 作业：展开行逐条「录入实拣」。锁定的批次和库位不能换，一行可以拆到两桶。
- *  - 关单：没点过的行不能当成短发。扣减按实拣桶（订单 → shipped）。
- *  - 取消：留审计，订单留待人工。
- *  - 打印：行上预览弹窗；勾选后一次打出多页。版式和弹窗是同一份。
- * 行为权威在服务端工具（wms.picking.*）：未拣满/余量不足/流程配置
- * 拒绝时按 400 + WMS_ 错误码提示。
+ * 拣货单列表。拣货、关单和取消都在详情里做，列表上不能直接拣。
+ * 新建：多选拣货中的出库单。打印仍在列表上。
  */
 export default function PickingsPage() {
-  const { message, modal } = AntApp.useApp();
+  const { message } = AntApp.useApp();
+  const { takeInitialFilter } = useAppNav();
+  const [pendingOrderNo] = useState(() => takeInitialFilter()?.orderNo ?? '');
   const snapshot = useProfileSnapshot();
   const pickingOff = snapshot.data?.modules['module.picking']?.enabled === false;
   const [stateFilter, setStateFilter] = useState<'created' | 'closed' | 'canceled' | ''>('');
   const { data: pickings, isLoading } = usePickings(stateFilter || undefined);
   const { data: orders } = useOrders('out');
   const create = useCreatePicking();
-  const pick = usePickPickingLine();
-  const close = useClosePicking();
-  const cancel = useCancelPicking();
+  const [detailNo, setDetailNo] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const pickingNo = useDraftNumber(createOpen ? 'picking' : null);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
@@ -73,6 +58,14 @@ export default function PickingsPage() {
     () => (orders ?? []).filter((o) => o.state === 'picking'),
     [orders],
   );
+  const openedForOrder = useRef(false);
+  useEffect(() => {
+    if (openedForOrder.current || !pendingOrderNo) return;
+    if (!pickingStateOrders.some((order) => order.orderNo === pendingOrderNo)) return;
+    openedForOrder.current = true;
+    setSelectedOrders([pendingOrderNo]);
+    setCreateOpen(true);
+  }, [pendingOrderNo, pickingStateOrders]);
 
   const stateTag = (state: string) =>
     state === 'created' ? (
@@ -82,34 +75,6 @@ export default function PickingsPage() {
     ) : (
       <Tag>已取消</Tag>
     );
-
-  const doClose = (pickingNo: string) =>
-    modal.confirm({
-      title: `确认关单 ${pickingNo}？`,
-      content: '已经录入过的行按实拣扣减，出库单转到已发货。没点过的行不能靠关单当成短发。',
-      onOk: async () => {
-        try {
-          const r = await close.mutateAsync(pickingNo);
-          message.success(`${pickingNo} 已关单，${r.orders.length} 张出库单已发货`);
-        } catch (e) {
-          message.error(e instanceof ApiError ? e.message : `关单失败：${String(e)}`);
-        }
-      },
-    });
-
-  const doCancel = (pickingNo: string) =>
-    modal.confirm({
-      title: `确认取消拣货单 ${pickingNo}？`,
-      content: '已录实拣保留审计；关联出库单留在「拣货中」待人工处理。',
-      onOk: async () => {
-        try {
-          await cancel.mutateAsync(pickingNo);
-          message.success(`${pickingNo} 已取消`);
-        } catch (e) {
-          message.error(e instanceof ApiError ? e.message : `取消失败：${String(e)}`);
-        }
-      },
-    });
 
   const submitCreate = async () => {
     if (selectedOrders.length === 0) {
@@ -122,6 +87,7 @@ export default function PickingsPage() {
       message.success(`拣货单 ${r.pickingNo} 已创建（${r.lineCount} 行）`);
       setSelectedOrders([]);
       setCreateOpen(false);
+      setDetailNo(r.pickingNo);
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : `创建失败：${String(e)}`);
     }
@@ -166,52 +132,42 @@ export default function PickingsPage() {
       ),
     },
     {
-      title: '创建时间',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
+      title: '更新时间',
+      dataIndex: 'updatedAt',
+      key: 'updatedAt',
       render: (v: string) => v.slice(0, 19).replace('T', ' '),
     },
     {
       title: '操作',
       key: 'actions',
-      width: 240,
+      width: 160,
       render: (_, r) => (
         <>
+          <Button size="small" type="primary" style={{ marginRight: 8 }} onClick={() => setDetailNo(r.pickingNo)}>
+            {r.state === 'created' ? '拣货' : '查看'}
+          </Button>
           <Tooltip title="预览拣货单">
             <Button
               size="small"
               icon={<EyeOutlined />}
               aria-label="预览拣货单"
-              style={{ marginRight: 8 }}
               onClick={() => session.openPreview([r])}
             />
           </Tooltip>
-          {r.state === 'created' ? (
-            <>
-              <Button
-                size="small"
-                type="primary"
-                icon={<CheckSquareOutlined />}
-                style={{ marginRight: 8 }}
-                onClick={() => doClose(r.pickingNo)}
-              >
-                关单扣减
-              </Button>
-              <Button size="small" danger icon={<CloseOutlined />} onClick={() => doCancel(r.pickingNo)}>
-                取消
-              </Button>
-            </>
-          ) : null}
         </>
       ),
     },
   ];
 
+  if (detailNo) {
+    return <PickingDetail pickingNo={detailNo} onBack={() => setDetailNo(null)} />;
+  }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div className="app-fill list-page" style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
         title="拣货单"
-        subtitle="锁定的批次和库位不能换，一行可以拆到两桶，没点过的行不能靠关单当成短发"
+        subtitle="点进拣货单再逐行拣。一行可以拆成多桶。关单后出库单进入已拣货，再到出库单发货。"
         extra={
           <>
             <Select
@@ -241,10 +197,10 @@ export default function PickingsPage() {
         <Alert
           type="info"
           showIcon
-          message="拣货已关闭。新的出库单直接发货。已经在拣货中的单仍可在这里做完，或在出库单上发货、取消。"
+          message="拣货已关闭。新的出库单直接发货。已经在拣货中的单仍可在这里做完，或在出库单上发货、取消。已经拣完的单到出库单发货。"
         />
       ) : null}
-      <Card>
+      <Card className="list-card">
         <PrintSelectionBar
           count={selectedPickings.length}
           onPreview={() => session.openPreview(selectedPickings)}
@@ -260,12 +216,6 @@ export default function PickingsPage() {
           dataSource={pickings ?? []}
           loading={isLoading}
           pagination={TABLE_PAGINATION}
-          expandable={{
-            rowExpandable: (r) => r.lines.length > 0,
-            expandedRowRender: (r) => (
-              <PickLinesTable picking={r} onPick={pick} />
-            ),
-          }}
           locale={{
             emptyText:
               pickingStateOrders.length === 0
@@ -329,225 +279,5 @@ export default function PickingsPage() {
       />
       <PrintStyle rootId="picking-print-area" />
     </div>
-  );
-}
-
-/** 展开行：拣货明细 + 行内录入实拣（默认建议桶，可改实拣库位/批次） */
-function PickLinesTable({
-  picking,
-  onPick,
-}: {
-  picking: Picking;
-  onPick: ReturnType<typeof usePickPickingLine>;
-}) {
-  const { message } = AntApp.useApp();
-  const { data: locationRows } = useLocations();
-  const locationOptions = [
-    { value: 'DEFAULT', label: '默认库位' },
-    ...(locationRows ?? [])
-      .filter((row) => row.locationCode !== 'DEFAULT')
-      .map((row) => ({ value: row.locationCode, label: row.locationCode })),
-  ];
-  // 行 id → 实拣量 / 实拣库位 / 实拣批次。第二套是拆成两桶时的另一桶。
-  const [qty, setQty] = useState<Record<string, number>>({});
-  const [loc, setLoc] = useState<Record<string, string>>({});
-  const [batch, setBatch] = useState<Record<string, string>>({});
-  const [splitOn, setSplitOn] = useState<Record<string, boolean>>({});
-  const [qty2, setQty2] = useState<Record<string, number>>({});
-  const [loc2, setLoc2] = useState<Record<string, string>>({});
-  const [batch2, setBatch2] = useState<Record<string, string>>({});
-
-  const submitPick = async (line: PickingLine) => {
-    const firstQty = qty[line.id] ?? line.qtyToPick;
-    const secondQty = splitOn[line.id] ? (qty2[line.id] ?? 0) : 0;
-    const body =
-      secondQty > 0
-        ? {
-            orderNo: line.orderNo,
-            skuCode: line.skuCode,
-            suggestedBatchNo: line.suggestedBatchNo,
-            pickedQty: firstQty + secondQty,
-            allocations: [
-              {
-                quantity: firstQty,
-                locationCode: loc[line.id] || line.suggestedLocationCode,
-                batchNo: batch[line.id] || line.suggestedBatchNo,
-              },
-              {
-                quantity: secondQty,
-                locationCode: loc2[line.id] || line.suggestedLocationCode,
-                batchNo: batch2[line.id] || line.suggestedBatchNo,
-              },
-            ],
-          }
-        : {
-            orderNo: line.orderNo,
-            skuCode: line.skuCode,
-            suggestedBatchNo: line.suggestedBatchNo,
-            pickedQty: firstQty,
-            ...(loc[line.id] ? { locationCode: loc[line.id] } : {}),
-            ...(batch[line.id] ? { pickedBatchNo: batch[line.id] } : {}),
-          };
-    try {
-      const r = await onPick.mutateAsync({
-        pickingNo: picking.pickingNo,
-        body,
-      });
-      message.success(
-        r.remainingToPick > 0
-          ? `${line.skuCode} 已拣 ${r.pickedQty}，还差 ${r.remainingToPick}`
-          : `${line.skuCode} 已拣满`,
-      );
-    } catch (e) {
-      message.error(e instanceof ApiError ? e.message : `录入失败：${String(e)}`);
-    }
-  };
-
-  return (
-    <Table<PickingLine>
-      size="small"
-      rowKey="id"
-      dataSource={picking.lines}
-      pagination={TABLE_PAGINATION}
-      columns={[
-        { title: '出库单', dataIndex: 'orderNo', onCell: monoCell, width: 150 },
-        { title: 'SKU', dataIndex: 'skuCode', onCell: monoCell, width: 120 },
-        { title: '名称', dataIndex: 'skuName' },
-        {
-          title: '应拣',
-          dataIndex: 'qtyToPick',
-          align: 'right',
-          width: 90,
-          onCell: numCell,
-          render: (v: number, r) => fmtQty(v, r.unit),
-        },
-        { title: '建议库位', dataIndex: 'suggestedLocationCode', width: 100, onCell: monoCell },
-        { title: '建议批次', dataIndex: 'suggestedBatchNo', width: 110, onCell: monoCell },
-        {
-          title: '已拣',
-          dataIndex: 'pickedQty',
-          width: 90,
-          align: 'right',
-          onCell: numCell,
-          render: (v: number, r) =>
-            v >= r.qtyToPick ? (
-              <Tag color="green">{fmtQty(v, r.unit)}</Tag>
-            ) : v > 0 ? (
-              fmtQty(v, r.unit)
-            ) : (
-              <Typography.Text type="secondary">0</Typography.Text>
-            ),
-        },
-        {
-          title: '实拣库位',
-          key: 'pickedLoc',
-          width: 150,
-          render: (_, r) =>
-            picking.state === 'created' ? (
-              <Select
-                allowClear
-                size="small"
-                showSearch
-                optionFilterProp="label"
-                placeholder={r.pickedLocationCode ?? r.suggestedLocationCode}
-                style={{ width: '100%' }}
-                value={loc[r.id]}
-                options={locationOptions}
-                onChange={(v) => setLoc((p) => ({ ...p, [r.id]: v }))}
-              />
-            ) : (
-              <span style={{ fontFamily: 'monospace' }}>{r.pickedLocationCode ?? r.suggestedLocationCode}</span>
-            ),
-        },
-        {
-          title: '实拣批次',
-          key: 'pickedBatch',
-          width: 130,
-          render: (_, r) =>
-            picking.state === 'created' ? (
-              <Input
-                size="small"
-                placeholder={r.pickedBatchNo ?? r.suggestedBatchNo}
-                value={batch[r.id]}
-                onChange={(event) => setBatch((p) => ({ ...p, [r.id]: event.target.value }))}
-              />
-            ) : (
-              <span style={{ fontFamily: 'monospace' }}>{r.pickedBatchNo ?? r.suggestedBatchNo}</span>
-            ),
-        },
-        ...(picking.state === 'created'
-          ? [
-              {
-                title: '录入实拣',
-                key: 'pick',
-                width: 280,
-                render: (_: unknown, r: PickingLine) => (
-                  <div>
-                    <span>
-                      <InputNumber
-                        size="small"
-                        min={0}
-                        precision={3}
-                        max={r.qtyToPick}
-                        value={qty[r.id] ?? r.pickedQty}
-                        onChange={(v) => setQty((p) => ({ ...p, [r.id]: v ?? 0 }))}
-                        style={{ marginRight: 8, width: 80 }}
-                      />
-                      <Button
-                        size="small"
-                        type="primary"
-                        ghost
-                        loading={onPick.isPending}
-                        onClick={() => void submitPick(r)}
-                      >
-                        拣
-                      </Button>
-                      <Button
-                        size="small"
-                        type="link"
-                        onClick={() => setSplitOn((p) => ({ ...p, [r.id]: !p[r.id] }))}
-                      >
-                        分成两桶
-                      </Button>
-                    </span>
-                    {splitOn[r.id] ? (
-                      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                        <InputNumber
-                          size="small"
-                          min={0}
-                          precision={3}
-                          aria-label="第二桶数量"
-                          value={qty2[r.id]}
-                          onChange={(v) => setQty2((p) => ({ ...p, [r.id]: v ?? 0 }))}
-                          style={{ width: 72 }}
-                        />
-                        <Select
-                          size="small"
-                          showSearch
-                          optionFilterProp="label"
-                          aria-label="第二桶库位"
-                          placeholder={r.suggestedLocationCode}
-                          style={{ width: 96 }}
-                          value={loc2[r.id]}
-                          options={locationOptions}
-                          onChange={(v) => setLoc2((p) => ({ ...p, [r.id]: v }))}
-                        />
-                        <Input
-                          size="small"
-                          aria-label="第二桶批次"
-                          placeholder={r.suggestedBatchNo}
-                          value={batch2[r.id]}
-                          onChange={(event) => setBatch2((p) => ({ ...p, [r.id]: event.target.value }))}
-                          style={{ width: 88 }}
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                ),
-              } as ColumnsType<PickingLine>[number],
-            ]
-          : []),
-      ]}
-    />
   );
 }

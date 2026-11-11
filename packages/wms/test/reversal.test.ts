@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { OneCore, type PatchOp } from '@one/core';
 import { InsufficientStockError, InvalidTransitionError, WmsDomain } from '../src/index.js';
+import { allowDirectShip } from './direct-ship.js';
 
 /**
  * 可关闭的冲销模块 + 效应状态设置 + 冲突接受。
@@ -72,6 +73,7 @@ describe('module.reversal', () => {
       lines: [{ skuCode: 'A-1', quantity: 4 }],
     })) as { orderNo: string };
     await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'picking' });
+    allowDirectShip(ws);
     await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'shipped' });
     const sku = ws.skus.byCode('A-1')!;
     expect(ws.inventory.quantityOf(sku.id)).toBe(6);
@@ -95,6 +97,7 @@ describe('效应状态设置', () => {
   it('inboundIncreaseState 改为 done 后，收货不加库存，完成才加', async () => {
     applyPatch([
       { op: 'replace', path: '/modules/core.wms/settings/inboundIncreaseState', value: 'done' },
+      { op: 'replace', path: '/modules/module.putaway/enabled', value: false },
     ]);
     const no = await inbound();
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'received' });

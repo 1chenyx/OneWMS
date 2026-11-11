@@ -160,7 +160,7 @@ export default function StocktakePage() {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div className="app-fill list-page" style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
         title="盘点"
         subtitle="录实盘数，关单自动按差异调整库存"
@@ -170,7 +170,7 @@ export default function StocktakePage() {
           </Button>
         }
       />
-      <Card>
+      <Card className="list-card">
         <Table<Stocktake>
           rowKey="id"
           columns={columns}

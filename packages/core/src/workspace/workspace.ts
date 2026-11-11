@@ -46,7 +46,10 @@ export class WorkspaceFacade {
     this.events = new EventsView(workspaceId, nodeId, oplog);
     this.fields = new FieldsView(workspaceId, registry);
     this.tools = new ToolsView(workspaceId, nodeId, bus, oplog);
-    this.profile = new ProfileView(workspaceId, nodeId, profileService);
+    // dyn 安装器闭包：ProfileView 不能持有 ModuleRegistry（依赖方向），由 facade 递函数进去
+    this.profile = new ProfileView(workspaceId, nodeId, profileService, (manifest, actor) =>
+      moduleRegistry.install(workspaceId, manifest, { actor }),
+    );
     this.modules = new ModulesView(workspaceId, nodeId, moduleRegistry);
     this.#registry = registry;
     this.#profileService = profileService;

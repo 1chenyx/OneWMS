@@ -146,7 +146,7 @@ export default function SkusPage() {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
+    <div className="app-fill list-page" style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
       <PageHeader
         title="SKU 管理"
         subtitle="商品主数据：编码、条码与扩展字段（扩展列由配置驱动）"
@@ -171,7 +171,7 @@ export default function SkusPage() {
           </>
         }
       />
-      <Card>
+      <Card className="list-card">
         <Table<Sku>
           rowKey="id"
           columns={columns}

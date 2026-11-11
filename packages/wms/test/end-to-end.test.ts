@@ -53,6 +53,7 @@ describe('端到端全链路', () => {
     expect(received.adjustedLines).toEqual([
       { skuCode: 'A-1001', locationCode: 'DEFAULT', batchNo: 'DEFAULT', delta: 200 },
     ]);
+    await ws.tools.invoke('wms.order.putaway', { orderNo: order.orderNo }, AI);
     await ws.tools.invoke('wms.order.transition', { orderNo: order.orderNo, to: 'done' }, AI);
 
     expect(ws.inventory.quantityOf(ws.skus.byCode('A-1001')!.id)).toBe(200);
@@ -65,7 +66,8 @@ describe('端到端全链路', () => {
       types.push(e.type);
     });
     expect(actors.has(AI)).toBe(true);
-    expect(types.filter((t) => t.startsWith('wms.')).length).toBe(5); // sku.created + order.created + 2×state_changed + 联动 inventory.adjusted（M9）
+    // sku.created + order.created + received/putaway/done 三次 state_changed + 联动 inventory.adjusted
+    expect(types.filter((t) => t.startsWith('wms.')).length).toBe(6);
 
     // ④ 领域重放：清空投影全量重建 → 与重放前完全一致
     const before = {
@@ -75,7 +77,7 @@ describe('端到端全链路', () => {
       qty: ws.inventory.quantityOf(ws.skus.byCode('A-1001')!.id),
     };
     const replay1 = ws.replay();
-    expect(replay1.appliedWmsEvents).toBe(5);
+    expect(replay1.appliedWmsEvents).toBe(6);
     expect(ws.skus.byCode('A-1001')).toEqual(before.sku);
     expect(ws.orders.byNo(order.orderNo)).toEqual(before.order);
     expect(ws.orders.lines(order.orderId)).toEqual(before.lines);

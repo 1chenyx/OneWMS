@@ -6,6 +6,8 @@ import LocationsPage from './pages/LocationsPage';
 import PartnersPage from './pages/PartnersPage';
 import LabelsPage from './pages/LabelsPage';
 import { InboundOrdersPage, OutboundOrdersPage } from './pages/OrdersPage';
+import PutawayPage from './pages/PutawayPage';
+import { LoadPage, PackPage, QcPage, ReviewPage, WavePage } from './pages/StagePage';
 import PickingsPage from './pages/PickingsPage';
 import DashboardPage from './pages/DashboardPage';
 import InventoryPage from './pages/InventoryPage';
@@ -39,8 +41,14 @@ const PAGE_COMPONENTS: Record<Page, ComponentType> = {
   partners: PartnersPage,
   labels: LabelsPage,
   inbound: InboundOrdersPage,
+  qc: QcPage,
+  putaway: PutawayPage,
   outbound: OutboundOrdersPage,
+  wave: WavePage,
   pickings: PickingsPage,
+  review: ReviewPage,
+  pack: PackPage,
+  load: LoadPage,
   inventory: InventoryPage,
   serials: SerialsPage,
   pallets: PalletsPage,

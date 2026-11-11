@@ -45,6 +45,7 @@ describe('单据：创建', () => {
   });
 
   it('出库单自动单号 OUT- 前缀；按方向列出', async () => {
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 1 });
     const r = (await ws.tools.invoke('wms.order.create', {
       direction: 'out',
       lines: [{ skuCode: 'A-1', quantity: 1 }],
@@ -52,6 +53,18 @@ describe('单据：创建', () => {
     expect(r.orderNo).toMatch(/^OUT-/);
     expect(ws.orders.list('out')).toHaveLength(1);
     expect(ws.orders.list('in')).toHaveLength(0);
+  });
+
+  it('出库所选桶余量不足 → 建单拒绝且不落单', async () => {
+    await ws.tools.invoke('wms.location.create', { locationCode: 'A-01', name: '一号位' });
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 2, locationCode: 'A-01', batchNo: 'B1' });
+    await expect(
+      ws.tools.invoke('wms.order.create', {
+        direction: 'out',
+        lines: [{ skuCode: 'A-1', quantity: 3, locationCode: 'A-01', batchNo: 'B1' }],
+      }),
+    ).rejects.toThrow(/库存不足/);
+    expect(ws.orders.list('out')).toHaveLength(0);
   });
 
   it('引用不存在的 SKU → 拒绝且不落事件', async () => {
@@ -129,10 +142,15 @@ describe('单据：状态机', () => {
     return r.orderNo;
   }
 
-  it('入库单全程 created → received → done，每步落 state_changed 事件', async () => {
+  it('入库单全程 created → received → putaway → done，上架打开时不能跳过', async () => {
     const no = await createIn();
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'received' });
     expect(ws.orders.byNo(no)!.state).toBe('received');
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'done' })).rejects.toThrow(
+      InvalidTransitionError,
+    );
+    await ws.tools.invoke('wms.order.putaway', { orderNo: no });
+    expect(ws.orders.byNo(no)!.state).toBe('putaway');
     await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'done' });
     expect(ws.orders.byNo(no)!.state).toBe('done');
 
@@ -142,7 +160,7 @@ describe('单据：状态机', () => {
         changes.push(`${(e.payload as { from: string }).from}→${(e.payload as { to: string }).to}`);
       }
     });
-    expect(changes).toEqual(['created→received', 'received→done']);
+    expect(changes).toEqual(['created→received', 'received→putaway', 'putaway→done']);
   });
 
   it('跳步非法：created → done 直接拒绝（InvalidTransitionError，不落事件）', async () => {
@@ -206,5 +224,65 @@ describe('单据：状态机', () => {
     const open = ws.orders.listConflicts('open');
     expect(open).toHaveLength(1);
     expect(open[0]).toMatchObject({ orderNo: no, fromState: 'created', toState: 'canceled', actualState: 'received' });
+  });
+});
+
+/** 让相邻事件的 updated_at 落在不同毫秒 */
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+describe('单据：界面清单按更新时间倒序', () => {
+  it('入库、出库和已收货（上架清单）都是最近更新的在前，分页与全量同一顺序', async () => {
+    await ws.tools.invoke('wms.order.create', {
+      direction: 'in',
+      orderNo: 'IN-A',
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+    await tick();
+    await ws.tools.invoke('wms.order.create', {
+      direction: 'in',
+      orderNo: 'IN-Z',
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 2 });
+    await tick();
+    await ws.tools.invoke('wms.order.create', {
+      direction: 'out',
+      orderNo: 'OUT-A',
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+    await tick();
+    await ws.tools.invoke('wms.order.create', {
+      direction: 'out',
+      orderNo: 'OUT-Z',
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+
+    // 单号序会是 A 在前；更新时间倒序是后建的 Z 在前
+    expect(ws.orders.list('in').map((o) => o.orderNo)).toEqual(['IN-Z', 'IN-A']);
+    expect(ws.orders.list('out').map((o) => o.orderNo)).toEqual(['OUT-Z', 'OUT-A']);
+
+    await tick();
+    await ws.tools.invoke('wms.order.revise', { orderNo: 'IN-A', note: '补记' });
+    await tick();
+    await ws.tools.invoke('wms.order.revise', { orderNo: 'OUT-A', note: '补记' });
+    expect(ws.orders.list('in').map((o) => o.orderNo)).toEqual(['IN-A', 'IN-Z']);
+    expect(ws.orders.list('out').map((o) => o.orderNo)).toEqual(['OUT-A', 'OUT-Z']);
+
+    await tick();
+    await ws.tools.invoke('wms.order.transition', { orderNo: 'IN-Z', to: 'received' });
+    await tick();
+    await ws.tools.invoke('wms.order.transition', { orderNo: 'IN-A', to: 'received' });
+    // 上架页用的就是这张入库清单里 state=received 的单，顺序跟着更新时间
+    expect(
+      ws.orders.list('in').filter((o) => o.state === 'received').map((o) => o.orderNo),
+    ).toEqual(['IN-A', 'IN-Z']);
+
+    const first = ws.orders.listPageByNo({ direction: 'in', limit: 1, offset: 0 });
+    const second = ws.orders.listPageByNo({ direction: 'in', limit: 1, offset: 1 });
+    expect(first.total).toBe(2);
+    expect(first.rows.map((o) => o.orderNo)).toEqual(['IN-A']);
+    expect(second.rows.map((o) => o.orderNo)).toEqual(['IN-Z']);
   });
 });

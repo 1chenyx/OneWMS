@@ -9,6 +9,7 @@ import {
   type MemoryScope,
 } from '@one/memory';
 import type { AppContext } from '../context.js';
+import { resolveActor } from '../actor.js';
 import { runMemoryConsolidation } from '../memory-consolidate.js';
 
 /**
@@ -26,11 +27,6 @@ import { runMemoryConsolidation } from '../memory-consolidate.js';
  * 人操作 actor = user:local@{nodeId}（source 推导为 'manual'，与 AI 通道审计可辨）。
  * 工具抛错直接冒泡给 apiErrorHandler（TOOL_REJECTED → 400 + code），此处不重复翻译。
  */
-
-/** 人操作界面的 actor（带节点后缀：审计可辨「人做的」，且同步通道节点唯一） */
-function actorOf(ctx: AppContext): string {
-  return `user:local@${ctx.core.nodeId}`;
-}
 
 /** /history 的返回上限（管理页只看最近若干版；账本本身不截断） */
 const HISTORY_LIMIT = 50;
@@ -91,7 +87,7 @@ export function memoryRoutes(ctx: AppContext): Hono {
       const result = await ctx.ws.tools.invoke(
         'memory.append',
         { scope: body.scope, sectionKey: body.sectionKey, title: body.title, text: body.text },
-        actorOf(ctx),
+        resolveActor(ctx, c),
       );
       return c.json(result, 201);
     })
@@ -117,7 +113,7 @@ export function memoryRoutes(ctx: AppContext): Hono {
             keywords: body.keywords,
             baseLamport: body.baseLamport,
           },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -140,7 +136,7 @@ export function memoryRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'memory.rewrite',
           { scope, sectionKey, title: existing.title, bodyMd: '', baseLamport: body.baseLamport },
-          actorOf(ctx),
+          resolveActor(ctx, c),
         ),
       );
     })
@@ -183,7 +179,7 @@ export function memoryRoutes(ctx: AppContext): Hono {
       if (body.scope !== undefined && !scope) {
         return c.json({ code: 'BAD_REQUEST', message: 'scope 只能是 personal 或 project' }, 400);
       }
-      const scopes = await runMemoryConsolidation(ctx, provider, { scope, actor: actorOf(ctx) });
+      const scopes = await runMemoryConsolidation(ctx, provider, { scope, actor: resolveActor(ctx, c) });
       return c.json({ scopes });
     })
     .post('/settings/propose', async (c) => {
@@ -220,7 +216,7 @@ export function memoryRoutes(ctx: AppContext): Hono {
       const result = await ctx.ws.tools.invoke(
         'profile.propose',
         { patch, note },
-        actorOf(ctx),
+        resolveActor(ctx, c),
       );
       return c.json(result, 201);
     });

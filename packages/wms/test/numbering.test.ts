@@ -117,6 +117,7 @@ describe('发号', () => {
 
   it('同一张单上的号一起看，自定义规则确认后才生效', async () => {
     await ws.tools.invoke('wms.sku.create', { skuCode: 'A-1', name: '螺丝' });
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 1 });
     await ws.tools.invoke('wms.order.create', { direction: 'out', orderNo: 'X-01', lines: [{ skuCode: 'A-1', quantity: 1 }] });
     setNumbering({ 'order.in': 'X-{seq:2}', 'order.out': 'X-{seq:2}' });
     const created = (await ws.tools.invoke('wms.order.create', {
