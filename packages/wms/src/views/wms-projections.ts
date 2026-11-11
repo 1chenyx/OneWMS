@@ -5,6 +5,7 @@ import { LocationView } from './location-view.js';
 import { OrderView } from './order-view.js';
 import { PartnerView } from './partner-view.js';
 import { PickingView } from './picking-view.js';
+import { WaveView } from './wave-view.js';
 import { SkuView } from './sku-view.js';
 import { StocktakeView } from './stocktake-view.js';
 import { WarehouseView } from './warehouse-view.js';
@@ -56,6 +57,8 @@ export const WMS_PROJECTION_GROUP: ProjectionGroupSpec = {
     { table: 'wms_picking_line' },
     { table: 'wms_picking_allocation' },
     { table: 'wms_picking' },
+    { table: 'wms_wave_order' },
+    { table: 'wms_wave' },
   ],
 };
 
@@ -68,6 +71,7 @@ export class WmsProjections {
   readonly inventory: InventoryView;
   readonly stocktakes: StocktakeView;
   readonly pickings: PickingView;
+  readonly waves: WaveView;
   readonly warehouses: WarehouseView;
   readonly serials: SerialView;
   readonly lpns: LpnView;
@@ -85,6 +89,7 @@ export class WmsProjections {
     this.stocktakes = new StocktakeView(db, workspaceId, this.inventory);
     // 拣货行展示联查 SKU（投影层互不依赖——联查走查询层；此处仅事件分发）。
     this.pickings = new PickingView(db, workspaceId);
+    this.waves = new WaveView(db, workspaceId);
     this.warehouses = new WarehouseView(db, workspaceId);
     this.serials = new SerialView(db, workspaceId);
     this.lpns = new LpnView(db, workspaceId);
@@ -101,6 +106,7 @@ export class WmsProjections {
     this.inventory.applyEvent(envelope);
     this.stocktakes.applyEvent(envelope);
     this.pickings.applyEvent(envelope);
+    this.waves.applyEvent(envelope);
   }
 
   /**

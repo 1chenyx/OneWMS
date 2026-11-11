@@ -576,6 +576,46 @@ export class PutawaySourceShortError extends CoreError {
   }
 }
 
+/**
+ * 上架量超过本单在该源桶上的「待上架份额」。
+ *
+ * 份额 = 本单名下该桶的流水净额（收货 + / 已上架 −）。共享库位（DEFAULT）里
+ * 堆着多张单的货，桶余量够不代表够自己这一份——别的单多扣了会把差额转嫁给
+ * 下一张单（PutawaySourceShortError 只报余量、指不出是谁挪的）。本错误按单据
+ * 记账，把责任落在越界的那张单上。
+ */
+export class PutawayOrderShareError extends CoreError {
+  constructor(
+    orderNo: string,
+    skuCode: string,
+    locationCode: string,
+    batchNo: string,
+    needed: number,
+    ownShare: number,
+  ) {
+    super(
+      'WMS_PUTAWAY_ORDER_SHARE',
+      `入库单 ${orderNo} 的 SKU ${skuCode} 在库位 ${locationCode} 批次 ${batchNo} 只能上架自己收的货：` +
+        `本次要 ${needed}，本单在该桶还剩 ${ownShare}（收货 − 已上架）。` +
+        `差额说明这张单被重复上架，或收货库存被别的单据挪用了`,
+    );
+  }
+}
+
+/**
+ * 同一次上架里出现完全重复的目标（SKU + 源库位 + 批次 + 目标库位 四项全同）。
+ * 重复项会被当成「拆到多处」各自落一对 ± 流水，等于把同一份货搬两遍。
+ */
+export class PutawayDuplicateTargetError extends CoreError {
+  constructor(orderNo: string, lineKey: string, toLocationCode: string, times: number) {
+    super(
+      'WMS_PUTAWAY_DUPLICATE_TARGET',
+      `入库单 ${orderNo} 的 ${lineKey} 重复写了 ${times} 次目标库位 ${toLocationCode}——` +
+        `同一处只写一行；要分数量请合并成一行并写 quantity`,
+    );
+  }
+}
+
 // ── 拣货单（M21）─────────────────────────────────────
 
 /** 拣货单不存在 */
@@ -658,6 +698,86 @@ export class QcRequiredError extends CoreError {
 export class WaveRequiredError extends CoreError {
   constructor(orderNo: string) {
     super('WMS_WAVE_REQUIRED', `出库单 ${orderNo} 已开启波次。要先组波，不能直接拣货、发货或完成。`);
+  }
+}
+
+/** 波次开着时，不能用单据流转直接改成已组波。要在波次页把单放进一个波次。 */
+export class WaveBatchRequiredError extends CoreError {
+  constructor(orderNo: string) {
+    super(
+      'WMS_WAVE_BATCH_REQUIRED',
+      `出库单 ${orderNo} 要在波次页组波。勾上要一起拣的单，系统会给出波次号，并按库位把数量加总。`,
+    );
+  }
+}
+
+/** 单还在未拣的波次里，不能单独转入拣货。 */
+export class WaveBatchPickError extends CoreError {
+  constructor(orderNo: string, waveNo: string) {
+    super(
+      'WMS_WAVE_BATCH_PICK',
+      `出库单 ${orderNo} 在波次 ${waveNo} 里。要整波一起拣，请到波次页点「按这波拣货」。`,
+    );
+  }
+}
+
+export class WaveDisabledError extends CoreError {
+  constructor() {
+    super('WMS_WAVE_DISABLED', '波次已关闭。新的出库单不用组波。');
+  }
+}
+
+export class WaveNotFoundError extends CoreError {
+  constructor(waveNo: string) {
+    super('WMS_WAVE_NOT_FOUND', `没有这张波次：${waveNo}`);
+  }
+}
+
+export class WaveExistsError extends CoreError {
+  constructor(waveNo: string) {
+    super('WMS_WAVE_EXISTS', `波次号 ${waveNo} 已经有了`);
+  }
+}
+
+export class WaveNoOrdersError extends CoreError {
+  constructor() {
+    super('WMS_WAVE_NO_ORDERS', '组波至少要一张出库单');
+  }
+}
+
+export class WaveOrderStateError extends CoreError {
+  constructor(orderNo: string, state: string) {
+    super('WMS_WAVE_ORDER_STATE', `出库单 ${orderNo} 现在是「${state}」，只有已创建的出库单可以组进波次`);
+  }
+}
+
+export class WaveOrderTakenError extends CoreError {
+  constructor(orderNo: string, waveNo: string) {
+    super('WMS_WAVE_ORDER_TAKEN', `出库单 ${orderNo} 已经在波次 ${waveNo} 里`);
+  }
+}
+
+export class WaveNotOpenError extends CoreError {
+  constructor(waveNo: string, state: string) {
+    super('WMS_WAVE_NOT_OPEN', `波次 ${waveNo} 现在是「${state}」，不能再改`);
+  }
+}
+
+export class WaveMembersMovedError extends CoreError {
+  constructor(waveNo: string, orderNos: string) {
+    super(
+      'WMS_WAVE_MEMBERS_MOVED',
+      `波次 ${waveNo} 里的 ${orderNos} 已经离开已组波。取消这波后，把还要拣的单重新组。`,
+    );
+  }
+}
+
+export class WavePickUnavailableError extends CoreError {
+  constructor(waveNo: string) {
+    super(
+      'WMS_WAVE_PICK_UNAVAILABLE',
+      `波次 ${waveNo} 的拣货清单在波次页。拣货关着，各张单继续去复核、打包、装车或发货。`,
+    );
   }
 }
 

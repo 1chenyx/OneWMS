@@ -238,6 +238,54 @@ export function useCancelPicking() {
   });
 }
 
+function useInvalidateWaves() {
+  const qc = useQueryClient();
+  return () => {
+    void qc.invalidateQueries({ queryKey: ['waves'] });
+    void qc.invalidateQueries({ queryKey: ['orders'] });
+    void qc.invalidateQueries({ queryKey: ['pickings'] });
+    void qc.invalidateQueries({ queryKey: ['inventory'] });
+    void qc.invalidateQueries({ queryKey: ['dashboard'] });
+    void qc.invalidateQueries({ queryKey: ['numbering'] });
+  };
+}
+
+export function useWaves() {
+  return useQuery({ queryKey: ['waves'], queryFn: () => api.waves() });
+}
+
+export function useWave(waveNo: string | null) {
+  return useQuery({
+    queryKey: ['waves', waveNo],
+    queryFn: () => api.wave(waveNo!),
+    enabled: Boolean(waveNo),
+  });
+}
+
+export function useCreateWave() {
+  const invalidate = useInvalidateWaves();
+  return useMutation({
+    mutationFn: api.createWave,
+    onSuccess: invalidate,
+  });
+}
+
+export function usePickWave() {
+  const invalidate = useInvalidateWaves();
+  return useMutation({
+    mutationFn: (waveNo: string) => api.pickWave(waveNo),
+    onSuccess: invalidate,
+  });
+}
+
+export function useCancelWave() {
+  const invalidate = useInvalidateWaves();
+  return useMutation({
+    mutationFn: (waveNo: string) => api.cancelWave(waveNo),
+    onSuccess: invalidate,
+  });
+}
+
 // ── 运营看板（M21）：五维度独立 queryKey（['dashboard', 维度]），写操作
 // 失效时 invalidateQueries({ queryKey: ['dashboard'] }) 前缀匹配全失效 ──
 

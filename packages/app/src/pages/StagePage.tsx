@@ -10,7 +10,7 @@ import { useAppNav } from '../app-nav';
 import { fmtQty } from '../lib/format';
 
 /**
- * 质检、波次、复核、打包、装车共用的清单。
+ * 质检、复核、打包、装车共用的清单。波次单独成页，用来把多张出库单收成一波。
  * 打开对应模块后，这一步在这里确认。单据页只负责跳过来。
  */
 export default function StagePage({
@@ -150,7 +150,6 @@ export default function StagePage({
 }
 
 const RECEIVED = ['received'] as const;
-const CREATED = ['created'] as const;
 const REVIEW_FROM = ['picked', 'waved', 'created'] as const;
 const PACK_FROM = ['reviewed', 'picked', 'waved', 'created'] as const;
 const LOAD_FROM = ['packed', 'reviewed', 'picked', 'waved', 'created'] as const;
@@ -166,21 +165,6 @@ export function QcPage() {
       fromStates={RECEIVED}
       to="inspected"
       action="质检"
-    />
-  );
-}
-
-export function WavePage() {
-  return (
-    <StagePage
-      title="波次"
-      subtitle="已创建的出库单在这里组波。组波后再拣货或继续往后做。"
-      offMessage="波次已关闭。新的出库单从建单直接拣货或发货。已经组波的单仍可继续。"
-      moduleId="module.wave"
-      direction="out"
-      fromStates={CREATED}
-      to="waved"
-      action="组波"
     />
   );
 }

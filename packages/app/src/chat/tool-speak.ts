@@ -59,6 +59,10 @@ const ACTION: Record<string, string> = {
   'wms.picking.close': '拣货关单',
   'wms.picking.cancel': '取消拣货单',
   'wms.picking.query': '查拣货单',
+  'wms.wave.create': '组成波次',
+  'wms.wave.pick': '按波次拣货',
+  'wms.wave.cancel': '取消波次',
+  'wms.wave.query': '查波次',
   'wms.stocktake.create': '创建盘点单',
   'wms.stocktake.count': '录入实盘',
   'wms.stocktake.close': '盘点关单',
@@ -302,6 +306,14 @@ function successTitle(
       return { title: '取消了拣货单', details: [] };
     case 'wms.picking.query':
       return { title: `查了拣货单${countSuffix(raw)}`, details: [] };
+    case 'wms.wave.create':
+      return { title: `组成了波次${textOf(args, payload, 'waveNo') ? ` ${textOf(args, payload, 'waveNo')}` : ''}`, details: [] };
+    case 'wms.wave.pick':
+      return { title: `按波次生成了拣货单${textOf(args, payload, 'pickingNo') ? ` ${textOf(args, payload, 'pickingNo')}` : ''}`, details: [] };
+    case 'wms.wave.cancel':
+      return { title: '取消了波次', details: [] };
+    case 'wms.wave.query':
+      return { title: `查了波次${countSuffix(raw)}`, details: [] };
     case 'wms.stocktake.create':
       return { title: `创建了盘点单${textOf(args, payload, 'stocktakeNo') ? ` ${textOf(args, payload, 'stocktakeNo')}` : ''}`, details: [] };
     case 'wms.stocktake.count':

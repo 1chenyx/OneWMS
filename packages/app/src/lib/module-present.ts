@@ -42,7 +42,7 @@ export const MODULE_PRESENT: Record<string, ModulePresentation> = {
   'module.asn': { name: '到货预报', line: '货没到可以先预报，到了再收' },
   'module.qc': { name: '质检', line: '收货之后必须质检，再上架' },
   'module.putaway': { name: '上架作业', line: '收货之后必须上架，再结束' },
-  'module.wave': { name: '波次', line: '出库先组波，再拣货' },
+  'module.wave': { name: '波次', line: '多张出库单合成一波，按库位一次拣完' },
   'module.picking': { name: '拣货', line: '出库先拣货，拣完是已拣货，再发货' },
   'module.review': { name: '复核', line: '拣完之后必须复核，再打包' },
   'module.pack': { name: '打包', line: '复核之后必须打包' },
@@ -93,7 +93,7 @@ const FLOW_RESULT: Record<string, { on: string; off: string }> = {
     off: '关掉后，收货后直接上架或结束。已经质检的单仍可继续',
   },
   'module.wave': {
-    on: '打开后，建单后必须先组波。组波在波次页做',
+    on: '打开后，建单后要把出库单组成波次。一波按库位一起拣。组波在波次页做',
     off: '关掉后，从建单直接拣货或发货。已经组波的单仍可继续',
   },
   'module.putaway': {

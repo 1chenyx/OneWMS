@@ -13,6 +13,8 @@ import { SyncService } from './sync/sync-service.js';
 import { ModuleRegistry } from './modules/module-registry.js';
 import { MigrationService } from './migration/migration-service.js';
 import { WorkspaceFacade } from './workspace/workspace.js';
+import { DynStore } from './dyn/dyn-store.js';
+import { syncDynTools } from './dyn/dyn-tools.js';
 
 /**
  * OneCore —— 领域无关内核入口（进程生命周期 + workspace 工厂）。
@@ -31,6 +33,11 @@ export class OneCore {
   readonly migration: MigrationService;
   /** 模块生命周期编排（进程级，M6）：manifest 目录 + 安装/卸载管线 */
   readonly #modules: ModuleRegistry;
+  /**
+   * 动态记录存储（进程级，B.2）：声明式实体的 dyn_records/dyn_index 投影。
+   * 游标是进程内状态，所以实例唯一、由核心持有，workspace 门面只拿引用。
+   */
+  readonly #dyn: DynStore;
   readonly #db: Database.Database;
   readonly #oplog: OplogStore;
   readonly #registry: FieldRegistry;
@@ -49,7 +56,26 @@ export class OneCore {
     this.#oplog = new OplogStore(db);
     this.#registry = new FieldRegistry(db, this.#oplog);
     this.#profile = new ProfileService(db, this.#oplog, this.#registry, this.#proposals);
-    this.#modules = new ModuleRegistry(nodeId, this.#oplog, this.#registry, this.#profile, this.#bus, this.#proposals);
+    // B.2 记录存储先于 ModuleRegistry 构造：它的 schema 来源是闭包
+    // （惰性求值 this.#modules，取用发生在安装/读写时，彼时注册表已就位）——
+    // 依赖经闭包 + Port 双向反转，两个服务互不 import 实现。
+    const dyn = new DynStore(db, this.#oplog, nodeId, (workspaceId) =>
+      this.#modules.installedDynRecords(workspaceId),
+    );
+    this.#dyn = dyn;
+    this.#modules = new ModuleRegistry(
+      nodeId,
+      this.#oplog,
+      this.#registry,
+      this.#profile,
+      this.#bus,
+      this.#proposals,
+      dyn,
+      // B.4：装完含声明式实体的模块，立刻按当前 workspace 的 manifest 重挂 AI 工具。
+      // 闭包里引用 this.#modules 是安全的（与上面 DynStore 的 records 闭包同理）：
+      // 它只在 install 成功后才被调用，那时构造早已完成。
+      (workspaceId) => syncDynTools(this.#bus, dyn, this.#modules.installedDynRecords(workspaceId)),
+    );
     this.sync = new SyncService(nodeId, this.#oplog, this.#profile);
     this.migration = new MigrationService(nodeId, this.#oplog, this.#profile);
     // 慢通道工具（M4）：AI 提议配置变更的唯一入口；confirm/reject 不注册——
@@ -95,6 +121,7 @@ export class OneCore {
       this.#bus,
       this.#profile,
       this.#modules,
+      this.#dyn,
     );
   }
 

@@ -46,10 +46,13 @@ export function createProfileQueryTools(
     parameters: { type: 'object', properties: {}, required: [] },
     handler: (_params, ctx) => {
       const snapshot = profile.getSnapshot(ctx.workspaceId);
-      const catalog = catalogOf(modules, snapshot);
+      // effectiveManifests = 进程目录 + 已落账的声明式模块 manifest（B.1）：
+      // 只用 listManifests 的话，声明式模块装了也对 AI 不可见（目录里没有它的条目）
+      const manifests = modules.effectiveManifests(ctx.workspaceId);
+      const catalog = catalogOf(manifests, snapshot);
       const counts = fieldCounts(fields, ctx.workspaceId);
-      const fixed = fixedRecords(modules, snapshot);
-      const names = workflowNames(modules, snapshot);
+      const fixed = fixedRecords(manifests, snapshot);
+      const names = workflowNames(manifests, snapshot);
       const brief = (item: CatalogItem) => ({ id: item.id, name: item.name, description: item.description });
       return {
         profileVersion: snapshot.version,
@@ -108,8 +111,9 @@ export function createProfileQueryTools(
     },
     handler: (params, ctx) => {
       const snapshot = profile.getSnapshot(ctx.workspaceId);
-      const nameOf = moduleNameOf(modules);
-      const names = workflowNames(modules, snapshot);
+      const manifests = modules.effectiveManifests(ctx.workspaceId);
+      const nameOf = moduleNameOf(manifests);
+      const names = workflowNames(manifests, snapshot);
       const ids = Object.keys(snapshot.workflows).sort((a, b) => a.localeCompare(b));
       const wanted = (params as { workflowId?: string }).workflowId?.trim();
       const picked = wanted ? [resolveWorkflow(wanted, ids, names)] : ids;
@@ -140,7 +144,7 @@ export function createProfileQueryTools(
     },
     handler: (params, ctx) => {
       const snapshot = profile.getSnapshot(ctx.workspaceId);
-      const catalog = catalogOf(modules, snapshot);
+      const catalog = catalogOf(modules.effectiveManifests(ctx.workspaceId), snapshot);
       const wanted = (params as { moduleId?: string }).moduleId?.trim();
       const picked = wanted ? [resolveModule(wanted, catalog)] : catalog;
       return {
@@ -173,7 +177,7 @@ export function createProfileQueryTools(
     handler: (params, ctx) => {
       const rows = fields.listFields(ctx.workspaceId);
       const extensions = [...new Set(rows.map((row) => row.entity))].sort((a, b) => a.localeCompare(b));
-      const fixed = fixedRecords(modules, profile.getSnapshot(ctx.workspaceId));
+      const fixed = fixedRecords(modules.effectiveManifests(ctx.workspaceId), profile.getSnapshot(ctx.workspaceId));
       const wanted = (params as { entity?: string }).entity?.trim();
       const ids = wanted ? [resolveEntity(wanted, extensions, fixed)] : allEntityIds(extensions, fixed);
       return {
@@ -190,8 +194,8 @@ function effectLabel(effect: WorkflowEffect | undefined): string {
   return EFFECT_LABEL[effect];
 }
 
-function moduleNameOf(registry: ModuleRegistry): (id: string) => string {
-  const names = new Map(registry.listManifests().map((manifest) => [manifest.id, manifest.name]));
+function moduleNameOf(manifests: ModuleManifest[]): (id: string) => string {
+  const names = new Map(manifests.map((manifest) => [manifest.id, manifest.name]));
   return (id) => names.get(id) ?? id;
 }
 
@@ -239,9 +243,9 @@ interface CatalogItem {
   manifest?: ModuleManifest;
 }
 
-function catalogOf(registry: ModuleRegistry, snapshot: ProfileSnapshot): CatalogItem[] {
+function catalogOf(manifests: ModuleManifest[], snapshot: ProfileSnapshot): CatalogItem[] {
   const byId = new Map<string, CatalogItem>();
-  for (const manifest of registry.listManifests()) {
+  for (const manifest of manifests) {
     byId.set(manifest.id, {
       id: manifest.id,
       name: manifest.name,
@@ -343,7 +347,7 @@ interface FixedRecord {
   label: string;
   aliases: string[];
   note: string;
-  fields: { key: string; label: string; description: string }[];
+  fields: { key: string; label: string; description: string; type?: string; queryable?: boolean }[];
 }
 
 function norm(value: string): string {
@@ -351,13 +355,12 @@ function norm(value: string): string {
 }
 
 /** 已安装模块声明的固定列。同 id 合并，列按先声明的保留。 */
-function fixedRecords(registry: ModuleRegistry, snapshot: ProfileSnapshot): FixedRecord[] {
+function fixedRecords(manifests: ModuleManifest[], snapshot: ProfileSnapshot): FixedRecord[] {
   const merged = new Map<string, FixedRecord>();
-  const manifests = registry
-    .listManifests()
+  const installed = manifests
     .filter((manifest) => snapshot.modules[manifest.id])
     .sort((a, b) => a.id.localeCompare(b.id));
-  for (const manifest of manifests) {
+  for (const manifest of installed) {
     for (const record of manifest.records ?? []) {
       const incoming = toFixedRecord(record);
       const existing = merged.get(incoming.id);
@@ -390,6 +393,9 @@ function toFixedRecord(record: ManifestRecord): FixedRecord {
       key: field.key,
       label: field.label,
       description: field.description ?? '',
+      // B.1：声明式实体的列类型/可查询标记是 AI 生成入参的依据，必须可见
+      ...(field.type !== undefined ? { type: field.type } : {}),
+      ...(field.queryable !== undefined ? { queryable: field.queryable } : {}),
     })),
   };
 }
@@ -420,13 +426,12 @@ interface WorkflowName {
   aliases: string[];
 }
 
-function workflowNames(registry: ModuleRegistry, snapshot: ProfileSnapshot): Map<string, WorkflowName> {
+function workflowNames(manifests: ModuleManifest[], snapshot: ProfileSnapshot): Map<string, WorkflowName> {
   const names = new Map<string, WorkflowName>();
-  const manifests = registry
-    .listManifests()
+  const installed = manifests
     .filter((manifest) => snapshot.modules[manifest.id])
     .sort((a, b) => a.id.localeCompare(b.id));
-  for (const manifest of manifests) {
+  for (const manifest of installed) {
     for (const [id, aliases] of Object.entries(manifest.workflowAliases ?? {})) {
       const existing = names.get(id) ?? { label: aliases[0] ?? id, aliases: [] };
       for (const alias of aliases) {

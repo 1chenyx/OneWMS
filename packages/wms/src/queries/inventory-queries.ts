@@ -392,6 +392,114 @@ function sliceRow(view: InventorySliceView, facts: SliceFact[]): InventorySliceR
   return row;
 }
 
+// ── 账实巡检（audit）─────────────────────────────────
+
+export type InventoryAuditKind =
+  | 'negative_bucket'
+  | 'projection_drift'
+  | 'order_bucket_negative'
+  | 'order_over_putaway';
+
+export interface InventoryAuditIssue {
+  kind: InventoryAuditKind;
+  /** error = 账实已经对不上，必须修；warning = 可疑，需要人看一眼 */
+  level: 'error' | 'warning';
+  message: string;
+  skuCode: string;
+  locationCode: string;
+  batchNo: string;
+  /** 出问题的单据号（order_bucket_negative / order_over_putaway 有） */
+  orderNo?: string;
+  /** 流水重算应有的量（projection_drift） */
+  expected?: number;
+  /** 投影里实际的量（projection_drift / negative_bucket） */
+  actual?: number;
+}
+
+export interface InventoryAuditReport {
+  /** 没有 error 级问题（warning 不影响） */
+  ok: boolean;
+  /** 检查的桶数（wms_inventory 行数） */
+  buckets: number;
+  errorCount: number;
+  warningCount: number;
+  issues: InventoryAuditIssue[];
+}
+
+/**
+ * 账实巡检：一次性断言库存账实相符，把「桶级看不出来的串账」也翻出来。
+ *
+ * 四条断言见 InventoryView.auditRows 的注释。这里只负责把原始行翻成人话
+ * （编码、单位、该找谁修）——不做任何写操作，修账走补偿事件（库存调整）。
+ */
+export function auditInventory(ws: WmsWorkspace): InventoryAuditReport {
+  const rows = ws.inventory.auditRows();
+  const issues: InventoryAuditIssue[] = [];
+  const skuCodeOf = (skuId: string) => ws.skus.byId(skuId)?.skuCode ?? '(未知 SKU)';
+  const locationCodeOf = (locationId: string) => codeOfLocation(ws, locationId);
+
+  for (const r of rows.negativeBuckets) {
+    issues.push({
+      kind: 'negative_bucket',
+      level: 'error',
+      message: `SKU ${skuCodeOf(r.skuId)} 在库位 ${locationCodeOf(r.locationId)} 批次 ${r.batchNo} 余量为负（${r.quantity}）——负库存防线被绕过`,
+      skuCode: skuCodeOf(r.skuId),
+      locationCode: locationCodeOf(r.locationId),
+      batchNo: r.batchNo,
+      actual: r.quantity,
+    });
+  }
+
+  for (const r of rows.drift) {
+    issues.push({
+      kind: 'projection_drift',
+      level: 'error',
+      message: `SKU ${skuCodeOf(r.skuId)} 在库位 ${locationCodeOf(r.locationId)} 批次 ${r.batchNo} 账实不符：流水重算 ${r.ledgerTotal}，投影 ${r.projection}——投影被绕过流水改了，或重放漏了事件`,
+      skuCode: skuCodeOf(r.skuId),
+      locationCode: locationCodeOf(r.locationId),
+      batchNo: r.batchNo,
+      expected: r.ledgerTotal,
+      actual: r.projection,
+    });
+  }
+
+  for (const r of rows.orderBucketNegative) {
+    issues.push({
+      kind: 'order_bucket_negative',
+      level: 'warning',
+      message: `入库单 ${r.orderNo} 的 SKU ${skuCodeOf(r.skuId)} 在库位 ${locationCodeOf(r.locationId)} 批次 ${r.batchNo} 净流出 ${Math.abs(r.net)}（收货少于上架）——重复上架或跨单挪用，会转嫁成后续单据的「余量不足」`,
+      skuCode: skuCodeOf(r.skuId),
+      locationCode: locationCodeOf(r.locationId),
+      batchNo: r.batchNo,
+      orderNo: r.orderNo,
+      actual: r.net,
+    });
+  }
+
+  for (const r of rows.orderOverPutaway) {
+    issues.push({
+      kind: 'order_over_putaway',
+      level: 'warning',
+      message: `入库单 ${r.orderNo} 的 SKU ${skuCodeOf(r.skuId)} 上架了 ${r.putaway}，但本单只收进来 ${r.received}——多出的 ${r.putaway - r.received} 是重复上架凭空写到货架上的，需按库位核对后冲销`,
+      skuCode: skuCodeOf(r.skuId),
+      locationCode: '(不限库位)',
+      batchNo: '(不限批次)',
+      orderNo: r.orderNo,
+      expected: r.received,
+      actual: r.putaway,
+    });
+  }
+
+  const errorCount = issues.filter((i) => i.level === 'error').length;
+  return {
+    ok: errorCount === 0,
+    buckets: ws.inventory.list().length,
+    errorCount,
+    warningCount: issues.length - errorCount,
+    issues,
+  };
+}
+
 function compareSliceRows(view: InventorySliceView, a: InventorySliceRow, b: InventorySliceRow): number {
   if (view === 'location') {
     return (a.locationCode ?? '').localeCompare(b.locationCode ?? '') || a.skuCode.localeCompare(b.skuCode);

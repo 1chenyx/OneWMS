@@ -8,6 +8,7 @@ import {
   type ModulesView,
   type ProfileView,
   type ToolsView,
+  type DynView,
   type WorkspaceFacade,
 } from '@one/core';
 import { migrateWms } from './db/migrations.js';
@@ -18,6 +19,7 @@ import { OrderView } from './views/order-view.js';
 import { InventoryView } from './views/inventory-view.js';
 import { StocktakeView } from './views/stocktake-view.js';
 import { PickingView } from './views/picking-view.js';
+import { WaveView } from './views/wave-view.js';
 import { WmsProjections, WMS_PROJECTION_GROUP } from './views/wms-projections.js';
 import { createWmsTools } from './tools/wms-tools.js';
 import { createPutawayTools } from './tools/putaway-tools.js';
@@ -192,6 +194,8 @@ export class WmsWorkspace {
   readonly tools: ToolsView;
   readonly profile: ProfileView;
   readonly modules: ModulesView;
+  /** 声明式实体读写面（B.2/B.3）：与内核门面同一个实例，server 路由直接从这里进 */
+  readonly dyn: DynView;
 
   /** 领域五投影 */
   readonly skus: SkuView;
@@ -201,6 +205,7 @@ export class WmsWorkspace {
   readonly inventory: InventoryView;
   readonly stocktakes: StocktakeView;
   readonly pickings: PickingView;
+  readonly waves: WaveView;
   readonly warehouses: WarehouseView;
   readonly serials: SerialView;
   readonly lpns: LpnView;
@@ -274,6 +279,7 @@ export class WmsWorkspace {
     this.tools = this.#facade.tools;
     this.profile = this.#facade.profile;
     this.modules = this.#facade.modules;
+    this.dyn = this.#facade.dyn;
     this.skus = this.#projections.skus;
     this.locations = this.#projections.locations;
     this.partners = this.#projections.partners;
@@ -281,6 +287,7 @@ export class WmsWorkspace {
     this.inventory = this.#projections.inventory;
     this.stocktakes = this.#projections.stocktakes;
     this.pickings = this.#projections.pickings;
+    this.waves = this.#projections.waves;
     this.warehouses = this.#projections.warehouses;
     this.serials = this.#projections.serials;
     this.lpns = this.#projections.lpns;

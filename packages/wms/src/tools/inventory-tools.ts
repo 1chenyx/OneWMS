@@ -21,6 +21,7 @@ import {
 import { assertLooseEnough } from '../state/lpn-policy.js';
 import { bucketReservationNotice } from '../state/reservation.js';
 import { appendSerialPlans, planQuantitySerials, rejectSerialKeyWhenOff } from '../state/serial-policy.js';
+import { auditInventory } from '../queries/inventory-queries.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
 export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
@@ -655,6 +656,20 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
     },
   };
 
+  const inventoryAudit: ToolDefinition<Record<string, never>> = {
+    id: 'wms.inventory.audit',
+    label: '账实巡检',
+    description:
+      '库存账实巡检（体检），只读不产生事件。一次性断言四件事：① 没有桶余量为负；② 投影余量 == 流水重算（谁绕过流水改了库存、重放漏事件都会暴露）；③ 没有入库单在某个桶上「净流出」（收货少于上架）——第 ③ 条专治共享库位（DEFAULT）串账：上一张单多扣，桶余量还是正的，差额转嫁成下一张单上架时报「余量不足」，只看桶查不出来；④ 没有入库单「上架量 > 收货量」——第 ④ 条专治重复上架把货凭空写到多个货架：成对 ± 流水全桶净额仍是零，③ 看不见，只有比对正向上架流量与本单收货流量才暴露（expected=收进来的量，actual=上架的量）。返回 { ok, buckets, errorCount, warningCount, issues[] }，issues 每行带 kind / level（error 必须修，warning 要人看）/ message / SKU 与库位编码 / orderNo。发现问题要修账只能用补偿事件（wms.inventory.adjust 写反向数量，reason 注明冲销哪张单），绝对不要直接改库存表——投影是流水重放出来的，改了会被覆盖。',
+    permission: 'read',
+    parameters: { type: 'object', properties: {}, required: [] },
+    handler: (_params, ctx) => {
+      const ws = resolveWorkspace(ctx.workspaceId);
+      ws.sync();
+      return auditInventory(ws);
+    },
+  };
+
   return [
     def(inventoryAdjust),
     def(inventoryMove),
@@ -665,5 +680,6 @@ export function createInventoryTools(resolveWorkspace: WorkspaceResolver): ToolD
     def(inventoryLowstock),
     def(inventoryExpiring),
     def(ledgerQuery),
+    def(inventoryAudit),
   ];
 }

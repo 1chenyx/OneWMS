@@ -279,14 +279,17 @@ describe('install：双轨落账 + 审计', () => {
       usedBy: ['module.expiry'],
     });
 
-    // 轨道 B：config（version 严格 +1、modules 段、settings 只含默认值）
+    // 轨道 B：config（version 严格 +1、modules 段、settings 只含默认值）。
+    // 本例直接 install 未经 registerManifest 注册目录——代码视为不在场，
+    // manifest 随 config 落账持久化（B.1 声明式模块语义）
     const snap = ws.profile.getSnapshot();
     expect(snap.version).toBe(1);
-    expect(snap.modules['module.expiry']).toEqual({
+    expect(snap.modules['module.expiry']).toMatchObject({
       enabled: true,
       version: '1.0.0',
       settings: { warnDaysBefore: 30 },
     });
+    expect(snap.modules['module.expiry']?.manifest).toMatchObject({ id: 'module.expiry', version: '1.0.0' });
 
     // 审计事件：payload 摘要 + actor 通道节点唯一（M5 约束）
     const installed = eventsOf(ws, 'module.installed');

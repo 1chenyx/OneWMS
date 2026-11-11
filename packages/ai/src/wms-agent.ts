@@ -4,6 +4,7 @@ import { UI_ASK_DESCRIPTION, UI_ASK_PARAM_DESCRIPTION } from './prompts.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import type { AgentDefinition } from './agent-defs.js';
 import type { AgentMemoryContext, AgentMessage, AgentToolMeta, LlmProvider } from './types.js';
+import { IDEMPOTENCY_KEY_PARAM } from '@one/core';
 
 /**
  * WMS 便利工厂：把编排循环、System Prompt、工具总线三件事绑定到一个工作区。
@@ -110,6 +111,16 @@ export function createAgentFromDef(
   const system = `${def.systemPrompt.trim()}\n\n${buildSystemPrompt(ws, options.memory)}`;
   const sessionTools = options.sessionTools ?? [];
 
+  // 幂等键只盖写工具：读工具的结果会进缓存回放，盖了键等于把陈旧数据当新答案
+  const writeToolIds = new Set(tools.filter((t) => t.permission === 'write').map((t) => t.id));
+  /** 工具执行入口——模型给的 callId 当幂等键，同一次调用重复执行只落一次账 */
+  const invoke = (toolId: string, args: Record<string, unknown>, callId?: string) =>
+    ws.tools.invoke(
+      toolId,
+      callId && writeToolIds.has(toolId) ? { ...args, [IDEMPOTENCY_KEY_PARAM]: callId } : args,
+      actor,
+    );
+
   return {
     actor,
     tools,
@@ -119,7 +130,7 @@ export function createAgentFromDef(
         // 每次任务重组快照——数据新鲜度以任务为粒度
         system,
         tools,
-        invoke: (toolId, args) => ws.tools.invoke(toolId, args, actor),
+        invoke,
         maxSteps: options.maxSteps,
         // 常驻瘦 schema；tools.load 在编排层把一组的完整说明升进下一轮
         catalog: true,
@@ -130,10 +141,10 @@ export function createAgentFromDef(
         system,
         // 会话通道附加 ui.ask（分流：编排层拦截挂起，不进工具总线）和本轮附件工具
         tools: [...tools, UI_ASK_TOOL, ...sessionTools.map((tool) => tool.meta)],
-        invoke: (toolId, args) => {
+        invoke: (toolId, args, callId) => {
           const extra = sessionTools.find((tool) => tool.meta.id === toolId);
-          if (extra) return extra.invoke(args, actor);
-          return ws.tools.invoke(toolId, args, actor);
+          if (extra) return extra.invoke(args, actor); // 会话通道工具不落账，无需幂等键
+          return invoke(toolId, args, callId);
         },
         maxSteps: options.maxSteps,
         history,

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { evalWhenCondition, type ToolDefinition } from '@one/core';
 import type { WmsWorkspace } from '../wms.js';
-import { DEFAULT_BATCH_NO, WMS_EVENT_TYPES } from '../events/catalog.js';
+import { DEFAULT_BATCH_NO, WMS_EVENT_TYPES, type PickingLinePayload } from '../events/catalog.js';
 import {
   OrderNotFoundError,
   PickingExistsError,
@@ -79,60 +79,10 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
       if (!Array.isArray(params.orderNos) || params.orderNos.length === 0) {
         throw new PickingNoOrdersError();
       }
-      const settings = readWmsSettings(ws);
-      const today = new Date().toISOString().slice(0, 10);
       const pickingId = randomUUID();
       const pickingNo = allocateCode(ws, 'picking', params.pickingNo);
       if (ws.pickings.byNo(pickingNo)) throw new PickingExistsError(pickingNo);
-      const lines: {
-        lineId: string;
-        orderId: string;
-        orderNo: string;
-        orderLineId: string;
-        skuId: string;
-        skuCode: string;
-        qtyToPick: number;
-        suggestedLocationId: string;
-        suggestedLocationCode: string;
-        suggestedBatchNo: string;
-      }[] = [];
-      for (const orderNo of params.orderNos) {
-        const order = ws.orders.byNo(orderNo);
-        if (!order) throw new OrderNotFoundError(orderNo);
-        if (order.direction !== 'out' || order.state !== 'picking') {
-          throw new PickingOrderStateError(orderNo, order.direction === 'out' ? order.state : `入库单（${order.state}）`);
-        }
-        for (const line of ws.orders.lines(order.id)) {
-          // 行键四段派生（与 OrderView 投影的行 id 同构）
-          const orderLineId = `${order.id}:${line.skuId}:${line.locationId}:${line.batchNo}`;
-          const skuCode = ws.skus.byId(line.skuId)?.skuCode ?? line.skuId;
-          let suggestedBatchNo = line.batchNo;
-          if (line.batchNo === DEFAULT_BATCH_NO && settings.defaultAllocation !== 'strict') {
-            // 虚拟批次行：按策略从行库位的余量桶建议首个（部分分配也接受——
-            // 建议桶不是硬校验，close 时以实拣桶验余量）
-            const { parts } = allocateFromBuckets(
-              ws.inventory.batchesOf(line.skuId, line.locationId),
-              line.quantity,
-              settings.defaultAllocation,
-              settings.blockExpiredOutbound,
-              today,
-            );
-            if (parts.length > 0) suggestedBatchNo = parts[0]!.batchNo;
-          }
-          lines.push({
-            lineId: `${pickingId}:${orderLineId}`,
-            orderId: order.id,
-            orderNo: order.orderNo,
-            orderLineId,
-            skuId: line.skuId,
-            skuCode,
-            qtyToPick: line.quantity,
-            suggestedLocationId: line.locationId,
-            suggestedLocationCode: codeOfLocation(ws, line.locationId),
-            suggestedBatchNo,
-          });
-        }
-      }
+      const lines = buildPickingLines(ws, pickingId, params.orderNos, 'picking');
       if (lines.length === 0) {
         throw new PickingNoOrdersError(); // 出库单全是空行（理论上建单守卫已挡）
       }
@@ -497,6 +447,56 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
   };
 
   return [def(pickingCreate), def(pickingPick), def(pickingClose), def(pickingCancel), def(pickingQuery)];
+}
+
+/**
+ * 按出库单行生成拣货单行。建议桶随事件携带。
+ * requireState 是这些单现在必须处在的状态（拣货单要求拣货中，波次放行要求已组波）。
+ */
+export function buildPickingLines(
+  ws: WmsWorkspace,
+  pickingId: string,
+  orderNos: readonly string[],
+  requireState: string,
+): PickingLinePayload[] {
+  const settings = readWmsSettings(ws);
+  const today = new Date().toISOString().slice(0, 10);
+  const lines: PickingLinePayload[] = [];
+  for (const orderNo of orderNos) {
+    const order = ws.orders.byNo(orderNo);
+    if (!order) throw new OrderNotFoundError(orderNo);
+    if (order.direction !== 'out' || order.state !== requireState) {
+      throw new PickingOrderStateError(orderNo, order.direction === 'out' ? order.state : `入库单（${order.state}）`);
+    }
+    for (const line of ws.orders.lines(order.id)) {
+      const orderLineId = `${order.id}:${line.skuId}:${line.locationId}:${line.batchNo}`;
+      const skuCode = ws.skus.byId(line.skuId)?.skuCode ?? line.skuId;
+      let suggestedBatchNo = line.batchNo;
+      if (line.batchNo === DEFAULT_BATCH_NO && settings.defaultAllocation !== 'strict') {
+        const { parts } = allocateFromBuckets(
+          ws.inventory.batchesOf(line.skuId, line.locationId),
+          line.quantity,
+          settings.defaultAllocation,
+          settings.blockExpiredOutbound,
+          today,
+        );
+        if (parts.length > 0) suggestedBatchNo = parts[0]!.batchNo;
+      }
+      lines.push({
+        lineId: `${pickingId}:${orderLineId}`,
+        orderId: order.id,
+        orderNo: order.orderNo,
+        orderLineId,
+        skuId: line.skuId,
+        skuCode,
+        qtyToPick: line.quantity,
+        suggestedLocationId: line.locationId,
+        suggestedLocationCode: codeOfLocation(ws, line.locationId),
+        suggestedBatchNo,
+      });
+    }
+  }
+  return lines;
 }
 
 function orderLineKey(

@@ -126,6 +126,8 @@ export type { OrderWithLines } from './queries/order-queries.js';
 export { toListPage } from './queries/page.js';
 export type { ListPage } from './queries/page.js';
 export { listPickingsWithLines, withPickingLines } from './queries/picking-queries.js';
+export { getWave, listWaves } from './queries/wave-queries.js';
+export type { WaveDetail, WaveOrderView, WaveSummary, WaveWalkLine } from './queries/wave-queries.js';
 export type { PickingWithLines, PickingLineWithMeta } from './queries/picking-queries.js';
 export {
   getDashboardOverview,
@@ -142,6 +144,7 @@ export type {
   AlertSummary,
 } from './queries/dashboard-queries.js';
 export {
+  auditInventory,
   getExpiryBoard,
   listHoldRows,
   listInventorySummary,
@@ -154,6 +157,9 @@ export type {
   ExpiryBoard,
   ExpiryLevel,
   HoldListRow,
+  InventoryAuditIssue,
+  InventoryAuditKind,
+  InventoryAuditReport,
   InventorySliceDetail,
   InventorySlicePage,
   InventorySliceRow,
@@ -207,6 +213,8 @@ export {
   PutawayLineNotFoundError,
   PutawayQuantityError,
   PutawaySourceShortError,
+  PutawayOrderShareError,
+  PutawayDuplicateTargetError,
   PartialDisabledError,
   PartialLineNotFoundError,
   PartialQtyExceededError,
@@ -255,6 +263,17 @@ export {
   PutawayRequiredError,
   QcRequiredError,
   WaveRequiredError,
+  WaveBatchRequiredError,
+  WaveBatchPickError,
+  WaveDisabledError,
+  WaveNotFoundError,
+  WaveExistsError,
+  WaveNoOrdersError,
+  WaveOrderStateError,
+  WaveOrderTakenError,
+  WaveNotOpenError,
+  WaveMembersMovedError,
+  WavePickUnavailableError,
   ReviewRequiredError,
   PackRequiredError,
   LoadRequiredError,

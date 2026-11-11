@@ -26,9 +26,31 @@ export { clearProjectionTables } from './projection/projection-group.js';
 export type { ProjectionGroupSpec, ProjectionTable } from './projection/projection-group.js';
 export { EventsView } from './workspace/events-view.js';
 export { FieldsView } from './workspace/fields-view.js';
-export { ToolsView } from './workspace/tools-view.js';
+export { ToolsView, IDEMPOTENCY_KEY_PARAM } from './workspace/tools-view.js';
 export { ProfileView } from './workspace/profile-view.js';
 export { ModulesView } from './workspace/modules-view.js';
+export { DynView } from './workspace/dyn-view.js';
+
+// 动态记录存储（B.2）：声明式实体的通用存取。DynStore 类不导出——
+// 实例唯一入口是 workspace().dyn（出口纪律与 OplogStore 等一致）
+export {
+  canonicalFieldValue,
+  coerceQueryValue,
+  DYN_PROJECTION_VERSION,
+  dynGroupName,
+  isDynRecordEvent,
+  LIST_LIMIT_DEFAULT,
+  LIST_LIMIT_MAX,
+  RECORD_CREATED_EVENT,
+  RECORD_DELETED_EVENT,
+  RECORD_UPDATED_EVENT,
+} from './dyn/dyn-store.js';
+export type {
+  DynListOptions,
+  DynProjectionPort,
+  DynRecordSchema,
+  DynStoredRecord,
+} from './dyn/dyn-store.js';
 
 export type { ToolContext, ToolDefinition, ToolInvocation } from './bus/tool-bus.js';
 export { validateParameters } from './bus/schema-validator.js';
@@ -107,6 +129,9 @@ export { migrate, MIN_SCHEMA_VERSION, SCHEMA_VERSION } from './db/migrations.js'
 export {
   CoreError,
   DataVersionError,
+  DynRecordConflictError,
+  DynRecordNotFoundError,
+  DynRecordValidationError,
   EventError,
   FieldConflictError,
   FieldNotFoundError,

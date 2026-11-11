@@ -678,6 +678,160 @@ export class InventoryView {
       .all(this.workspaceId) as { location_id: string; quantity: number }[];
     return rows.map((r) => ({ locationId: r.location_id, quantity: r.quantity }));
   }
+
+  /**
+   * 账实巡检的原始数据（wms.inventory.audit 查询用，只读）。
+   *
+   * 四条断言，对应几类真实事故：
+   *  ① negativeBuckets —— 桶余量为负（负库存防线被绕过）；
+   *  ② drift —— 投影 ≠ 流水重算（有人绕过 applyEvent 改了 wms_inventory，
+   *     或重放/追账漏了事件）；
+   *  ③ orderBucketNegative —— 入库单在某个桶上净流出（收货 + 少于上架 −）。
+   *     共享库位（DEFAULT）堆着多张单的货，桶余量始终为正也能被上一张单多扣，
+   *     差额转嫁成下一张单的「余量不足」——单看桶查不出来，必须按单据份额看。
+   *  ④ orderOverPutaway —— 入库单上架到货架的量 > 本单收货流入量。
+   *     上架是「−源 +目标」的一对，重复写几处目标时全桶净额仍为零（③ 看不出），
+   *     但目标桶的正流量会翻倍：货凭空多出来留在货架上。比对「正向 putaway
+   *     流量 vs 正向 order 流量」才抓得住，且不受事后补偿调整干扰。
+   */
+  auditRows(): {
+    negativeBuckets: { skuId: string; locationId: string; batchNo: string; quantity: number }[];
+    drift: {
+      skuId: string;
+      locationId: string;
+      batchNo: string;
+      ledgerTotal: number;
+      projection: number;
+    }[];
+    orderBucketNegative: {
+      orderId: string;
+      orderNo: string;
+      skuId: string;
+      locationId: string;
+      batchNo: string;
+      net: number;
+    }[];
+    orderOverPutaway: {
+      orderId: string;
+      orderNo: string;
+      skuId: string;
+      received: number;
+      putaway: number;
+    }[];
+  } {
+    const EPS = 1e-6;
+    const negativeBuckets = this.db
+      .prepare(
+        `SELECT sku_id, location_id, batch_no, quantity
+         FROM wms_inventory WHERE workspace_id = ? AND quantity < ?`,
+      )
+      .all(this.workspaceId, -EPS) as {
+      sku_id: string;
+      location_id: string;
+      batch_no: string;
+      quantity: number;
+    }[];
+
+    // 流水重算 vs 投影：双向都要比（流水有桶投影没有 = 漏应用；反之 = 凭空多出来的桶）
+    const drift = this.db
+      .prepare(
+        `SELECT s.sku_id, s.location_id, s.batch_no,
+                s.ledger_total AS ledgerTotal, COALESCE(i.quantity, 0) AS projection
+           FROM (SELECT sku_id, location_id, batch_no, SUM(delta) AS ledger_total
+                   FROM wms_inventory_ledger WHERE workspace_id = ?
+                  GROUP BY sku_id, location_id, batch_no) s
+           LEFT JOIN wms_inventory i
+             ON i.workspace_id = ? AND i.sku_id = s.sku_id
+            AND i.location_id = s.location_id AND i.batch_no = s.batch_no
+          WHERE ABS(COALESCE(i.quantity, 0) - s.ledger_total) > ?
+          UNION ALL
+         SELECT i.sku_id, i.location_id, i.batch_no, 0 AS ledgerTotal, i.quantity AS projection
+           FROM wms_inventory i
+          WHERE i.workspace_id = ? AND ABS(i.quantity) > ?
+            AND NOT EXISTS (SELECT 1 FROM wms_inventory_ledger l
+                             WHERE l.workspace_id = i.workspace_id AND l.sku_id = i.sku_id
+                               AND l.location_id = i.location_id AND l.batch_no = i.batch_no)`,
+      )
+      .all(this.workspaceId, EPS, this.workspaceId, this.workspaceId, EPS) as {
+      sku_id: string;
+      location_id: string;
+      batch_no: string;
+      ledgerTotal: number;
+      projection: number;
+    }[];
+
+    // 只查入库单：出库单发货本来就是净流出，负数是常态
+    const orderBucketNegative = this.db
+      .prepare(
+        `SELECT l.order_id AS orderId, o.order_no AS orderNo,
+                l.sku_id, l.location_id, l.batch_no, SUM(l.delta) AS net
+           FROM wms_inventory_ledger l
+           JOIN wms_order o ON o.id = l.order_id AND o.workspace_id = l.workspace_id
+          WHERE l.workspace_id = ? AND l.order_id IS NOT NULL AND o.direction = 'in'
+          GROUP BY l.order_id, o.order_no, l.sku_id, l.location_id, l.batch_no
+         HAVING SUM(l.delta) < ?`,
+      )
+      .all(this.workspaceId, -EPS) as {
+      orderId: string;
+      orderNo: string;
+      sku_id: string;
+      location_id: string;
+      batch_no: string;
+      net: number;
+    }[];
+
+    // 正向 putaway 流量 vs 正向 order 流量（收货）：上架多于收进来的 = 重复上架虚增。
+    // 只取正流量，成对的 −源 侧天然抵消；事后补偿调整（reason 不是这两类）不参与。
+    const orderOverPutaway = this.db
+      .prepare(
+        `SELECT l.order_id AS orderId, o.order_no AS orderNo, l.sku_id,
+                SUM(CASE WHEN l.reason LIKE 'order:%' AND l.delta > 0 THEN l.delta ELSE 0 END) AS received,
+                SUM(CASE WHEN l.reason LIKE 'putaway:%' AND l.delta > 0 THEN l.delta ELSE 0 END) AS putaway
+           FROM wms_inventory_ledger l
+           JOIN wms_order o ON o.id = l.order_id AND o.workspace_id = l.workspace_id
+          WHERE l.workspace_id = ? AND l.order_id IS NOT NULL AND o.direction = 'in'
+          GROUP BY l.order_id, o.order_no, l.sku_id
+         HAVING putaway - received > ?`,
+      )
+      .all(this.workspaceId, EPS) as {
+      orderId: string;
+      orderNo: string;
+      sku_id: string;
+      received: number;
+      putaway: number;
+    }[];
+
+    return {
+      negativeBuckets: negativeBuckets.map((r) => ({
+        skuId: r.sku_id,
+        locationId: r.location_id,
+        batchNo: r.batch_no,
+        quantity: r.quantity,
+      })),
+      drift: drift.map((r) => ({
+        skuId: r.sku_id,
+        locationId: r.location_id,
+        batchNo: r.batch_no,
+        ledgerTotal: r.ledgerTotal,
+        projection: r.projection,
+      })),
+      orderBucketNegative: orderBucketNegative.map((r) => ({
+        orderId: r.orderId,
+        orderNo: r.orderNo,
+        skuId: r.sku_id,
+        locationId: r.location_id,
+        batchNo: r.batch_no,
+        net: r.net,
+      })),
+      orderOverPutaway: orderOverPutaway.map((r) => ({
+        orderId: r.orderId,
+        orderNo: r.orderNo,
+        skuId: r.sku_id,
+        received: r.received,
+        putaway: r.putaway,
+      })),
+    };
+  }
 }
 
 function exceptClause(exceptOrderIds: readonly string[]): { sql: string; params: string[] } {

@@ -18,6 +18,7 @@ import {
   type AiConfigCatalog,
 } from './ai-config-store.js';
 import { createPeerStore, type PeerStore } from './sync/peer-store.js';
+import { ConfirmGate } from './tool-confirm.js';
 
 /**
  * 宿主装配（AppContext）——把内核/领域/AI 组合成一个进程级单例。
@@ -69,6 +70,11 @@ export interface AppContext {
   readonly backupKeep: number;
   /** 已配对同步节点清单（扫码组网；path=null 时只在进程内有效） */
   readonly peers: PeerStore;
+  /**
+   * 写操作二次确认闸门（B.5）：通用工具端点在这里签发/校验待确认令牌。
+   * 进程内存态，重启即清空——令牌是分钟级 UI 状态，不是业务真相。
+   */
+  readonly confirmations: ConfirmGate;
   /** 本次启动的升级闸门结论（fresh/same/upgrade；downgrade 直接抛错，装不出 ctx） */
   readonly upgradeGate: UpgradeGateReport;
   /** 实际监听端口（serve 回调写入；null = 未起端口的宿主，如测试 app.request） */
@@ -104,6 +110,11 @@ export function createAppContext(options: {
   backupKeep?: number;
   /** 缺省纯内存清单（测试宿主不落盘）；真实宿主传 resolvePeersPath(dbPath) */
   peersPath?: string | null;
+  /**
+   * 写操作确认令牌的有效期（毫秒）。缺省 CONFIRM_TOKEN_TTL_MS（5 分钟）。
+   * 测试注入极小值以复现「令牌过期」——与 appVersion 同属测试注入位。
+   */
+  confirmTokenTtlMs?: number;
   /**
    * 当前程序版本（升级闸门的比对基准）；传 null = 强制关闭闸门。
    * 缺省 = resolveAppVersion()：ONE_APP_VERSION（桌面壳注入）> 本包 package.json。
@@ -148,6 +159,7 @@ export function createAppContext(options: {
     backupIntervalMs: options.backupIntervalMs ?? DEFAULT_BACKUP_INTERVAL_MS,
     backupKeep: options.backupKeep ?? DEFAULT_BACKUP_KEEP,
     peers: createPeerStore(options.peersPath ?? null),
+    confirmations: new ConfirmGate(options.confirmTokenTtlMs),
     upgradeGate,
     listeningPort: null,
     applyAiConfig(config, source) {

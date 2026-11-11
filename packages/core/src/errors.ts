@@ -123,6 +123,29 @@ export class ModuleDependencyError extends CoreError {
   }
 }
 
+// ── 声明式记录存储（B.2）─────────────────────────────────
+
+/** 实体未声明 / 记录不存在（所属模块未安装、模块卸载后、recordId 不在场） */
+export class DynRecordNotFoundError extends CoreError {
+  constructor(message: string) {
+    super('DYN_RECORD_NOT_FOUND', message);
+  }
+}
+
+/** 记录写入冲突：重复创建、乐观版本号过期 */
+export class DynRecordConflictError extends CoreError {
+  constructor(message: string) {
+    super('DYN_RECORD_CONFLICT', message);
+  }
+}
+
+/** 记录入参校验未通过（未声明字段、类型不匹配、recordId 非法、过滤非 queryable 字段） */
+export class DynRecordValidationError extends CoreError {
+  constructor(message: string) {
+    super('DYN_RECORD_VALIDATION', message);
+  }
+}
+
 // ── 迁移（里程碑 7）────────────────────────────────────
 
 /** 迁移包结构非法 / workspaceId 不一致（跨工作区拒绝） */

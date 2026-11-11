@@ -50,6 +50,8 @@ export interface InitialFilter {
   orderNo?: string;
   /** 托盘页：打开时选中这个托盘 */
   lpnCode?: string;
+  /** 拣货页：打开这张已经生成的拣货单 */
+  pickingNo?: string;
 }
 
 interface AppNavValue {

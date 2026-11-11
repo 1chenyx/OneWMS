@@ -5,12 +5,16 @@ import { join } from 'node:path';
 import { OneCore, type PatchOp } from '@one/core';
 import {
   WmsDomain,
+  WMS_EVENT_TYPES,
   InvalidTransitionError,
   PutawayRequiredError,
+  PutawayDuplicateTargetError,
   PutawayLineNotFoundError,
   PutawayOnlyInboundError,
+  PutawayOrderShareError,
   PutawayQuantityError,
   PutawaySourceShortError,
+  type InventoryAuditReport,
 } from '../src/index.js';
 
 /**
@@ -300,5 +304,229 @@ describe('上架：守卫（拒绝路径零事件）', () => {
     ).rejects.toThrow(PutawayQuantityError);
     expect(countEvents()).toBe(before);
     expect(ws.orders.byNo(orderNo)!.state).toBe('received');
+  });
+});
+
+/**
+ * 跨单据串账防线（IN-20261111-0008 复盘）。
+ *
+ * 事故形态：上一张单上架时把同一处写了两遍，多落一对 ± 流水，共享库位
+ * DEFAULT 被多扣；桶余量始终为正（还有别的单的货），负库存防线不响，
+ * 差额转嫁成下一张单上架时的「余量不足」。三道防线：
+ *  ① 重复目标显式拒绝；② 按单据份额校验（本单收货 − 已上架）；③ 幂等键。
+ */
+describe('上架：跨单据串账防线', () => {
+  const skuId = () => ws.skus.byCode('A-1')!.id;
+  const atDefault = () => ws.inventory.quantityOf(skuId(), 'DEFAULT', 'DEFAULT');
+
+  /** 建一张入库单并收货（qty 件落 DEFAULT/DEFAULT） */
+  async function receivedOrderQty(quantity: number): Promise<string> {
+    const r = (await ws.tools.invoke('wms.order.create', {
+      direction: 'in',
+      lines: [{ skuCode: 'A-1', quantity }],
+    })) as { orderNo: string };
+    await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'received' });
+    return r.orderNo;
+  }
+
+  it('① 同一处重复写两遍目标 → 整单拒绝、零事件、桶一件不少', async () => {
+    const orderNo = await receivedOrder();
+    const before = countEvents();
+    await expect(
+      ws.tools.invoke('wms.order.putaway', {
+        orderNo,
+        targets: [
+          { skuCode: 'A-1', toLocationCode: 'A-01', quantity: 4 },
+          { skuCode: 'A-1', toLocationCode: 'A-01', quantity: 4 },
+        ],
+      }),
+    ).rejects.toThrow(PutawayDuplicateTargetError);
+    expect(countEvents()).toBe(before);
+    expect(ws.orders.byNo(orderNo)!.state).toBe('received');
+    expect(atDefault()).toBe(10);
+  });
+
+  it('② 上一张单被挡住后，共享 DEFAULT 的下一张单整行上架照常成功', async () => {
+    const first = await receivedOrderQty(12);
+    const second = await receivedOrderQty(5);
+    expect(atDefault()).toBe(17);
+
+    await expect(
+      ws.tools.invoke('wms.order.putaway', {
+        orderNo: first,
+        targets: [
+          { skuCode: 'A-1', toLocationCode: 'A-01', quantity: 12 },
+          { skuCode: 'A-1', toLocationCode: 'A-01', quantity: 12 },
+        ],
+      }),
+    ).rejects.toThrow(PutawayDuplicateTargetError);
+
+    // 第二张单只搬自己那 5 件：第一张单的 12 件仍留在 DEFAULT
+    await ws.tools.invoke('wms.order.putaway', {
+      orderNo: second,
+      targets: [{ skuCode: 'A-1', toLocationCode: 'A-01' }],
+    });
+    expect(atDefault()).toBe(12);
+    expect(ws.inventory.quantityOf(skuId(), ws.locations.byCode('A-01')!.id, 'DEFAULT')).toBe(5);
+    expect(ws.orders.byNo(second)!.state).toBe('putaway');
+  });
+
+  it('③ 超过本单份额（收货被挂本单的调整冲掉）→ PutawayOrderShareError 指名本单', async () => {
+    const orderNo = await receivedOrder();
+    // 挂本单的调整冲掉 4 件：桶余量 6，本单份额也只剩 6
+    await ws.tools.invoke('wms.inventory.adjust', {
+      skuCode: 'A-1',
+      delta: -4,
+      orderNo,
+      reason: 'test',
+    });
+    await expect(
+      ws.tools.invoke('wms.order.putaway', {
+        orderNo,
+        targets: [{ skuCode: 'A-1', toLocationCode: 'A-01' }],
+      }),
+    ).rejects.toThrow(PutawayOrderShareError);
+    expect(ws.orders.byNo(orderNo)!.state).toBe('received');
+  });
+
+  it('④ 幂等键：同一笔上架重复提交只落一次账，第二次回放首次结果', async () => {
+    const orderNo = await receivedOrder();
+    const params = {
+      orderNo,
+      targets: [{ skuCode: 'A-1', toLocationCode: 'A-01' }],
+      idempotencyKey: 'putaway-once',
+    };
+    const first = await ws.tools.invoke('wms.order.putaway', params);
+    const afterFirst = countEvents();
+
+    // 双击 / AI 重试：同键回放，不再进 handler（不进状态机、不落事件）
+    const replayed = await ws.tools.invoke('wms.order.putaway', { ...params });
+    expect(replayed).toEqual(first);
+    expect(countEvents()).toBe(afterFirst);
+    expect(ws.inventory.quantityOf(skuId(), ws.locations.byCode('A-01')!.id, 'DEFAULT')).toBe(10);
+
+    // 换个键就是新的一笔——撞上已上架的状态机，证明上面是幂等键救的
+    await expect(
+      ws.tools.invoke('wms.order.putaway', { ...params, idempotencyKey: 'putaway-twice' }),
+    ).rejects.toThrow(InvalidTransitionError);
+    expect(countEvents()).toBe(afterFirst);
+  });
+});
+
+describe('账实巡检（wms.inventory.audit）', () => {
+  it('正常收货 + 上架后账实相符 → ok，零问题', async () => {
+    const r = (await ws.tools.invoke('wms.order.create', {
+      direction: 'in',
+      lines: [{ skuCode: 'A-1', quantity: 10 }],
+    })) as { orderNo: string };
+    await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'received' });
+    await ws.tools.invoke('wms.order.putaway', {
+      orderNo: r.orderNo,
+      targets: [{ skuCode: 'A-1', toLocationCode: 'A-01' }],
+    });
+
+    const report = (await ws.tools.invoke('wms.inventory.audit', {})) as InventoryAuditReport;
+    expect(report.ok).toBe(true);
+    expect(report.errorCount).toBe(0);
+    expect(report.warningCount).toBe(0);
+    expect(report.issues).toEqual([]);
+    expect(report.buckets).toBeGreaterThan(0);
+  });
+
+  it('入库单在某桶净流出（挪用了别的单的货）→ warning 指名挪用的那张单', async () => {
+    const skuId = ws.skus.byCode('A-1')!.id;
+    const receive = async (quantity: number) => {
+      const r = (await ws.tools.invoke('wms.order.create', {
+        direction: 'in',
+        lines: [{ skuCode: 'A-1', quantity }],
+      })) as { orderNo: string };
+      await ws.tools.invoke('wms.order.transition', { orderNo: r.orderNo, to: 'received' });
+      return r.orderNo;
+    };
+    const thief = await receive(10);
+    const victim = await receive(10);
+    // 挂在 thief 名下的调整多扣 4：桶余量 16 仍为正，thief 在 DEFAULT 净流出 4
+    await ws.tools.invoke('wms.inventory.adjust', {
+      skuCode: 'A-1',
+      delta: -14,
+      orderNo: thief,
+      reason: '冲销重复上架',
+    });
+
+    const report = (await ws.tools.invoke('wms.inventory.audit', {})) as InventoryAuditReport;
+    expect(report.ok).toBe(true);
+    expect(report.errorCount).toBe(0);
+    expect(report.warningCount).toBe(1);
+    expect(report.issues[0]).toMatchObject({
+      kind: 'order_bucket_negative',
+      level: 'warning',
+      orderNo: thief,
+      skuCode: 'A-1',
+      locationCode: 'DEFAULT',
+      batchNo: 'DEFAULT',
+    });
+
+    // 受害方只能报「余量不足」（桶 6 < 本单 10），指不出是谁挪的——巡检能
+    await expect(
+      ws.tools.invoke('wms.order.putaway', {
+        orderNo: victim,
+        targets: [{ skuCode: 'A-1', toLocationCode: 'A-01' }],
+      }),
+    ).rejects.toThrow(PutawaySourceShortError);
+    expect(ws.inventory.quantityOf(skuId, 'DEFAULT', 'DEFAULT')).toBe(6);
+  });
+
+  it('重复上架的虚增留在货架上（源桶已补偿）→ ④ order_over_putaway 仍能揪出来', async () => {
+    const orderNo = await receivedOrder();
+    const order = ws.orders.byNo(orderNo)!;
+    const skuId = ws.skus.byCode('A-1')!.id;
+    const a01 = ws.locations.byCode('A-01')!.id;
+    await ws.tools.invoke('wms.order.putaway', {
+      orderNo,
+      targets: [{ skuCode: 'A-1', toLocationCode: 'A-01' }],
+    });
+
+    // 旧代码留下的重复上架：同一份货又写了一对 ± 流水（新代码已挡，这里直接造账）
+    const reason = `putaway:${orderNo}`;
+    for (const [delta, locationId, locationCode] of [
+      [-10, 'DEFAULT', 'DEFAULT'],
+      [10, a01, 'A-01'],
+    ] as const) {
+      ws.events.append(WMS_EVENT_TYPES.inventoryAdjusted, {
+        skuId,
+        skuCode: 'A-1',
+        delta,
+        reason,
+        locationId,
+        locationCode,
+        batchNo: 'DEFAULT',
+        orderId: order.id,
+        orderNo,
+      });
+    }
+    // 源桶被多扣的部分已用补偿事件补回 → ③（桶净流出）看不出问题，虚增仍在 A-01
+    await ws.tools.invoke('wms.inventory.adjust', {
+      skuCode: 'A-1',
+      delta: 10,
+      orderNo,
+      reason: '冲销重复上架多扣',
+    });
+    ws.sync();
+
+    const report = (await ws.tools.invoke('wms.inventory.audit', {})) as InventoryAuditReport;
+    expect(report.ok).toBe(true);
+    expect(report.errorCount).toBe(0);
+    expect(report.issues.filter((i) => i.kind === 'order_bucket_negative')).toEqual([]);
+    expect(report.issues).toEqual([
+      expect.objectContaining({
+        kind: 'order_over_putaway',
+        level: 'warning',
+        orderNo,
+        skuCode: 'A-1',
+        expected: 10, // 本单收进来的
+        actual: 20, // 本单写到货架上的
+      }),
+    ]);
+    expect(ws.inventory.quantityOf(skuId, a01, 'DEFAULT')).toBe(20);
   });
 });

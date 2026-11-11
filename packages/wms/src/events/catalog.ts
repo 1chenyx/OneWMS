@@ -43,6 +43,8 @@ export const WMS_EVENT_TYPES = {
   pickingCreated: 'wms.picking.created',
   pickingPicked: 'wms.picking.picked',
   pickingStateChanged: 'wms.picking.state_changed',
+  waveCreated: 'wms.wave.created',
+  waveStateChanged: 'wms.wave.state_changed',
 } as const;
 
 export type WmsEventType = (typeof WMS_EVENT_TYPES)[keyof typeof WMS_EVENT_TYPES];
@@ -501,4 +503,31 @@ export interface PickingStateChangedPayload {
   readonly pickingNo: string;
   readonly from: string;
   readonly to: string;
+}
+
+// ── 波次（wave）payload ───────────────────────────────────────
+
+export interface WaveOrderPayload {
+  readonly orderId: string;
+  readonly orderNo: string;
+}
+
+/**
+ * 波次诞生：多张已创建的出库单收进同一波。
+ * 每张单另写 order.state_changed 到 waved。组波不动库存。
+ */
+export interface WaveCreatedPayload {
+  readonly waveId: string;
+  readonly waveNo: string;
+  readonly orders: readonly WaveOrderPayload[];
+  readonly note?: string;
+}
+
+/** open → picking（带上生成的拣货单号）或 canceled。 */
+export interface WaveStateChangedPayload {
+  readonly waveId: string;
+  readonly waveNo: string;
+  readonly from: string;
+  readonly to: string;
+  readonly pickingNo?: string;
 }

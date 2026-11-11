@@ -1,16 +1,22 @@
 import type { ErrorHandler } from 'hono';
 import { CoreError } from '@one/core';
+import { ConfirmTokenError } from './tool-confirm.js';
 
 /**
  * core 错误 code → HTTP 状态码映射（唯一对照表）。
  * 前端按响应体 { code, message } 的 code 分支提示文案，不 parse message。
  */
 const STATUS_BY_CODE: Record<string, 404 | 409 | 422> = {
+  TOOL_NOT_FOUND: 404, // 通用工具端点（B.5）：工具不在总线上 = 没这东西，不是入参写错
   PROPOSAL_NOT_FOUND: 404,
   PROPOSAL_STALE: 409, // 新鲜度：报告所见 ≠ 应用所得，请让 AI 重新提议
   PROPOSAL_STATE: 409, // 终态不可逆（已确认/已拒绝）
   PROFILE_VALIDATION: 422,
   KEY_EXISTS: 409, // 工作区密钥已存在（换密钥会使存量密文不可解，M7）
+  // 声明式记录端点（B.3）：白名单外/记录不存在 → 404，乐观并发撞版本 → 409，列校验不过 → 422
+  DYN_RECORD_NOT_FOUND: 404,
+  DYN_RECORD_CONFLICT: 409,
+  DYN_RECORD_VALIDATION: 422,
 };
 
 /** 列表分页参数不合法。不是领域错误，单独映射 400。 */
@@ -25,6 +31,11 @@ export class BadQueryError extends Error {
 export const apiErrorHandler: ErrorHandler = (err, c) => {
   if (err instanceof BadQueryError) {
     return c.json({ code: err.code, message: err.message }, 400);
+  }
+  // 确认令牌失效（B.5）：不是「参数写错」而是「这次确认作废了」，
+  // 409 让前端知道该重新发起而不是原地改参数重试。
+  if (err instanceof ConfirmTokenError) {
+    return c.json({ code: err.code, message: err.message }, 409);
   }
   if (err instanceof CoreError) {
     const status = STATUS_BY_CODE[err.code] ?? 400; // 工具/领域错误统一 400（快通道护栏语义）

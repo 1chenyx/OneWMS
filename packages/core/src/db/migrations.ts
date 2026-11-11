@@ -8,9 +8,11 @@ import { DataVersionError } from '../errors.js';
  *  - oplog / oplog_counters —— DESIGN.md §8.1/§8.2 事件账本与双时钟；
  *  - field_registry / field_usage —— §7.1 全局字段注册表（owner/usedBy）；
  *  - profile_state —— §8.2 config.change 事件的投影（慢通道，里程碑 4）；
+ *  - dyn_records / dyn_index —— B.2 声明式模块的通用记录存储（单表 JSON + 独立索引表）；
+ *  - tool_idempotency —— 写工具幂等键 → 首次结果缓存（调用层去重，非投影）；
  *  - meta —— 节点身份等运行时元数据。
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 6;
 
 /**
  * 本代码还能打开的最低表结构版本（读旧写新的下界）。
@@ -62,6 +64,13 @@ export function migrate(db: SqliteDatabase): void {
         ON oplog (workspace_id, created_at);
     `);
 
+    // ── v6：给事件盖上「写入时的应用版本」（排查用，见 EventEnvelope.appVersion）──
+    //    老库 oplog 已存在，CREATE IF NOT EXISTS 不会补列 → 显式 guarded ALTER（幂等）
+    const oplogCols = db.prepare(`PRAGMA table_info(oplog)`).all() as { name: string }[];
+    if (!oplogCols.some((c) => c.name === 'app_version')) {
+      db.exec(`ALTER TABLE oplog ADD COLUMN app_version TEXT`);
+    }
+
     // ── 双时钟水位（事务内 UPSERT 递增，见 OplogStore）──
     db.exec(`
       CREATE TABLE IF NOT EXISTS oplog_counters (
@@ -107,6 +116,50 @@ export function migrate(db: SqliteDatabase): void {
         workflows    TEXT    NOT NULL DEFAULT '{}',
         modules      TEXT    NOT NULL DEFAULT '{}',
         roles        TEXT    NOT NULL DEFAULT '{}'
+      );
+    `);
+
+    // ── 声明式模块的通用记录存储（B.2）：单表 JSON + 独立索引表 ──
+    // 可移植 SQL 纪律（§6）：不写 SQLite 方言——无生成列、无 JSON 取值函数，
+    // Postgres 同样成立。dyn_records.data 存 JSON 文本（列类型 TEXT 两边通用）；
+    // dyn_index 只为 manifest 声明 queryable:true 的字段落行，
+    // (workspace_id, module_id, record_type, field_key, field_value) 是 B.3 过滤查询的索引。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS dyn_records (
+        workspace_id TEXT    NOT NULL,
+        module_id    TEXT    NOT NULL,
+        record_type  TEXT    NOT NULL,
+        record_id    TEXT    NOT NULL,
+        data         TEXT    NOT NULL,
+        created_at   TEXT    NOT NULL,
+        updated_at   TEXT    NOT NULL,
+        version      INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, module_id, record_type, record_id)
+      );
+      CREATE TABLE IF NOT EXISTS dyn_index (
+        workspace_id TEXT NOT NULL,
+        module_id    TEXT NOT NULL,
+        record_type  TEXT NOT NULL,
+        record_id    TEXT NOT NULL,
+        field_key    TEXT NOT NULL,
+        field_value  TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, module_id, record_type, record_id, field_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_dyn_index_query
+        ON dyn_index (workspace_id, module_id, record_type, field_key, field_value);
+    `);
+
+    // ── 写工具幂等（v6）：调用方带 idempotencyKey 时，同键二次提交直接回放首次结果，
+    //    不再进 handler——UI 双击、AI 重试、网络重发都不会把同一笔业务落两遍账。
+    //    不是事件表：只是调用层缓存，删了不影响任何投影（真相仍在 oplog）。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tool_idempotency (
+        workspace_id TEXT NOT NULL,
+        tool_id      TEXT NOT NULL,
+        idem_key     TEXT NOT NULL,
+        result_json  TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, tool_id, idem_key)
       );
     `);
 

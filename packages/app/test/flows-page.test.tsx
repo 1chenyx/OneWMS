@@ -107,10 +107,22 @@ afterEach(() => {
 });
 
 describe('流程页', () => {
-  it('入库和出库画在同一页，仓库能力不出现', () => {
+  it('左边是流程列表，右边只显示点中的那一条', async () => {
+    const user = userEvent.setup();
     render(wrap(<FlowsPage />));
+    expect(screen.getByRole('button', { name: /入库/ })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('button', { name: /出库/ })).not.toHaveAttribute('aria-current');
     expect(chartNodes('inbound').map((node) => node.label)).toEqual(['建单', '预报', '收货', '质检', '上架', '完成']);
     expect(chartNodes('inbound').every((node) => node.active === 'true')).toBe(true);
+    expect(document.querySelector('[data-testid="outbound-chart"]')).not.toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: '预报' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: '质检' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: '收货：按实数' })).toBeChecked();
+    expect(screen.queryByRole('switch', { name: '波次' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /出库/ }));
+    expect(screen.getByRole('button', { name: /出库/ })).toHaveAttribute('aria-current', 'true');
+    expect(document.querySelector('[data-testid="inbound-chart"]')).not.toBeInTheDocument();
     expect(chartNodes('outbound').map((node) => node.label)).toEqual([
       '建单',
       '波次',
@@ -122,8 +134,6 @@ describe('流程页', () => {
       '发货',
       '完成',
     ]);
-    expect(screen.getByRole('switch', { name: '预报' })).toBeChecked();
-    expect(screen.getByRole('switch', { name: '质检' })).toBeChecked();
     expect(screen.getByRole('switch', { name: '波次' })).toBeChecked();
     expect(screen.getByRole('switch', { name: /^拣货$/ })).toBeChecked();
     expect(screen.getByRole('switch', { name: '复核' })).toBeChecked();
@@ -131,15 +141,17 @@ describe('流程页', () => {
     expect(screen.getByRole('switch', { name: '装车' })).toBeChecked();
     expect(screen.queryByRole('switch', { name: '已拣货' })).not.toBeInTheDocument();
     expect(screen.getByRole('switch', { name: '拣货：占库存' })).toBeChecked();
-    expect(screen.getByRole('switch', { name: '收货：按实数' })).toBeChecked();
     expect(screen.getByRole('switch', { name: '发货：可冲销' })).toBeChecked();
     expect(screen.queryByRole('switch', { name: '序列号' })).not.toBeInTheDocument();
     expect(screen.queryByText('仓储基础')).not.toBeInTheDocument();
     expect(screen.queryByText('退货')).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '出库规则' })).not.toBeInTheDocument();
     const chart = document.querySelector('[data-testid="outbound-chart"]');
-    expect(chart?.parentElement?.classList.contains('chart-scroll')).toBe(true);
-    expect(document.querySelector('.flow-page style')?.textContent).toContain('flex-wrap: nowrap');
+    expect(chart?.parentElement?.classList.contains('flow-detail')).toBe(false);
+    expect(chart?.closest('.flow-detail')).toBeTruthy();
+    const style = document.querySelector('.flow-page style')?.textContent ?? '';
+    expect(style).toContain('flex-direction: column');
+    expect(style).toContain('overflow-y: auto');
   });
 
   it('关掉预报后箭头从建单绕到收货，生效后才提交', async () => {
@@ -195,6 +207,7 @@ describe('流程页', () => {
     });
     const user = userEvent.setup();
     render(wrap(<FlowsPage />));
+    await user.click(screen.getByRole('button', { name: /出库/ }));
 
     await user.click(screen.getByRole('switch', { name: /^拣货$/ }));
     expect(harness.proposeMock).toHaveBeenCalledWith({

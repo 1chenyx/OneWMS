@@ -22,8 +22,10 @@ export const PINNED_TOOL_IDS = ['wms.inventory.query', 'wms.sku.resolve'] as con
 /**
  * 超过这个数量才延迟暴露未加载的组。
  * 取在「五十到八十」之间：再少会让小模型多付一轮，再多则整份 schema 重新变重。
+ * 这是个悬崖值——总线工具数一越过它，所有未加载组立刻都要先 tools.load，
+ * 每次加工具都得回头看一眼余量（当前 65 个）。
  */
-export const TOOL_CATALOG_DEFER_AT = 64;
+export const TOOL_CATALOG_DEFER_AT = 80;
 
 const SUMMARY_MAX = 80;
 const STRUCT_DESC_MAX = 80;

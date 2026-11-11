@@ -119,6 +119,40 @@ export interface Picking {
   lines: PickingLine[];
 }
 
+export interface WaveSummary {
+  id: string;
+  waveNo: string;
+  /** open 待拣 / picking 已生成拣货单 / canceled 已取消 */
+  state: string;
+  note: string | null;
+  pickingNo: string | null;
+  orderNos: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WaveWalkLine {
+  locationCode: string;
+  skuCode: string;
+  skuName: string;
+  unit: string | null;
+  batchNo: string;
+  quantity: number;
+  orders: { orderNo: string; quantity: number }[];
+}
+
+export interface WaveDetail {
+  id: string;
+  waveNo: string;
+  state: string;
+  note: string | null;
+  pickingNo: string | null;
+  createdAt: string;
+  updatedAt: string;
+  orders: { orderId: string; orderNo: string; state: string; partnerName: string | null }[];
+  walk: WaveWalkLine[];
+}
+
 export interface PickingLine {
   id: string;
   orderId: string;
@@ -692,6 +726,23 @@ export const wmsApi = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  waves: () => request<WaveSummary[]>('/api/waves'),
+  wave: (waveNo: string) => request<WaveDetail>(`/api/waves/${encodeURIComponent(waveNo)}`),
+  createWave: (body: { orderNos: string[]; note?: string; waveNo?: string }) =>
+    request<{ waveId: string; waveNo: string; state: string; orderNos: string[] }>('/api/waves', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  pickWave: (waveNo: string) =>
+    request<{ waveNo: string; state: string; pickingNo: string; orderNos: string[]; lineCount: number }>(
+      `/api/waves/${encodeURIComponent(waveNo)}/pick`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  cancelWave: (waveNo: string) =>
+    request<{ waveNo: string; state: string; orderNos: string[] }>(
+      `/api/waves/${encodeURIComponent(waveNo)}/cancel`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
   // ── 运营看板（M21）：五维度各自独立端点 ──
   dashboardOverview: () => request<DashboardOverview>('/api/dashboard/overview'),
   dashboardFlowTrend: (days = 14) =>

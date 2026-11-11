@@ -53,8 +53,12 @@ export interface RunAgentDeps {
   provider: LlmProvider;
   system: string;
   tools: AgentToolMeta[];
-  /** 工具执行入口（绑定 workspace 与 actor——审计在 ToolsView 落 oplog） */
-  invoke: (toolId: string, args: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * 工具执行入口（绑定 workspace 与 actor——审计在 ToolsView 落 oplog）。
+   * callId 是模型给这次调用的编号，实现方可拿它当幂等键（同一次调用重复执行
+   * 只落一次账）；编排层自己不重试，透传即可。
+   */
+  invoke: (toolId: string, args: Record<string, unknown>, callId?: string) => Promise<unknown>;
   /** 编排步数上限，默认 8 */
   maxSteps?: number;
   /**
@@ -106,7 +110,7 @@ export async function runAgent(userText: string, deps: RunAgentDeps): Promise<Ag
       }
       let result: ToolCallResult;
       try {
-        const payload = await invoke(call.toolId, call.args);
+        const payload = await invoke(call.toolId, call.args, call.callId);
         result = { callId: call.callId, toolId: call.toolId, ok: true, payload };
       } catch (err) {
         const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -233,7 +237,7 @@ export async function* streamAgent(
       yield { type: 'tool-call', callId: call.callId, toolId: call.toolId, args: call.args };
       let result: ToolCallResult;
       try {
-        const payload = await invoke(call.toolId, call.args);
+        const payload = await invoke(call.toolId, call.args, call.callId);
         result = { callId: call.callId, toolId: call.toolId, ok: true, payload };
       } catch (err) {
         const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);

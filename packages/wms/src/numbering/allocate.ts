@@ -24,6 +24,8 @@ export function codesFor(ws: WmsWorkspace, place: NumberPlaceId): string[] {
   switch (place) {
     case 'picking':
       return ws.pickings.list().map((row) => row.pickingNo);
+    case 'wave':
+      return ws.waves.list().map((row) => row.waveNo);
     case 'stocktake':
       return ws.stocktakes.list().map((row) => row.stocktakeNo);
     case 'sku':

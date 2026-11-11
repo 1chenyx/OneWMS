@@ -33,14 +33,15 @@ import { useAppNav } from '../app-nav';
 export default function PickingsPage() {
   const { message } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
-  const [pendingOrderNo] = useState(() => takeInitialFilter()?.orderNo ?? '');
+  const [pending] = useState(() => takeInitialFilter() ?? {});
+  const pendingOrderNo = pending.orderNo ?? '';
   const snapshot = useProfileSnapshot();
   const pickingOff = snapshot.data?.modules['module.picking']?.enabled === false;
   const [stateFilter, setStateFilter] = useState<'created' | 'closed' | 'canceled' | ''>('');
   const { data: pickings, isLoading } = usePickings(stateFilter || undefined);
   const { data: orders } = useOrders('out');
   const create = useCreatePicking();
-  const [detailNo, setDetailNo] = useState<string | null>(null);
+  const [detailNo, setDetailNo] = useState<string | null>(pending.pickingNo ?? null);
   const [createOpen, setCreateOpen] = useState(false);
   const pickingNo = useDraftNumber(createOpen ? 'picking' : null);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
@@ -60,7 +61,7 @@ export default function PickingsPage() {
   );
   const openedForOrder = useRef(false);
   useEffect(() => {
-    if (openedForOrder.current || !pendingOrderNo) return;
+    if (openedForOrder.current || !pendingOrderNo || pending.pickingNo) return;
     if (!pickingStateOrders.some((order) => order.orderNo === pendingOrderNo)) return;
     openedForOrder.current = true;
     setSelectedOrders([pendingOrderNo]);

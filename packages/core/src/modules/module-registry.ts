@@ -13,7 +13,8 @@ import {
 } from '../errors.js';
 import type { ModuleConfig, PatchOp, ProfileSnapshot } from '../profile/profile-types.js';
 import { compareSemver, validateDynamicRecords, validateManifest } from './manifest-validate.js';
-import { CORE_VERSION, DYN_RECORD_PREFIX, type InstalledModule, type ModuleLifecyclePayload, type ModuleManifest } from './manifest-types.js';
+import { CORE_VERSION, DYN_RECORD_PREFIX, type InstalledModule, type ModuleLifecyclePayload, type ManifestRecord, type ModuleManifest } from './manifest-types.js';
+import { hasDynRecords, type DynProjectionPort, type DynRecordSchema } from '../dyn/dyn-store.js';
 
 /** 模块生命周期审计事件类型（§8.2 事件目录：强一致） */
 export const MODULE_INSTALLED_EVENT = 'module.installed';
@@ -60,6 +61,19 @@ export class ModuleRegistry {
      * 缺省自建（只服务于直接 install() 的调用方，此时提议能力形同关闭）。
      */
     private readonly proposals: ProposalStore = new ProposalStore(),
+    /**
+     * 动态记录投影回调（B.2）。依赖经接口反转（DynProjectionPort）：
+     * 注册表不持有存储实现，DynStore 也不反向依赖注册表——它经闭包取 schema。
+     * 安装含声明式实体的模块成功后，回调整组重投影（dyn_index 按新 manifest 重建）。
+     */
+    private readonly dyn?: DynProjectionPort,
+    /**
+     * 声明式实体工具同步回调（B.4）。用闭包反转而不是 import：注册表不该知道
+     * 「工具 description 怎么拼」，只负责在正确的时机喊一声。
+     * 另一个同步时机在工作区打开时（WorkspaceFacade 构造）——重启后 manifest 是靠
+     * config.change 重放回来的，那条路径不经过 install，所以两处都得挂。
+     */
+    private readonly onDynRecordsInstalled?: (workspaceId: string) => void,
   ) {}
 
   // ── 进程 manifest 目录（代码装载方：领域包 attach 期调用）────
@@ -298,6 +312,21 @@ export class ModuleRegistry {
       } satisfies ModuleLifecyclePayload,
     });
 
+    // B.2：含声明式实体的模块安装成功后，整组重投影（清模块切片 + 按当前 manifest 重放）。
+    // 必须无条件执行而不是只认版本戳——卸载保留数据，重装同 id 时 manifest 可能已变
+    // （queryable 增减、字段增删），dyn_index 行只有按新 manifest 重建才对得上；
+    // 版本戳只认代码版本（DYN_PROJECTION_VERSION），manifest 是数据不是代码，它管不到这里。
+    if (this.dyn && hasDynRecords(manifest.records)) {
+      this.dyn.reprojectModule(workspaceId, manifest.id);
+    }
+
+    // B.4：装完立刻把新实体的 AI 工具挂上总线，不重启就可用（这是 B 阶段的验收要求）。
+    // 顺序在重投影之后：工具一旦可见就该能查到数据，别留「能调但查不到」的窗口。
+    // ⚠️ 只在安装时同步，卸载时**什么都不做**（§A.4：不 unregister，可见性交给授权层过滤）。
+    if (hasDynRecords(manifest.records)) {
+      this.onDynRecordsInstalled?.(workspaceId);
+    }
+
     return { installed: true, version: newVersion };
   }
 
@@ -469,6 +498,23 @@ export class ModuleRegistry {
       if (config.manifest && !out.has(id)) out.set(id, config.manifest);
     }
     return [...out.values()];
+  }
+
+  /**
+   * 已安装模块声明的全部声明式实体（B.2 记录存储的 schema 来源）。
+   * 「生效 manifest 全集 ∩ 已安装」——未安装的目录条目不提供存储白名单。
+   * module enabled 与否在此不区分：端点可见性（B.3）与存储 schema 是两层。
+   */
+  installedDynRecords(workspaceId: string): DynRecordSchema[] {
+    const snapshot = this.profile.getSnapshot(workspaceId);
+    const out: { moduleId: string; record: ManifestRecord }[] = [];
+    for (const manifest of this.effectiveManifests(workspaceId)) {
+      if (!snapshot.modules[manifest.id]) continue;
+      for (const record of manifest.records ?? []) {
+        if (record.id.startsWith(DYN_RECORD_PREFIX)) out.push({ moduleId: manifest.id, record });
+      }
+    }
+    return out;
   }
 }
 

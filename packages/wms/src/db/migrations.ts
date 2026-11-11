@@ -499,6 +499,32 @@ export function migrateWms(db: SqliteDatabase): void {
         PRIMARY KEY (workspace_id, line_id, location_id, batch_no)
       );
     `);
+
+    // ── 波次：多张已创建出库单收成一波。state 固定 open / picking / canceled。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_wave (
+        id            TEXT NOT NULL PRIMARY KEY,
+        workspace_id  TEXT NOT NULL,
+        wave_no       TEXT NOT NULL,
+        state         TEXT NOT NULL,
+        note          TEXT,
+        picking_no    TEXT,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        UNIQUE (workspace_id, wave_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_wave_ws ON wms_wave (workspace_id);
+      CREATE TABLE IF NOT EXISTS wms_wave_order (
+        id            TEXT NOT NULL PRIMARY KEY,
+        workspace_id  TEXT NOT NULL,
+        wave_id       TEXT NOT NULL,
+        order_id      TEXT NOT NULL,
+        order_no      TEXT NOT NULL,
+        UNIQUE (workspace_id, wave_id, order_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_wave_order_order
+        ON wms_wave_order (workspace_id, order_id);
+    `);
   })();
 }
 

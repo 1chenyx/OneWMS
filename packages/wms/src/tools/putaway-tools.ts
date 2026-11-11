@@ -4,6 +4,8 @@ import { WMS_EVENT_TYPES } from '../events/catalog.js';
 import {
   OrderNotFoundError,
   PutawayCapacityError,
+  PutawayDuplicateTargetError,
+  PutawayOrderShareError,
   QcRequiredError,
   PutawayLineNotFoundError,
   PutawayOnlyInboundError,
@@ -47,7 +49,7 @@ export function createPutawayTools(resolveWorkspace: WorkspaceResolver): ToolDef
     id: 'wms.order.putaway',
     label: '上架确认',
     description:
-      '对已收货（received）的入库单做上架确认与归位。module.putaway 启用时这一步必做，已收货不能直接完成，要在上架里做。不带 targets = 纯确认（单据流转到「已上架」，不动库存）；带 targets = 把指定行从收货库位改派到目标库位（每处生成一对移库流水，批次与效期保留，流水 reason: putaway:单号）。同一行可以拆到多个库位：每一处写 quantity，合计不能超过本行，没分走的留在收货库位。同一行只去一处且不写 quantity 时整行搬走。targets 每项：skuCode 必填；fromLocationCode 源库位（可选，缺省 DEFAULT）；batchNo 批次（可选，缺省 DEFAULT）；toLocationCode 目标库位必填；quantity 可选。要求单据处于已收货状态且上架模块启用。停用后本工具不可用，已收货直接完成。序列号商品必须整行上架，不能拆库位。',
+      '对已收货（received）的入库单做上架确认与归位。module.putaway 启用时这一步必做，已收货不能直接完成，要在上架里做。不带 targets = 纯确认（单据流转到「已上架」，不动库存）；带 targets = 把指定行从收货库位改派到目标库位（每处生成一对移库流水，批次与效期保留，流水 reason: putaway:单号）。同一行可以拆到多个库位：每一处写 quantity，合计不能超过本行，没分走的留在收货库位。同一行只去一处且不写 quantity 时整行搬走。targets 每项：skuCode 必填；fromLocationCode 源库位（可选，缺省 DEFAULT）；batchNo 批次（可选，缺省 DEFAULT）；toLocationCode 目标库位必填；quantity 可选。同一处（skuCode+源库位+批次+目标库位）只能写一行，重复写整单拒绝；上架量也不能超过本单在该源桶收的货（收货 − 已上架），别的单据的货挪不过来。要求单据处于已收货状态且上架模块启用。停用后本工具不可用，已收货直接完成。序列号商品必须整行上架，不能拆库位。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -126,6 +128,22 @@ export function createPutawayTools(resolveWorkspace: WorkspaceResolver): ToolDef
           quantity,
         });
       }
+      // 完全重复的目标（SKU+源库位+批次+目标库位 四项全同）显式拒绝：
+      // 重复项会被下面的分组当成「拆到多处」，各自落一对 ± 流水，等于把同一份货搬两遍。
+      const seenTargets = new Map<string, number>();
+      for (const slot of slots) {
+        const targetKey = `${slot.line.skuId}:${slot.fromLocationId}:${slot.batchNo}:${slot.toLocationId}`;
+        const times = (seenTargets.get(targetKey) ?? 0) + 1;
+        seenTargets.set(targetKey, times);
+        if (times > 1) {
+          throw new PutawayDuplicateTargetError(
+            params.orderNo,
+            `${slot.skuCode}@${slot.fromLocationCode}/${slot.batchNo}`,
+            slot.toLocationCode,
+            times,
+          );
+        }
+      }
       const groups = new Map<string, typeof slots>();
       for (const slot of slots) {
         const key = `${slot.line.skuId}:${slot.fromLocationId}:${slot.batchNo}`;
@@ -182,7 +200,32 @@ export function createPutawayTools(resolveWorkspace: WorkspaceResolver): ToolDef
         if (prev) prev.take = quantizeQty(prev.take + move.quantity);
         else taken.set(key, { slot: slots.find((slot) => `${slot.line.skuId}:${slot.fromLocationId}:${slot.batchNo}` === key)!, take: move.quantity });
       }
+      // 本单在源桶上的「待上架份额」= 该单名下流水净额（收货 + / 已上架 −）。
+      // 共享库位（DEFAULT）里堆着多张单的货：桶余量够 ≠ 自己这份够。上一张单多扣
+      // （重复上架、串账）会把差额转嫁成下一张单的 PutawaySourceShortError，
+      // 报错只说余量、指不出是谁挪的——按单据份额校验才能把责任落在越界的那张单上。
+      const ownMovements = ws.inventory.movementsByOrder(order.id);
+      const ownShare = new Map<string, number>();
+      for (const m of ownMovements) {
+        ownShare.set(`${m.skuId}:${m.locationId}:${m.batchNo}`, quantizeQty(m.net));
+      }
+      // 老库兜底：该单一条带 orderId 的流水都没有（收货未挂单据）时无法算份额，
+      // 退回只看桶余量，不误伤合法上架。
+      const shareKnown = ownMovements.length > 0;
       for (const { slot, take } of taken.values()) {
+        if (shareKnown) {
+          const share = ownShare.get(`${slot.line.skuId}:${slot.fromLocationId}:${slot.batchNo}`) ?? 0;
+          if (share + QTY_EPS < take) {
+            throw new PutawayOrderShareError(
+              order.orderNo,
+              slot.skuCode,
+              slot.fromLocationCode,
+              slot.batchNo,
+              take,
+              share,
+            );
+          }
+        }
         const available = ws.inventory.quantityOf(slot.line.skuId, slot.fromLocationId, slot.batchNo);
         if (available + QTY_EPS < take) {
           throw new PutawaySourceShortError(slot.skuCode, slot.fromLocationCode, slot.batchNo, take, available);

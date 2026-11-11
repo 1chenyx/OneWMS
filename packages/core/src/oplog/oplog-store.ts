@@ -40,12 +40,20 @@ export class OplogStore {
       // 本地事件的 lamport 取「当前视界 + 1」；视界随 ingest 远端事件推进
       const lamport = Math.max(counter?.last_lamport ?? 0, this.#maxLamport(workspaceId)) + 1;
 
-      const envelope = buildEnvelope({ workspaceId, actor, seq, lamport, type, payload });
+      const envelope = buildEnvelope({
+        workspaceId,
+        actor,
+        seq,
+        lamport,
+        type,
+        payload,
+        appVersion: this.#appVersion(),
+      });
 
       this.db
         .prepare(
-          `INSERT INTO oplog (event_id, workspace_id, actor, lamport, seq, type, payload, created_at)
-           VALUES (@eventId, @workspaceId, @actor, @lamport, @seq, @type, @payload, @createdAt)`,
+          `INSERT INTO oplog (event_id, workspace_id, actor, lamport, seq, type, payload, created_at, app_version)
+           VALUES (@eventId, @workspaceId, @actor, @lamport, @seq, @type, @payload, @createdAt, @appVersion)`,
         )
         .run({
           eventId: envelope.eventId,
@@ -56,6 +64,7 @@ export class OplogStore {
           type: envelope.type,
           payload: JSON.stringify(envelope.payload),
           createdAt: envelope.createdAt,
+          appVersion: envelope.appVersion ?? null,
         });
 
       this.db.prepare(
@@ -89,8 +98,8 @@ export class OplogStore {
         }
         this.db
           .prepare(
-            `INSERT INTO oplog (event_id, workspace_id, actor, lamport, seq, type, payload, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO oplog (event_id, workspace_id, actor, lamport, seq, type, payload, created_at, app_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             env.eventId,
@@ -101,6 +110,7 @@ export class OplogStore {
             env.type,
             JSON.stringify(env.payload ?? null),
             env.createdAt,
+            env.appVersion ?? null,
           );
 
         // 推进该 actor 的计数器（拉取续传的水位依据）
@@ -260,6 +270,23 @@ export class OplogStore {
       .prepare<unknown[], { n: number }>(`SELECT COUNT(*) AS n FROM oplog WHERE workspace_id = ?`)
       .get(workspaceId);
     return row?.n ?? 0;
+  }
+
+  /** meta 里缓存到的应用版本（server 升级门在启动时写入 meta.app_version） */
+  #appVersionCache: string | undefined;
+
+  /**
+   * 本次写入用的应用版本戳（排查用：账出问题时能分清是哪个版本的代码写的）。
+   * 只缓存查到的值——升级门可能在第一条事件之后才落 meta，查不到就下次再查。
+   */
+  #appVersion(): string | null {
+    if (this.#appVersionCache !== undefined) return this.#appVersionCache;
+    const row = this.db
+      .prepare(`SELECT value FROM meta WHERE key = 'app_version'`)
+      .get() as { value: string } | undefined;
+    if (!row?.value) return null;
+    this.#appVersionCache = row.value;
+    return row.value;
   }
 
   #maxLamport(workspaceId: string): number {

@@ -27,9 +27,12 @@ import {
   listOrdersWithLines,
   listOrdersWithLinesPage,
   listPickingsWithLines,
+  listWaves,
+  getWave,
   listStocktakes,
   PickingNotFoundError,
   StocktakeNotFoundError,
+  WaveNotFoundError,
   withPickingLines,
 } from '@one/wms';
 import type { OrderDirection, PartnerKind } from '@one/wms';
@@ -210,6 +213,36 @@ export function wmsRoutes(ctx: AppContext): Hono {
         await ctx.ws.tools.invoke(
           'wms.picking.cancel',
           { pickingNo: c.req.param('no') },
+          resolveActor(ctx, c),
+        ),
+      );
+    })
+    // ── 波次：多张已创建出库单收成一波，按库位汇总，整波生成一张拣货单 ──
+    .get('/waves', (c) => c.json(listWaves(ctx.ws)))
+    .get('/waves/:no', (c) => {
+      const wave = getWave(ctx.ws, c.req.param('no'));
+      if (!wave) throw new WaveNotFoundError(c.req.param('no'));
+      return c.json(wave);
+    })
+    .post('/waves', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.wave.create', body, resolveActor(ctx, c)), 201);
+    })
+    .post('/waves/:no/pick', async (c) => {
+      const body = await c.req.json().catch(() => ({}));
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.wave.pick',
+          { ...body, waveNo: c.req.param('no') },
+          resolveActor(ctx, c),
+        ),
+      );
+    })
+    .post('/waves/:no/cancel', async (c) => {
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.wave.cancel',
+          { waveNo: c.req.param('no') },
           resolveActor(ctx, c),
         ),
       );

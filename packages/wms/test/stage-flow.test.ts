@@ -7,6 +7,7 @@ import {
   PickingRequiredError,
   QcRequiredError,
   ReviewRequiredError,
+  WaveBatchPickError,
   WaveRequiredError,
   WmsDomain,
 } from '../src/index.js';
@@ -98,7 +99,7 @@ describe('波次、复核、打包、装车', () => {
     await expect(ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'picking' })).rejects.toBeInstanceOf(
       WaveRequiredError,
     );
-    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'waved' });
+    const wave = (await ws.tools.invoke('wms.wave.create', { orderNos: [outNo] })) as { waveNo: string };
     // 拣货开着时 waved→shipped 不存在。打包边还在，守卫会要求先拣货。
     await expect(ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' })).rejects.toBeInstanceOf(
       InvalidTransitionError,
@@ -106,9 +107,10 @@ describe('波次、复核、打包、装车', () => {
     await expect(ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'packed' })).rejects.toBeInstanceOf(
       PickingRequiredError,
     );
-    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'picking' });
-
-    const picking = (await ws.tools.invoke('wms.picking.create', { orderNos: [outNo] })) as { pickingNo: string };
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'picking' })).rejects.toBeInstanceOf(
+      WaveBatchPickError,
+    );
+    const picking = (await ws.tools.invoke('wms.wave.pick', { waveNo: wave.waveNo })) as { pickingNo: string };
     await ws.tools.invoke('wms.picking.pick', { pickingNo: picking.pickingNo, orderNo: outNo, skuCode: 'A-1', pickedQty: 4 });
     await ws.tools.invoke('wms.picking.close', { pickingNo: picking.pickingNo });
     expect(ws.orders.byNo(outNo)!.state).toBe('picked');
@@ -142,7 +144,7 @@ describe('波次、复核、打包、装车', () => {
     setModule('module.picking', false);
 
     const outNo = await outbound();
-    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'waved' });
+    await ws.tools.invoke('wms.wave.create', { orderNos: [outNo] });
     await expect(ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' })).rejects.toBeInstanceOf(
       ReviewRequiredError,
     );
@@ -180,12 +182,12 @@ describe('波次、复核、打包、装车', () => {
     expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(10);
 
     const cancelNo = await outbound();
-    await ws.tools.invoke('wms.order.transition', { orderNo: cancelNo, to: 'waved' });
+    await ws.tools.invoke('wms.wave.create', { orderNos: [cancelNo] });
     await ws.tools.invoke('wms.order.transition', { orderNo: cancelNo, to: 'canceled' });
     expect(ws.orders.byNo(cancelNo)!.state).toBe('canceled');
 
     const outNo = await outbound();
-    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'waved' });
+    await ws.tools.invoke('wms.wave.create', { orderNos: [outNo] });
     setModule('module.wave', false);
     await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'picking' });
     const picking = (await ws.tools.invoke('wms.picking.create', { orderNos: [outNo] })) as { pickingNo: string };

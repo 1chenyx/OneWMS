@@ -26,6 +26,12 @@ export interface EventEnvelope {
   readonly payload: unknown;
   /** 产生时间（ISO 8601） */
   readonly createdAt: string;
+  /**
+   * 写入这条事件时的应用版本（meta.app_version，见 server/upgrade/upgrade-gate）。
+   * 纯排查用：账出问题时要能区分「旧代码写的账」和「新代码写的账」。
+   * 不参与任何业务判断，也不进 checksum；老库为 null。
+   */
+  readonly appVersion?: string | null;
 }
 
 /** 信封的可序列化形态（payload 为 JSON 字符串） */
@@ -38,6 +44,8 @@ export interface EventRow {
   type: string;
   payload: string;
   created_at: string;
+  /** v6 起有值；老行为 null */
+  app_version?: string | null;
 }
 
 export function rowToEnvelope(row: EventRow): EventEnvelope {
@@ -50,6 +58,7 @@ export function rowToEnvelope(row: EventRow): EventEnvelope {
     type: row.type,
     payload: JSON.parse(row.payload),
     createdAt: row.created_at,
+    appVersion: row.app_version ?? null,
   };
 }
 
@@ -63,6 +72,7 @@ export function buildEnvelope(params: {
   lamport: number;
   type: string;
   payload: unknown;
+  appVersion?: string | null;
 }): EventEnvelope {
   if (!params.type || !params.type.includes('.')) {
     throw new EventError(`事件类型必须带命名空间（领域.实体.动作）: "${params.type}"`);
@@ -76,5 +86,6 @@ export function buildEnvelope(params: {
     type: params.type,
     payload: params.payload,
     createdAt: new Date().toISOString(),
+    appVersion: params.appVersion ?? null,
   };
 }

@@ -180,14 +180,27 @@ module-registry.ts :: uninstall()    Phase B.0 需在此补投影清理
   - 反向——WMS 组戳回拨触发整域重建，额外组的表不受牵连
 - 基线：typecheck 全绿；测试 963 → **974**（core 135→141、wms 325→330）
 
-### B.1 放开 `records` 为可配置
+### B.1 放开 `records` 为可配置 ✅ 已完成
 
 - `manifest-types.ts :: ModuleManifest` 允许 `records` 由声明式模块提供
 - 新增 `dyn.module.register` 提案类型，挂进现有 Profile 提案管线（提案 → 影响报告 → confirm/reject）
 - **复用 `module-registry.ts :: install()` 的 6 道预检，一行不改**
 - 校验：实体 id 命名空间隔离（建议 `dyn.{moduleId}.{recordId}`）、字段类型白名单、与内置实体撞名拒绝
 
-### B.2 通用记录存储（单表 JSON + 独立索引表，不做动态 DDL）
+**实施结果（事实记录）**：
+
+- **manifest 持久化**：`ModuleConfig` 加可选 `manifest?: ModuleManifest`，存 `/modules/{id}.manifest`，随 `config.change` 进 oplog——重启/同步/重放/迁移免费获得，不改 `profile_state` 表结构、不加 PATCH_ROOT。**只有代码不在场的模块才落账**（install 时不在进程目录）：内置模块的真相是代码，再存一份就是两份真相。
+- **提案 kind**：`Proposal.kind: 'patch' | 'dyn.module.register'`（默认 `'patch'`，既有调用零改动）+ `manifest?` 载荷；`ProposalStore` 由 ProfileService 与 ModuleRegistry 共享同一实例（core.ts 装配），两种提议共处一个待确认队列。
+- **依赖方向**：ProfileService 不 import ModuleRegistry（会成环）。WorkspaceFacade 把 `install` 作为闭包注入 `ProfileView.confirm`，按 kind 分派——`routes/proposals.ts` 一行未改。
+- **id 命名空间**：**独立正则方案**（内置 `RECORD_ID_RE` 不动，`dyn.` 前缀分流到 `isDynamicRecordId(id, moduleId)` 前缀匹配）——内置正则不含点号，所以 `dyn.` 前缀结构上不可能与内置撞名；内置 manifest 声明 `dyn.` 开头实体会被拒（保留字）。
+- **提案期静态三关**（`proposeInstall`，全部零事件）：manifest 结构（含新增列 `type` 白名单 / `queryable` 布尔）+ 命名空间（`validateDynamicRecords`：不许裸 id、不许冒用他模块命名空间、列必填 type）+ 撞名（与**全部已声明实体**的 id/别名比对，含未安装的内置模块；重装自己放行）。**6 道安装预检故意不在提案期跑**（依赖/工具在场性随时间变化，confirm 时刻重新判定，失败抛结构化错误、提议留 pending）。
+- **install 预检 7**（新增，仅当 manifest 声明了 `dyn.` 实体时生效，内置零影响）：命名空间 + 撞名断言。
+- **AI 可见性**：`query-tools.ts` 全部目录装配改用 `effectiveManifests()`（进程目录 ∪ 已落账声明式 manifest）；`listInstalled` 的 manifest 回落到 config（声明式模块重启后目录为空）。列的 `type`/`queryable` 透传进 `profile.field.query` 结果。
+- **验收（已达成）**：`core/test/dyn-module.test.ts` 13 例——提案期静态拒绝（缺 type / 命名空间逃逸 / 撞含未安装内置的 id 与别名）、kind 分派与补丁同队列、confirm 落账（config.change 携带 manifest + module.installed 审计）、确认时刻动态拒绝提议留 pending、幂等确认零事件、异版本确认被冲突预检拒、**文件库重开后 manifest 经 config.change 重放仍在场**、replay 前后快照一致、卸载后 manifest 随 modules 段移除、`dyn.` 保留字。
+- **既有断言更新**：`modules.test.ts`「全流程」一例——直接 install 未经 registerManifest 注册目录 → 视为代码不在场 → modules 段现在含 manifest（行为刻意，非回归）。
+- 基线：typecheck 全绿；core 测试 141 → **154**（+13）。
+
+### B.2 通用记录存储（单表 JSON + 独立索引表，不做动态 DDL）✅ 已完成
 
 **决策：单表 + JSON 列 + 独立索引表**，不为每个声明实体建表，**也不用生成列**。
 
@@ -221,13 +234,43 @@ dyn_index(
 
 **能力边界（必须写进对外文档）**：适合「独立管理的辅助档案」，不适合「参与核心库存联动的实体」。复杂联表与聚合报表撑不住（索引表只支持等值/范围单字段过滤，不支持多字段联合索引）。
 
-### B.3 通用 record 端点
+**实施结果（事实记录）**：
+
+- **建表**：`core/src/db/migrations.ts` SCHEMA_VERSION 4→5 落 `dyn_records` / `dyn_index` + 查询索引 `idx_dyn_index_query`，纯可移植 SQL（全 `IF NOT EXISTS`，老库升版本重跑迁移块即补表）。`data` 列存 JSON 文本（TEXT 两边通用）。
+- **服务**：新建 `core/src/dyn/dyn-store.ts`。写路径（create/update/delete）：白名单解析（实体必须来自**已安装**模块的 manifest）→ 字段校验（未声明键拒绝；按列 `type` 白名单校验值；date 宽松解析不限死 ISO）→ recordId 规则（字母数字开头、`_`/`-`、≤64 位，缺省自动生成）→ 乐观并发（expectedVersion 过期拒绝）→ 落事件 + 立即应用投影（FieldRegistry 同一纪律）。读路径（get/list）：等值过滤只认 `queryable:true` 字段（下推 dyn_index join），分页上限 200。
+- **事件**：`record.created/updated/deleted`，created/updated 携带**全量 data**（整替，不做 JSON patch——重放无须基准）与**目标 version**（写路径按当前行算好写进载荷——重放幂等靠它：若在投影时 `version+1` 推导，重开库的构造期追账会把 version 顶到 2，乐观并发当场失真），deleted 只带定位三键。幂等摄入下的并发裁决 = 全序 LWW（UPSERT 后到者胜；deleted 对缺失行 no-op），确定性由 (lamport, actor) 全序保证。
+- **索引行重建**：applyEvent 先删后插，与 data 严格同步；索引值规范形态 = string 原样、其余 JSON 序列化（`canonicalFieldValue`）。⚠️ TEXT 字典序对 number 范围查询不可靠（"10" < "9"），B.3 做范围过滤需回表取 data 再按类型比较。
+- **版本管理**：per-module 组 `dyn.{moduleId}`（`dynGroupName`），表按 `module_id` 切片（B.0 `ProjectionTable.scope`）——某模块 bump 或重装只重建自己的切片。派生规则版本 `DYN_PROJECTION_VERSION=1`，改投影语义即 +1，下次启动整组自动重建。
+- **重装换 schema 的更正**：原设计写「重装同 id 但 schema 变了 → 走 ensureProjectionVersion 迁移」——**版本戳帮不上这里**：戳只认代码版本，manifest 是数据不是代码。实际做法是 **install() 成功后无条件整组重投影**（ModuleRegistry 经 `DynProjectionPort` 回调 `reprojectModule`：清模块切片 + 按当前 manifest 重放），安装是低频人工确认动作，代价可忽略；版本戳继续负责代码级 bump（门面构造期 `ensureModuleProjection` 打戳/重建）。
+- **追账与重放**：DynStore 进程内持 per-workspace 游标，门面构造期 `sync()` 增量追账（重启游标归 -1 = 全量重放，applyEvent 幂等所以安全，顺带自愈「append 已提交、投影未应用」的崩溃窗口）；`WorkspaceFacade.replay()` 纳入 dyn 两表（清投影 + 全量重放 + 游标复位）——于是**备份恢复 / 同步摄入 / 迁移导入三条 ingest 路径免费获得 dyn 重建**，server 路由零改动。
+- **依赖方向**：DynStore ← 闭包 `(wsId) => installedDynRecords(wsId)`（ModuleRegistry 新增方法：生效 manifest 全集 ∩ 已安装）；ModuleRegistry ← `DynProjectionPort` 接口（只有 reprojectModule 一个方法）。两服务互不 import 实现，无环。
+- **孤儿数据行为（对外文档口径）**：卸载后 manifest 不在场 → 读写一律 NotFound（存储层 #resolveSchema 即拒绝）；数据行保留在 dyn_records，**索引行不再维护**（applyEvent 时 schema 不在场只保数据行）——无 schema 数据不静默暴露，重装同 id 模块时 reprojectModule 按新 manifest 补齐索引。
+- **验收（已达成）**：`core/test/dyn-records.test.ts` 17 例——全类型白名单校验、自动生成 recordId、create 冲突/版本冲突/缺失 NotFound、update 整替且 created_at 不变（UPSERT 保留建档时间）、事件落账、索引等值过滤下推 + 非 queryable 拒绝、分页、删除后索引行消失、**replay 幂等**、**文件库重开后追账可读**、**摄入远端 record.* 后新门面构造期自动可见（含重复摄入幂等）**、**版本戳落 meta**、**卸载保留数据不可访问 + 重装回来且索引重建**、**重装换 schema（queryable 翻转）触发整组重投影**。
+
+### B.3 通用 record 端点 ✅ 已完成
 
 - `GET/POST/PATCH/DELETE /api/dyn/:module/:type[/:id]`
 - **白名单严格来自 manifest**：未声明的 module/type/字段一律 404，不做兜底
 - 分页、排序、过滤参数只允许作用于 manifest 声明为可查询的字段
 
-### B.4 通用 record 工具注册到总线
+**实施结果（事实记录）**：
+
+- **路由**：新增 `server/src/routes/dyn.ts :: dynRoutes`，挂在 `/api/dyn`（`index.ts :: createApp`，**先于** `app.route('/api', wmsRoutes)` 挂载）。URL 的 `:module` + `:type` 拼成实体 id `dyn.{module}.{type}`，命名空间规则与 `manifest-types.ts :: dynamicRecordId` 同源；拼装即绑定，type 里塞点号冒用别的模块实体也只会拼出不存在的 id → 404。
+- **白名单单一来源**：`ModulesView.dynRecords()`（委托 `ModuleRegistry.installedDynRecords`，= 生效 manifest 全集 ∩ 已安装）——**与 DynStore 解析 schema 是同一个入口**，所以端点判「未声明 → 404」与存储层判「无 schema → NotFound」不会错位。
+- **404 覆盖三处**：module/type 未声明或模块已卸载；过滤字段未声明；排序字段未声明。「已声明但未标 `queryable`」**也归 404**，不区分「没这个字段」和「有但不许查」——白名单外的列在这个端点上就是不存在，少一个信息泄露面。
+- **查询文法**：`?limit=&offset=`（limit 缺省 50、上限 200）、`?filter=<列>&equals=<值>`、`?sort=<列>&dir=asc|desc`。`equals` 的值**按 manifest 声明的列类型转换**（number/boolean/json/date/string）——索引存的是规范字符串（number→`"9"`），拿原始查询串直接比永远匹配不上，列类型是唯一转换依据。`dir` 只接受两个字面量（要拼进 SQL，不收自由文本）。
+- **状态码分档**（`errors.ts :: STATUS_BY_CODE` 新增三条）：`DYN_RECORD_NOT_FOUND` 404 / `DYN_RECORD_CONFLICT` 409（乐观并发撞版本、重复创建）/ `DYN_RECORD_VALIDATION` 422（列校验不过）；分页与查询串参数不合法走既有 `BadQueryError` 400（**不静默回落默认值**，坏参数当场暴露）。
+- **写路径**：POST body `{ recordId?, data }`（`recordId` 缺省自动生成）→ 201；PATCH body `{ data, expectedVersion }` → 200，**语义是整替不是 JSON patch**（缺列按 manifest required/default 判，前端须带上没改的列）；DELETE 走 `?version=`（DELETE 带 body 不是通用惯例）。actor 全部经 `resolveActor(ctx, c)`，审计与账本通道免费获得。
+- **排序实现（补 B.2 留下的坑）**：`DynStore.list` 新增 `sort`，`DynListOptions` 扩字段。
+  - ⚠️ **number 列必须 `CAST(field_value AS REAL)` 再排**：索引值是 TEXT 规范形态，字典序下 `"100" < "9"`。`CAST(x AS REAL)` 在 SQLite / Postgres 都成立，不引方言（§B.2 记的范围过滤同源坑，排序这里已解）。
+  - **排序用 LEFT JOIN**：排序列是可选列，INNER JOIN 会把没这个字段的记录悄悄丢掉；缺失值用 `CASE WHEN ... IS NULL THEN 1 ELSE 0 END` 显式排最后——两库对 NULL 的默认排序方向相反（SQLite ASC 在前、Postgres ASC 在后），不写死就没有跨库确定的顺序。
+  - **过滤用 INNER JOIN**（索引行缺失本就不该被等值条件命中），两者可组合，各占一个 join 别名。
+- **顺带修掉一个真 bug**：原 `clampPage` 把 `offset` 也按单页上限截断（`Math.min(offset, 200)`），深分页会静默返回第 200 页。现拆成 `clampLimit`（要封顶）与 `assertOffset`（只校验非负整数）——limit 是「一次取多少」，offset 是「翻到第几页」，两者不是一类东西。
+- **对外文档口径（承接 §B.2 孤儿数据）**：卸载模块后端点一律 404，但 `dyn_records` 的行仍在库里，重装同 id 模块即恢复（已有测试对着这条路径验）。
+- **验收（已达成）**：`server/test/dyn-routes.test.ts` 17 例——未安装/未声明 module/type/命名空间冒用 → 404 且 code 为 `DYN_RECORD_NOT_FOUND`；卸载后 404 + 重装数据回来；create/get 往返与 recordId 自动生成；PATCH 乐观并发（200/409）、缺 expectedVersion 400、列校验 422；DELETE 三档；actor 审计为 `user:local@…` 而非节点 id；分页信封 total/limit/offset/hasMore；过滤按类型转值（`?filter=score&equals=9` 命中）；白名单外过滤/排序 404、参数不成对或类型不匹配 400；number 排序按数值（`R2(9) → R3(50) → R1(100) → R4(缺失)`）；过滤+排序+分页组合翻页不重不漏；坏 JSON body 400。`core/test/dyn-records.test.ts` 新增 6 例排序与深分页。
+- 基线：typecheck 全绿；core 171 → **177**、server 169 → **186**（其中 `api.test.ts` 1 例为 B.2 期已记录的既有失败：授权工具总数越过 `TOOL_CATALOG_DEFER_AT=64`，剧本未先 `tools.load`，与本节无关）、wms 361 全绿。
+
+### B.4 通用 record 工具注册到总线 ✅ 已完成
 
 - 为每个声明实体注册 `dyn.{module}.{type}.list/get/create/update/delete`
 - **工具 description 从 manifest 动态拼装**（实体名、字段名、字段含义、枚举值）
@@ -235,6 +278,21 @@ dyn_index(
 ⚠️ **这一项不能省**。否则配置了新实体 AI 也不知道，「AI 立刻可用」不成立。
 
 ⚠️ `tool-bus.ts :: permission` 是 `'read' | 'write'` 二值，**已有消费方**（见 B.5 更正）。但 B.3/B.4 一开放，等于把全部写操作暴露给前端。**B.5 是硬要求，不是可选项。**
+
+**实施结果（事实记录）**：
+
+- **落点**：新增 `core/src/dyn/dyn-tools.ts`，导出 `createDynTools(schemas, store)`（纯函数，便于直接断言拼装结果）与 `syncDynTools(bus, store, schemas)`（覆盖注册，返回工具 id）。工具 id = `{实体 id}.{动词}`，实体 id 本身就是 `dyn.{moduleId}.{recordId}`，所以形如 `dyn.vendor.extra.qualification.list`，与原文的 `dyn.{module}.{type}.list` 同形。
+- **注册时机两处，缺一个就不成立**：① `WorkspaceFacade` 构造末尾（工作区打开）——重启后声明式模块的 manifest 是靠 `config.change` 重放回来的，进程目录里没有它的代码，只有这条路径能把工具装回总线；② `ModuleRegistry.install()` 成功且 `hasDynRecords` 时，经新增的**可选**第 8 个构造参数 `onDynRecordsInstalled?: (workspaceId) => void` 回调（闭包反转，注册表不 import 工具拼装逻辑；同 `DynProjectionPort` 的风格）。顺序刻意排在 `reprojectModule` 之后：工具一可见就该能查到数据。
+- **卸载什么都不做**（§A.4 红线）：工具留在总线上，但 handler 一律按 `ctx.workspaceId` 现取 schema，卸载后调用即失败；「AI 看不见」由 A.4 的授权/可见性层负责。**重装即恢复**，因为 `bus.register` 同 id 覆盖，幂等。
+- ⚠️ **原文「枚举值」这项素材不存在**：`ManifestRecordField` 只有 `key` / `label` / `description?` / `type?` / `queryable?`，没有 enum/options/required/default/unit。能拼进 description 的就是实体名与别名、note、来源模块 id、列名、列中文标签、列类型、列含义、可过滤/排序标记。顺带更正 §B.3 里「缺列按 manifest 的 required/default 判定」的说法：**manifest 没有 required/default 概念，列全部可选**，整替更新时没带上的列会从记录里消失（`routes/dyn.ts` 的注释已同步改正）。
+- **description 分配**：身份行（实体名/别名/实体 id/来源模块/note）五个工具都带——deferred 模式下会被截到 600 字，得让 AI 先认出「这是哪个对象」；**列清单只给 `create`/`update`/`list`**（要照着填、照着查的），`get`/`delete` 的返回值自解释。五个工具各抄一遍列清单是白烧 token。写工具统一附一句「列结构不能用 `profile.field.propose` 改，要改走 `dyn.module.register`」，免得 AI 走错门。
+- **parameters 也按 manifest 生成**：`list` 的 `filterField`/`sortField` 用 `enum` 收窄到 queryable 列（AI 少猜一次，白名单外的列压根递不进来）；实体没有 queryable 列时**整个不给 enum**（空 enum 会把任何值都判为非法）；`filterValue` 声明为 `string`，按列类型还原。写工具的 `expectedVersion` 是 `integer` + `required`——乐观并发不可绕过。
+- **查询值转换规则收敛到 core**：`dyn-store.ts :: coerceQueryValue(column, raw)` 成为唯一实现，B.3 端点与 B.4 工具共用（两处各写一遍必然漂移）。`routes/dyn.ts` 只保留错误语义映射（存储层抛 422 语义的 ValidationError，端点包成 400 Bad Query）。同时导出 `LIST_LIMIT_MAX` / `LIST_LIMIT_DEFAULT`，端点与工具的 limit 文案不再各写一个 200/50。
+- ⚠️ **进程级总线 vs per-workspace manifest（本项唯一妥协，别当 bug 修）**：`ToolBus` 是进程级单例，而 description/parameters 是注册期固化的。两个 workspace 装同 id 模块但 schema 不同时，后注册者的**文案**覆盖前者。**正确性不受影响**——校验与白名单一律按调用方 workspace 的 manifest 现判。①② 的实际形态是单 workspace（`ONE_WORKSPACE`），多租户隔离是 ③ 的事。
+- **工具分组未改**：`ai/src/tool-catalog.ts :: toolGroup` 的规则是「`wms.*` 取第二段，其余取第一段」，所以全部 dyn 工具挤进 `dyn` 一组，`tools.load dyn` 会一次展开全部声明式实体的工具。当前判定为可接受（B.7 的示例模块只有 1–2 个实体），**未改 tool-catalog**；等示例模块落地后若一组过大再按实体细分。
+- **AI 侧零改动即生效**：`ai/src/agent-defs.ts :: builtinAgentDefs` 按 `permission` 现场过滤 `ws.tools.list()`，新工具自动进 general/readonly（读）与 general/config（写）；`routes/chat.ts :: allowApply` 只认 `wms.` 前缀，dyn 写工具不会被附件落库路径误放行。
+- **验收（已达成）**：新增 `core/test/dyn-tools.test.ts` 10 例——装前总线为空/装后五个工具与读写权限分明、description 含实体名与 note 与列含义且 queryable 标记只落在声明列上、`filterField` enum 收窄、无 queryable 列时不给 enum、经总线端到端 create→list(过滤/排序/翻页)→get→update→delete、缺 `expectedVersion` 与版本不对都被拒、四类错误消息可行动（含「另一个 workspace 调用同一条总线上的工具解析不到实体」）、**重启后工具自己装回总线**、**卸载后工具仍在但调用失败且重装即恢复**、重复同步幂等不留两份。
+- 基线：typecheck 全绿（core/wms/ai/server）；core 177 → **187**（+10）、server **186** 全绿、wms **361** 全绿。§B.3 遗留的那条已知红灯（`api.test.ts` mock provider 剧本）本轮已不复现。
 
 ### B.5 写操作二次确认
 
@@ -344,10 +402,10 @@ Phase A · 契约固化
 
 Phase B · 声明式模块（主线）
   [x] B.0 per-group 投影版本（前置件）—— 已完成，老库无需迁移（key 形状未变）
-  [ ] B.1 records 可配置 + dyn.module.register 提案类型
-  [ ] B.2 dyn_records 单表 JSON + dyn_index 独立索引表 + record.* 事件
-  [ ] B.3 通用 record 端点（白名单严格来自 manifest，未声明一律 404）
-  [ ] B.4 通用 record 工具注册，description 从 manifest 动态拼装
+  [x] B.1 records 可配置 + dyn.module.register 提案类型 —— 已完成（manifest 随 config.change 落账；提案 kind 分派；命名空间/撞名/类型三关；effectiveManifests 保证 AI 可见）
+  [x] B.2 dyn_records 单表 JSON + dyn_index 独立索引表 + record.* 事件 —— 已完成（per-module 投影组 + 构造期追账 + 安装后整组重投影 + facade.replay 纳入 dyn；孤儿数据保留但不可访问）
+  [x] B.3 通用 record 端点（白名单严格来自 manifest，未声明一律 404）—— 已完成（`/api/dyn/:module/:type[/:id]`；白名单取自 `ModulesView.dynRecords()` 与存储层同源；分页/排序/过滤只作用 queryable 列；404/409/422/400 四档分明）
+  [x] B.4 通用 record 工具注册，description 从 manifest 动态拼装 —— 已完成（`core/src/dyn/dyn-tools.ts`；两处注册时机：facade 构造全量同步 + install 成功后回调；description/parameters 全部按 manifest 生成；同 id 覆盖注册，⚠️ 从不 unregister（§A.4））
   [ ] B.5 写操作二次确认（沿用现有 `permission === 'write'`，不扩枚举）
   [ ] B.6 SDUI：新增 ModuleManifest.ui + Page 改 string + 运行时注册表 + 通用列表页 + settings.schema 渲染器
   [ ] B.7 纯 JSON 示例模块 + CI 全链路守卫

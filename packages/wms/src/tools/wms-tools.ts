@@ -6,6 +6,7 @@ import { createOrderConflictTools } from './order-conflict-tools.js';
 import { createOrderTools } from './order-tools.js';
 import { createPartnerTools } from './partner-tools.js';
 import { createPickingTools } from './picking-tools.js';
+import { createWaveTools } from './wave-tools.js';
 import { createSkuTools } from './sku-tools.js';
 import { createStocktakeTools } from './stocktake-tools.js';
 import type { WorkspaceResolver } from './tool-def.js';
@@ -29,6 +30,7 @@ export function createWmsTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     ...createOrderTools(resolveWorkspace),
     ...createOrderConflictTools(resolveWorkspace),
     ...createPickingTools(resolveWorkspace),
+    ...createWaveTools(resolveWorkspace),
     ...createInventoryTools(resolveWorkspace),
     ...createStocktakeTools(resolveWorkspace),
     ...createNumberingTools(resolveWorkspace),

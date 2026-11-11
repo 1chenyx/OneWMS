@@ -268,11 +268,12 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
         const canQc = qcOn && r.direction === 'in' && r.state === 'received' && nexts.includes('inspected');
         const canPutaway = r.direction === 'in' && nexts.includes('putaway') && !(qcOn && r.state === 'received');
         const canWave = waveOn && r.direction === 'out' && r.state === 'created' && nexts.includes('waved');
+        const canOpenWave = waveOn && r.direction === 'out' && r.state === 'waved';
         const canGoPick =
           pickingOn &&
           r.direction === 'out' &&
           (r.state === 'picking' ||
-            ((r.state === 'waved' || (r.state === 'created' && !waveOn)) && nexts.includes('picking')));
+            (!waveOn && (r.state === 'waved' || r.state === 'created') && nexts.includes('picking')));
         const canReview =
           reviewOn && r.direction === 'out' && nexts.includes('reviewed') && !canWave && !canGoPick;
         const canPack = packOn && r.direction === 'out' && nexts.includes('packed') && !canReview;
@@ -284,7 +285,7 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
         if (canQc || (putawayOn && (r.state === 'received' || r.state === 'inspected'))) {
           flowNexts = flowNexts.filter((to) => to !== 'done');
         }
-        if (canWave || canGoPick || canReview || canPack || canLoad) {
+        if (canWave || canOpenWave || canGoPick || canReview || canPack || canLoad) {
           flowNexts = flowNexts.filter((to) => to !== 'picking' && to !== 'picked' && to !== shipState && to !== 'done');
         }
         const showReturn = canStartReturn(snapshot.data, r);
@@ -295,6 +296,7 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
           !canGoPick &&
           !canQc &&
           !canWave &&
+          !canOpenWave &&
           !canReview &&
           !canPack &&
           !canLoad
@@ -336,9 +338,16 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
               </Tooltip>
             ) : null}
             {canWave ? (
-              <Tooltip title="到波次页组波。开启波次后，不能直接拣货或发货。">
+              <Tooltip title="到波次页勾上要一起拣的单。组波后按库位把数量加总，再整波拣货。">
                 <Button size="small" type="primary" ghost style={{ marginRight: 8 }} onClick={() => navigate('wave', { orderNo: r.orderNo })}>
-                  去波次
+                  去组波
+                </Button>
+              </Tooltip>
+            ) : null}
+            {canOpenWave ? (
+              <Tooltip title="这张单已经在某个波次里。拣货要整波一起做。">
+                <Button size="small" type="primary" ghost style={{ marginRight: 8 }} onClick={() => navigate('wave', { orderNo: r.orderNo })}>
+                  看波次
                 </Button>
               </Tooltip>
             ) : null}
@@ -423,7 +432,7 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
         subtitle={
           direction === 'in'
             ? '收货和到货预报。开启质检、上架后，到对应页面做完，不能直接完成。'
-            : '开启波次、拣货、复核、打包、装车后按这个顺序做。拣完关单是已拣货，发货仍在这里。'
+            : '波次把多张出库单合成一波，按库位一起拣。之后是拣货、复核、打包、装车，发货仍在这里。'
         }
         extra={
           <>
