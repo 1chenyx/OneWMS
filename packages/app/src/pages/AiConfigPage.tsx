@@ -101,16 +101,16 @@ const PAGE_STYLE = `
   cursor: pointer;
 }
 .ai-vendor-card:hover {
-  border-color: #91caff;
-  background: #fff;
+  border-color: var(--line-strong);
+  background: var(--card);
 }
 .ai-vendor-card.is-selected {
-  border-color: #1677ff;
-  background: #e6f4ff;
-  box-shadow: inset 0 0 0 1px #1677ff;
+  border-color: var(--line);
+  background: var(--raised);
+  box-shadow: inset 3px 0 0 var(--amber);
 }
 .ai-vendor-name {
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.3;
 }
 .ai-vendor-hint {
@@ -145,8 +145,9 @@ const PAGE_STYLE = `
   background: #fff;
 }
 .ai-profile.is-active {
-  border-color: #1677ff;
-  background: #f0f7ff;
+  border-color: var(--line);
+  background: var(--raised);
+  box-shadow: inset 3px 0 0 var(--amber);
 }
 .ai-profile + .ai-profile {
   margin-top: 8px;

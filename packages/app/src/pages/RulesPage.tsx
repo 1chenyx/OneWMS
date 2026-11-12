@@ -56,7 +56,7 @@ const PAGE_STYLE = `
 }
 .rules-label {
   margin-bottom: 8px;
-  font-weight: 600;
+  font-weight: 500;
 }
 .rules-options {
   display: flex;

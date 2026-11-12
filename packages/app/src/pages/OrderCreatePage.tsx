@@ -610,14 +610,16 @@ function Choice({
       style={{
         flex: '1 1 240px',
         textAlign: 'left',
-        padding: '14px 16px',
+        padding: '12px 16px',
         borderRadius: 8,
-        border: `1px solid ${active ? '#1677ff' : '#d9d9d9'}`,
-        background: active ? '#e6f4ff' : '#fff',
+        border: '1px solid rgba(23, 23, 23, 0.14)',
+        background: active ? '#f4f4f5' : '#fff',
+        boxShadow: active ? 'inset 3px 0 0 #e6b325' : 'none',
+        fontWeight: 500,
         cursor: 'pointer',
       }}
     >
-      <div style={{ fontWeight: 600, fontSize: 15 }}>{title}</div>
+      <div style={{ fontWeight: 500, fontSize: 15 }}>{title}</div>
       <div style={{ color: 'rgba(0,0,0,0.65)', fontSize: 13, marginTop: 4, lineHeight: 1.5 }}>{detail}</div>
     </button>
   );

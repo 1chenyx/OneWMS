@@ -28,6 +28,15 @@ const LEVEL_META: Record<ExpiryLevel, { label: string; color: string }> = {
   unknown: { label: '未登记效期', color: 'default' },
 };
 
+/** 统计数字用压暗的语义色。标签仍走 antd 预设，方便扫读。 */
+const LEVEL_FIGURE: Record<ExpiryLevel, string> = {
+  expired: '#a33b32',
+  critical: '#8a5a00',
+  warning: '#7a4e00',
+  safe: '#3f7d4e',
+  unknown: '#737373',
+};
+
 const LEVEL_ORDER: ExpiryLevel[] = ['expired', 'critical', 'warning', 'safe', 'unknown'];
 
 /** 统计卡副标题：层的语义边界（缺省阈值 7/30，改 settings 后分层随动） */
@@ -140,7 +149,7 @@ export default function ExpiryPage() {
               title={LEVEL_META[l].label}
               value={counts[l]}
               suffix="批"
-              valueStyle={{ color: LEVEL_META[l].color }}
+              valueStyle={{ color: LEVEL_FIGURE[l] }}
             />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {LEVEL_HINT[l]}

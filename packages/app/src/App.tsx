@@ -111,7 +111,7 @@ function AppShell() {
             flex: 1,
             minHeight: 0,
             overflow: 'hidden',
-            padding: 16,
+            padding: 24,
             display: 'flex',
             flexDirection: 'column',
           }}

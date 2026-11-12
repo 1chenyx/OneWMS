@@ -21,7 +21,7 @@ const STYLE = `
 }
 .numbering-group {
   margin: 14px 0 4px;
-  font-weight: 600;
+  font-weight: 500;
 }
 .numbering-row {
   display: grid;

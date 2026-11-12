@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { App as AntApp, ConfigProvider } from 'antd';
 import ProposalDetail from '../src/components/ProposalDetail';
 import ChatPage from '../src/pages/ChatPage';
-import { ChatProvider } from '../src/chat/ChatProvider';
+import { CHAT_OPEN_THREAD_KEY, ChatProvider } from '../src/chat/ChatProvider';
 import { AppNavProvider, useAppNav } from '../src/app-nav';
 import { AGENT_DEFS_PATH } from '../src/pages/agent-proposal';
 import { ApiError } from '../src/api/client';
@@ -23,6 +23,17 @@ const streamMock = vi.fn();
 const answerMock = vi.fn();
 const agentsMock = vi.fn();
 const modelsMock = vi.fn();
+const listThreadsMock = vi.fn(async () => [] as { id: string; agentId: string; title: string; createdAt: number; updatedAt: number }[]);
+const saveThreadMock = vi.fn(async (id: string, body: { agentId: string; turns: { userText?: string }[] }) => ({
+  id,
+  agentId: body.agentId,
+  title: body.turns[0]?.userText?.slice(0, 40) || '新对话',
+  createdAt: 1,
+  updatedAt: Date.now(),
+}));
+const resumeThreadMock = vi.fn();
+const deleteThreadMock = vi.fn(async (_id: string) => undefined);
+const clearThreadsMock = vi.fn(async (_exceptId?: string) => undefined);
 // 默认已配置（不弹引导卡）；未配置引导用例内覆盖返回值
 const aiConfigMock = vi.fn((): { isLoading: boolean; data: AiConfigStatus } => ({
   isLoading: false,
@@ -69,6 +80,11 @@ vi.mock('../src/api/client', async (importOriginal) => {
     streamChatMessage: (...args: unknown[]) => streamMock(...args),
     answerChatAsk: (sessionId: string, callId: string, answer: string | null) =>
       answerMock(sessionId, callId, answer),
+    listChatThreads: () => listThreadsMock(),
+    saveChatThread: (id: string, body: { agentId: string; turns: { userText?: string }[] }) => saveThreadMock(id, body),
+    resumeChatThread: (id: string) => resumeThreadMock(id),
+    deleteChatThread: (id: string) => deleteThreadMock(id),
+    clearChatThreads: (exceptId?: string) => clearThreadsMock(exceptId),
     api: { ...actual.api, agents: () => agentsMock(), aiModels: () => modelsMock() },
   };
 });
@@ -134,8 +150,15 @@ describe('ProposalDetail：确认流程', () => {
 
 describe('ChatPage：SSE 流式', () => {
   beforeEach(() => {
+    localStorage.removeItem(CHAT_OPEN_THREAD_KEY);
     streamMock.mockReset();
     answerMock.mockReset();
+    listThreadsMock.mockReset();
+    listThreadsMock.mockResolvedValue([]);
+    saveThreadMock.mockClear();
+    resumeThreadMock.mockReset();
+    deleteThreadMock.mockClear();
+    clearThreadsMock.mockClear();
     // 默认目录：内置三件套（Segmented 选项来源；个别用例可覆盖）
     proposalsMock.mockReturnValue({ isLoading: false, data: [], refetch: vi.fn() });
     agentsMock.mockResolvedValue({

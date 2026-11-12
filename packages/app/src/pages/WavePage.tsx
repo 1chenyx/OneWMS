@@ -8,6 +8,7 @@ import PageHeader from '../components/PageHeader';
 import { monoCell, TABLE_PAGINATION } from '../components/table-style';
 import { useAppNav } from '../app-nav';
 import { fmtQty } from '../lib/format';
+import { face } from '../theme';
 
 const WAVE_STATE: Record<string, { text: string; color?: string }> = {
   open: { text: '待拣', color: 'processing' },
@@ -232,7 +233,11 @@ export default function WavePage() {
           pagination={TABLE_PAGINATION}
           onRow={(wave) => ({
             onClick: () => setSelectedWave(wave.waveNo),
-            style: { cursor: 'pointer', background: wave.waveNo === selectedWave ? 'rgba(22, 119, 255, 0.06)' : undefined },
+            style: {
+              cursor: 'pointer',
+              background: wave.waveNo === selectedWave ? face.raised : undefined,
+              boxShadow: wave.waveNo === selectedWave ? `inset 3px 0 0 ${face.amber}` : undefined,
+            },
           })}
           locale={{ emptyText: '还没有波次' }}
         />

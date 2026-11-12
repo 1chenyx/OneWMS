@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Space, Typography } from 'antd';
+import { face } from '../theme';
 
 /**
  * 页头（P0 界面优化）：标题 + 一句说明 + 右侧动作，统一替代各页 Card 的
@@ -28,11 +29,11 @@ export default function PageHeader({
       }}
     >
       <div style={{ minWidth: 0 }}>
-        <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 0 }}>
+        <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 0, fontSize: 22, fontWeight: 500, lineHeight: 1.2, color: face.ink }}>
           {title}
         </Typography.Title>
         {subtitle ? (
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+          <Typography.Text style={{ fontSize: 13, color: face.text2 }}>
             {subtitle}
           </Typography.Text>
         ) : null}

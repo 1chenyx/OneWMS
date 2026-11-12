@@ -19,8 +19,24 @@ export const api = {
 };
 
 export { ApiError } from './request';
-export { answerChatAsk, streamChatMessage } from './chat-api';
-export type { ChatAttachmentChip, ChatAttachmentPayload, ChatInvocation, ChatStreamEvent } from './chat-api';
+export {
+  answerChatAsk,
+  clearChatThreads,
+  deleteChatThread,
+  listChatThreads,
+  resumeChatThread,
+  saveChatThread,
+  streamChatMessage,
+} from './chat-api';
+export type {
+  ChatAttachmentChip,
+  ChatAttachmentPayload,
+  ChatInvocation,
+  ChatStreamEvent,
+  ChatThreadDetail,
+  ChatThreadSummary,
+  ChatThreadTurn,
+} from './chat-api';
 export type { ConfirmResponse } from './profile-api';
 export type {
   DynListQuery,

@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CloseOutlined, RobotOutlined } from '@ant-design/icons';
-import { Badge, Button, ConfigProvider, theme, Tooltip } from 'antd';
+import { Badge, Button, ConfigProvider, Tooltip } from 'antd';
 import { useAppNav } from '../app-nav';
 import { useChatSession } from '../chat/ChatProvider';
 import ChatPage from '../pages/ChatPage';
+import { face } from '../theme';
 
 /**
  * 右侧圆形助手。除「AI 对话」整页以外，每个页面都能打开同一份对话。
@@ -14,21 +15,20 @@ import ChatPage from '../pages/ChatPage';
 export default function ChatDock() {
   const { page } = useAppNav();
   const chat = useChatSession();
-  const { token } = theme.useToken();
   const [open, setOpen] = useState(false);
 
   if (page === 'chat' || typeof document === 'undefined') return null;
 
   const launcher = (
     <Button
-      type="primary"
+      className="chat-dock-launcher"
       shape="circle"
       aria-label={open ? '收起 AI 对话' : '打开 AI 对话'}
       aria-expanded={open}
       aria-controls="chat-dock-panel"
       icon={open ? <CloseOutlined /> : <RobotOutlined />}
       onClick={() => setOpen((value) => !value)}
-      style={{ width: 56, height: 56, fontSize: 22, boxShadow: '0 6px 16px rgba(22, 119, 255, 0.35)' }}
+      style={{ width: 56, height: 56, fontSize: 18 }}
     />
   );
 
@@ -56,10 +56,10 @@ export default function ChatDock() {
             style={{
               width: 'min(400px, calc(100vw - 48px))',
               height: 'min(640px, calc(100vh - 116px))',
-              background: token.colorBgElevated,
-              borderRadius: 16,
-              boxShadow: token.boxShadowSecondary,
-              border: `1px solid ${token.colorBorderSecondary}`,
+              background: face.card,
+              borderRadius: 12,
+              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.06)',
+              border: `1px solid ${face.line}`,
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
@@ -71,14 +71,14 @@ export default function ChatDock() {
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 gap: 8,
-                padding: '10px 8px 10px 16px',
-                borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                padding: '12px 12px 12px 16px',
+                borderBottom: `1px solid ${face.line}`,
                 flex: 'none',
               }}
             >
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600, lineHeight: 1.3 }}>AI 对话</div>
-                <div style={{ fontSize: 12, color: token.colorTextSecondary }}>自然语言出入库 / 改配置</div>
+                <div style={{ fontWeight: 500, lineHeight: 1.3 }}>AI 对话</div>
+                <div style={{ fontSize: 12, color: face.text2 }}>自然语言出入库 / 改配置</div>
               </div>
               <Button type="text" aria-label="关闭 AI 对话" icon={<CloseOutlined />} onClick={() => setOpen(false)} />
             </div>
@@ -89,7 +89,7 @@ export default function ChatDock() {
         ) : null}
         <Tooltip title={open ? undefined : 'AI 对话'} placement="left">
           {chat.isStreaming && !open ? (
-            <Badge dot offset={[-6, 6]}>
+            <Badge dot color={face.amberInk} offset={[-6, 6]}>
               {launcher}
             </Badge>
           ) : (

@@ -30,6 +30,7 @@ import { migrationRoutes } from './routes/migration.js';
 import { backupRoutes, backupSnapshot } from './routes/backups.js';
 import { runSyncRound } from './sync/sync-client.js';
 import { envPeers, mergePeerUrls, resolvePeersPath } from './sync/peer-store.js';
+import { resolveChatThreadsPath } from './chat-threads.js';
 
 export { createAppContext } from './context.js';
 export type { AppContext } from './context.js';
@@ -103,6 +104,7 @@ export function start(): void {
     backupIntervalMs: resolveBackupIntervalMs(),
     backupKeep: resolveBackupKeep(),
     peersPath: resolvePeersPath(dbPath),
+    chatThreadsPath: resolveChatThreadsPath(dbPath),
   });
   const app = createApp(ctx);
 

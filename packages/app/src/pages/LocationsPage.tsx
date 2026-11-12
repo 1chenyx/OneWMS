@@ -41,7 +41,7 @@ const SPLIT_STYLE = `
 }
 .loc-parents-head {
   padding: 14px 16px 8px;
-  font-weight: 600;
+  font-weight: 500;
   flex: none;
 }
 .loc-parents-body { overflow: auto; flex: 1; padding-bottom: 8px; }
@@ -67,7 +67,7 @@ const SPLIT_STYLE = `
 .loc-parent-text { flex: 1; min-width: 0; }
 .loc-parent-name {
   display: block;
-  font-weight: 600;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -433,8 +433,8 @@ export default function LocationsPage() {
   const splitVars = {
     '--loc-line': token.colorBorderSecondary,
     '--loc-hover': token.colorFillTertiary,
-    '--loc-active': token.colorPrimaryBg,
-    '--loc-accent': token.colorPrimary,
+    '--loc-active': '#f4f4f5',
+    '--loc-accent': '#e6b325',
     '--loc-muted': token.colorTextSecondary,
     '--loc-pill': token.colorFillSecondary,
     '--loc-nav-bg': token.colorFillAlter,

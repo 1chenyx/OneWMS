@@ -1,6 +1,7 @@
 import { Badge, Button, Divider, Layout, Space, Tooltip, Typography } from 'antd';
 import { useNodeHello } from '../api/hooks';
 import { useAppNav } from '../app-nav';
+import { face } from '../theme';
 
 /**
  * 全局顶栏（P1 界面优化）：品牌 + 工作区/节点身份 + 同步状态灯。
@@ -32,19 +33,19 @@ export default function Topbar() {
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 16,
-        height: 48,
+        height: 56,
         lineHeight: 'normal',
-        paddingInline: 16,
-        background: '#fff',
-        borderBottom: '1px solid #f0f0f0',
+        paddingInline: 24,
+        background: face.card,
+        borderBottom: `1px solid ${face.line}`,
       }}
     >
       <Space size={12} align="center" style={{ minWidth: 0 }}>
-        <Typography.Text strong style={{ fontSize: 16, whiteSpace: 'nowrap' }}>
+        <Typography.Text style={{ fontSize: 16, fontWeight: 500, whiteSpace: 'nowrap' }}>
           OneWMS
         </Typography.Text>
-        <Divider type="vertical" style={{ marginInline: 0 }} />
-        <Typography.Text type="secondary" ellipsis style={{ maxWidth: 420 }}>
+        <Divider type="vertical" style={{ marginInline: 0, borderColor: face.lineStrong }} />
+        <Typography.Text ellipsis style={{ maxWidth: 420, fontFamily: face.mono, fontSize: 13, color: face.text2 }}>
           {identity}
         </Typography.Text>
       </Space>

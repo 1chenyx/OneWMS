@@ -12,7 +12,8 @@ import type { TablePaginationConfig } from 'antd';
 
 /** 等宽字体（机器标识列） */
 export const MONO_STYLE: CSSProperties = {
-  fontFamily: "ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace",
+  fontFamily: '"IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace',
+  fontVariantNumeric: 'tabular-nums',
 };
 
 /** 等宽数字（数量列，配合 align: 'right'） */

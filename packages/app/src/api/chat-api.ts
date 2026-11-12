@@ -71,6 +71,69 @@ export async function streamChatMessage(
   await consumeSse(res.body, onEvent);
 }
 
+/** 历史列表里的一条，不含气泡和模型上下文 */
+export interface ChatThreadSummary {
+  id: string;
+  agentId: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 打开一段旧对话时带回的气泡。模型上下文留在服务端 */
+export interface ChatThreadDetail extends ChatThreadSummary {
+  turns: ChatThreadTurn[];
+}
+
+/** 存档里的一轮，和对话页气泡同形 */
+export interface ChatThreadTurn {
+  userText: string;
+  attachments?: ChatAttachmentChip[];
+  invocations: ChatInvocation[];
+  assistantText: string;
+  failed?: string;
+  failedCode?: string;
+  done: boolean;
+}
+
+export async function listChatThreads(): Promise<ChatThreadSummary[]> {
+  const data = await request<{ threads: ChatThreadSummary[] }>('/api/chat/threads');
+  return data.threads;
+}
+
+/** 把这段装回服务端内存会话，并返回气泡 */
+export async function resumeChatThread(id: string): Promise<ChatThreadDetail> {
+  const data = await request<{ thread: ChatThreadDetail }>(
+    `/api/chat/sessions/${encodeURIComponent(id)}/resume`,
+    { method: 'POST', body: '{}' },
+  );
+  return data.thread;
+}
+
+/** 把界面气泡写进存档。模型上下文由服务端自己留着 */
+export async function saveChatThread(
+  id: string,
+  body: { agentId: string; turns: ChatThreadTurn[] },
+): Promise<ChatThreadSummary> {
+  const data = await request<{ thread: ChatThreadSummary }>(
+    `/api/chat/threads/${encodeURIComponent(id)}`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+  return data.thread;
+}
+
+export async function deleteChatThread(id: string): Promise<void> {
+  await request<{ ok: boolean }>(`/api/chat/threads/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** 删掉存档。exceptId 那段留下（正在看的对话） */
+export async function clearChatThreads(exceptId?: string): Promise<void> {
+  await request<{ ok: boolean }>('/api/chat/threads/clear', {
+    method: 'POST',
+    body: JSON.stringify(exceptId ? { exceptId } : {}),
+  });
+}
+
 /** 回答挂起的 ui.ask（answer 为 null 表示跳过）——原 SSE 连接收回答后继续 */
 export async function answerChatAsk(
   sessionId: string,

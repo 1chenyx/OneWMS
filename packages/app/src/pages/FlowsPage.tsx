@@ -88,32 +88,33 @@ const PAGE_STYLE = `
   color: inherit;
   font: inherit;
 }
-.flow-list-item:hover { background: #f7f9fc; }
+.flow-list-item:hover { background: var(--raised); }
 .flow-list-item[aria-current="true"] {
-  background: #f0f7ff;
-  border-color: #91caff;
+  background: var(--raised);
+  border-color: transparent;
+  box-shadow: inset 3px 0 0 var(--amber);
 }
-.flow-list-name { font-size: 15px; font-weight: 600; }
+.flow-list-name { font-size: 15px; font-weight: 500; }
 .flow-list-hint { font-size: 12px; line-height: 1.4; color: rgba(0, 0, 0, 0.45); }
 .flow-detail {
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  background: #f5f7fb;
+  background: var(--paper);
 }
 .lane-head {
   position: sticky;
   top: 0;
   z-index: 1;
   padding: 20px 28px 4px;
-  background: linear-gradient(#f5f7fb 72%, rgba(245, 247, 251, 0));
+  background: linear-gradient(#fafafa 72%, rgba(250, 250, 250, 0));
 }
 .lane-title {
   margin: 0;
   font-size: 20px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 .lane-lead {
   margin: 6px 0 0;
@@ -150,14 +151,14 @@ const PAGE_STYLE = `
   width: 100%;
   box-sizing: border-box;
   padding: 14px 16px;
-  border: 1px solid #e6ebf2;
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(16, 36, 69, 0.04), 0 8px 24px rgba(16, 36, 69, 0.04);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 .node.is-off {
   border-style: dashed;
-  border-color: #d5dbe3;
+  border-color: var(--line-strong);
   background: rgba(255, 255, 255, 0.72);
   box-shadow: none;
 }
@@ -167,26 +168,26 @@ const PAGE_STYLE = `
   top: 16px;
   width: 22px;
   height: 22px;
-  border-radius: 50%;
+  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #1677ff;
-  color: #fff;
+  background: var(--amber);
+  color: var(--ink);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1;
-  box-shadow: 0 0 0 4px #f5f7fb;
+  box-shadow: 0 0 0 4px var(--paper);
 }
 .node.is-off .node-mark {
-  background: #f5f7fb;
+  background: var(--paper);
   color: transparent;
-  box-shadow: 0 0 0 4px #f5f7fb, inset 0 0 0 2px #c5cdd8;
+  box-shadow: 0 0 0 4px var(--paper), inset 0 0 0 2px var(--line-strong);
 }
 .node-label {
   flex: 1;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 500;
   text-align: left;
   white-space: nowrap;
 }

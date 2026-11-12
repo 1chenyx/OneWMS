@@ -3,7 +3,7 @@ import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App as AntApp, ConfigProvider } from 'antd';
 import { AppNavProvider, useAppNav } from '../src/app-nav';
-import { ChatProvider } from '../src/chat/ChatProvider';
+import { CHAT_OPEN_THREAD_KEY, ChatProvider } from '../src/chat/ChatProvider';
 import ChatDock from '../src/components/ChatDock';
 import ChatPage from '../src/pages/ChatPage';
 
@@ -16,6 +16,19 @@ vi.mock('../src/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/api/client')>();
   return {
     ...actual,
+    listChatThreads: async () => [],
+    saveChatThread: async (id: string, body: { agentId: string }) => ({
+      id,
+      agentId: body.agentId,
+      title: '新对话',
+      createdAt: 1,
+      updatedAt: 1,
+    }),
+    resumeChatThread: async () => {
+      throw new Error('no thread');
+    },
+    deleteChatThread: async () => undefined,
+    clearChatThreads: async () => undefined,
     api: {
       ...actual.api,
       agents: () => Promise.resolve({ agents: [] }),
@@ -26,6 +39,7 @@ vi.mock('../src/api/client', async (importOriginal) => {
 afterEach(() => {
   cleanup();
   document.body.innerHTML = '';
+  localStorage.removeItem(CHAT_OPEN_THREAD_KEY);
 });
 
 function Harness() {

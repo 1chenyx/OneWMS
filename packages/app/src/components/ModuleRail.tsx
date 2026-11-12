@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { Popover, theme } from 'antd';
+import { Popover } from 'antd';
+import { ease, face } from '../theme';
 import { useProfileSnapshot, useUiPages } from '../api/hooks';
 import type { UiPageDescriptor } from '../api/client';
 import { useAppNav } from '../app-nav';
@@ -21,7 +22,6 @@ export default function ModuleRail() {
   const { page, navigate } = useAppNav();
   const snapshot = useProfileSnapshot();
   const uiPages = useUiPages();
-  const { token } = theme.useToken();
   const [openKey, setOpenKey] = useState<CategoryKey | null>(null);
   const [hotKey, setHotKey] = useState<CategoryKey | null>(null);
   const descriptors = uiPages.data?.pages;
@@ -43,12 +43,12 @@ export default function ModuleRail() {
         width: 84,
         minHeight: 0,
         overflowY: 'auto',
-        background: '#fff',
-        borderRight: `1px solid ${token.colorBorderSecondary}`,
+        background: face.card,
+        borderRight: `1px solid ${face.line}`,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'stretch',
-        padding: '12px 8px',
+        padding: '16px 8px',
         gap: 4,
       }}
     >
@@ -95,20 +95,21 @@ export default function ModuleRail() {
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: 6,
+                gap: 4,
                 width: '100%',
-                padding: '12px 4px',
+                padding: '8px 4px',
                 border: 'none',
-                borderRadius: token.borderRadius,
-                background: lit ? token.colorPrimaryBg : 'transparent',
-                color: lit ? token.colorPrimary : token.colorTextSecondary,
+                borderRadius: 8,
+                background: lit ? face.raised : 'transparent',
+                color: lit ? face.ink : face.text2,
+                boxShadow: lit ? `inset 3px 0 0 ${face.amber}` : 'none',
                 font: 'inherit',
                 cursor: 'pointer',
                 userSelect: 'none',
-                transition: 'all 0.2s',
+                transition: `background-color 160ms ${ease}, color 160ms ${ease}, box-shadow 160ms ${ease}`,
               }}
             >
-              <Icon style={{ fontSize: 20 }} />
+              <Icon style={{ fontSize: 16 }} />
               <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{category.label}</span>
             </button>
           </Popover>
@@ -161,14 +162,13 @@ function ModuleFlyout({
   page: Page;
   onPick: (page: Page) => void;
 }) {
-  const { token } = theme.useToken();
   const multi = items.length > 1;
 
   return (
     <div role="dialog" aria-label={`${category.label}功能`} style={{ width: multi ? 280 : 148 }}>
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, lineHeight: '22px' }}>{category.label}</div>
-        <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{category.description}</div>
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, lineHeight: '20px' }}>{category.label}</div>
+        <div style={{ fontSize: 12, color: face.text3 }}>{category.description}</div>
       </div>
       <div
         data-testid="module-flyout-grid"
@@ -195,7 +195,6 @@ function ModuleTile({
   active: boolean;
   onPick: (page: Page) => void;
 }) {
-  const { token } = theme.useToken();
   const [hot, setHot] = useState(false);
   const Icon = item.icon;
 
@@ -211,22 +210,20 @@ function ModuleTile({
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 6,
+        gap: 8,
         minHeight: 72,
-        padding: '10px 8px',
-        border: `1px solid ${active ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
-        borderRadius: token.borderRadiusLG,
-        background: active
-          ? token.colorPrimaryBg
-          : hot
-            ? token.colorFillTertiary
-            : token.colorBgContainer,
-        color: active ? token.colorPrimary : token.colorText,
+        padding: '12px 8px',
+        border: `1px solid ${face.line}`,
+        borderRadius: 8,
+        background: active || hot ? face.raised : face.card,
+        color: face.ink,
+        boxShadow: active ? `inset 3px 0 0 ${face.amber}` : 'none',
         cursor: 'pointer',
-        transition: 'all 0.2s',
+        font: 'inherit',
+        transition: `background-color 160ms ${ease}, box-shadow 160ms ${ease}`,
       }}
     >
-      <Icon style={{ fontSize: 20 }} />
+      <Icon style={{ fontSize: 16, color: face.text2 }} />
       <span style={{ fontSize: 12, lineHeight: '16px', whiteSpace: 'nowrap' }}>{item.label}</span>
     </button>
   );

@@ -17,6 +17,8 @@ import { proposalsForChat } from './agent-proposal';
 import ToolInvocationCard from '../components/ToolInvocationCard';
 import ToolRun from '../components/ToolRun';
 import PageHeader from '../components/PageHeader';
+import ChatThreadActions from '../chat/ChatThreadActions';
+import { face } from '../theme';
 
 /**
  * AI 对话面板（M12：SSE 流式 + 会话化；M16：多助手切换）：
@@ -24,7 +26,9 @@ import PageHeader from '../components/PageHeader';
  *  - 输入框底部两个下拉：切换助手（选项来自 GET /api/agents）、
  *    切换厂商和模型（一个按钮：厂商作子菜单分组，点是这个厂商的模型，
  *    预设加上已经保存过的名字）。地址和密钥跟这个厂商已保存的那一条走。
- *    切换助手 = 换新会话 + 清空历史（流式中锁定）；切换厂商或模型不换会话；
+ *    切换助手 = 当前段先收进历史，再换新会话并清空画面（流式中锁定）；切换厂商或模型不换会话；
+ *  - 标题右侧（浮窗则在输入框底栏）有「历史」和「新对话」。历史可按标题搜索，
+ *    点开一段接着聊。新对话先把当前段收进存档。清空历史时正在看的这一段留下；
  *  - 配置确认：对话里的 profile.propose 和 AI 记忆设置一到就弹窗，
  *    写明将改成什么样、有什么影响；关掉后可从输入框上方再打开。
  *    助手定义的改动在助手管理页自己确认，不进这个窗口；
@@ -250,8 +254,6 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
       className={dock ? undefined : 'app-fill'}
       style={{
         width: '100%',
-        maxWidth: dock ? undefined : 860,
-        margin: dock ? undefined : '0 auto',
         display: 'flex',
         flexDirection: 'column',
         gap: dock ? 8 : 16,
@@ -262,7 +264,13 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
         overflow: 'hidden',
       }}
     >
-      {dock ? null : <PageHeader title="AI 对话" subtitle="自然语言出入库 / 改配置" />}
+      {dock ? null : (
+        <PageHeader
+          title="AI 对话"
+          subtitle="自然语言出入库 / 改配置"
+          extra={<ChatThreadActions variant="page" agents={agents} />}
+        />
+      )}
       {/* AI 未配置引导卡：配置保存成功后自动消失 */}
       {aiUnconfigured ? (
         <Alert
@@ -369,9 +377,9 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
             style={{
               flex: 1,
               minWidth: 0,
-              border: `1px solid ${dragOver ? '#1677ff' : '#d9d9d9'}`,
+              border: `1px solid ${dragOver ? face.amberInk : face.lineStrong}`,
               borderRadius: 8,
-              background: chat.isStreaming ? '#f5f5f5' : dragOver ? '#e6f4ff' : '#fff',
+              background: chat.isStreaming ? face.raised : dragOver ? face.amberWash : face.card,
               padding: '8px 8px 4px 12px',
             }}
           >
@@ -423,6 +431,7 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
                 minWidth: 0,
               }}
             >
+              {dock ? <ChatThreadActions variant="dock" agents={agents} /> : null}
               <div
                 className="composer-slot"
                 style={{
@@ -533,7 +542,7 @@ function UserBubble({ turn }: { turn: ChatTurn }) {
   if (!turn.userText && !turn.attachments?.length) return null;
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-      <div style={{ background: '#e6f4ff', padding: '6px 12px', borderRadius: 8, maxWidth: '80%' }}>
+      <div style={{ background: face.amberWash, color: face.ink, padding: '8px 12px', borderRadius: 8, maxWidth: '80%' }}>
         {turn.attachments?.map((file) => (
           <div key={file.id}>
             {file.name}

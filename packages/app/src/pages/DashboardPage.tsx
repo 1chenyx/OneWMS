@@ -28,6 +28,7 @@ import {
 import type { AlertSummary, FlowTrendPoint, LocationDistribution, OrderStateCount } from '../api/client';
 import PageHeader from '../components/PageHeader';
 import { monoCell, numCell, TABLE_PAGINATION } from '../components/table-style';
+import { face } from '../theme';
 
 /**
  * 运营看板页（M21）——五维度 Segmented 切换，各自独立查询/端点/queryKey：
@@ -69,14 +70,14 @@ export default function DashboardPage() {
 /** ① 总览：数字卡片（2×4 栅格） */
 function OverviewView() {
   const { data, isLoading } = useDashboardOverview();
-  const cards: { title: string; value?: number; icon: React.ReactNode; color?: string }[] = [
+  const cards: { title: string; value?: number; icon: React.ReactNode; tone?: string }[] = [
     { title: 'SKU 数', value: data?.skuCount, icon: <ExperimentOutlined /> },
     { title: '库存总量', value: data?.totalQuantity, icon: <DatabaseOutlined /> },
-    { title: '在途单据', value: data?.openOrderCount, icon: <OrderedListOutlined />, color: '#1677ff' },
-    { title: '进行中拣货单', value: data?.openPickingCount, icon: <ContainerOutlined />, color: '#1677ff' },
+    { title: '在途单据', value: data?.openOrderCount, icon: <OrderedListOutlined /> },
+    { title: '进行中拣货单', value: data?.openPickingCount, icon: <ContainerOutlined /> },
     { title: '库位使用', value: data?.locationUsedCount, icon: <PieChartOutlined /> },
-    { title: '临期批次（桶）', value: data?.expiringSoonCount, icon: <FieldTimeOutlined />, color: data?.expiringSoonCount ? '#fa8c16' : undefined },
-    { title: '活动冻结', value: data?.activeHoldCount, icon: <LockOutlined />, color: data?.activeHoldCount ? '#fa541c' : undefined },
+    { title: '临期批次（桶）', value: data?.expiringSoonCount, icon: <FieldTimeOutlined />, tone: data?.expiringSoonCount ? face.amberInk : undefined },
+    { title: '活动冻结', value: data?.activeHoldCount, icon: <LockOutlined />, tone: data?.activeHoldCount ? face.bad : undefined },
     { title: '库位总数', value: data?.locationCount, icon: <PieChartOutlined /> },
   ];
   return (
@@ -84,7 +85,12 @@ function OverviewView() {
       {cards.map((c) => (
         <Col xs={12} sm={12} md={6} key={c.title}>
           <Card loading={isLoading}>
-            <Statistic title={c.title} value={c.value ?? 0} prefix={<span style={{ marginRight: 6, color: c.color }}>{c.icon}</span>} valueStyle={c.color ? { color: c.color } : undefined} />
+            <Statistic
+              title={c.title}
+              value={c.value ?? 0}
+              prefix={<span style={{ marginRight: 8, color: face.text3, fontSize: 16 }}>{c.icon}</span>}
+              valueStyle={{ color: c.tone ?? face.ink }}
+            />
           </Card>
         </Col>
       ))}
@@ -106,17 +112,17 @@ function FlowTrendView() {
     );
   }
   const max = Math.max(...points.map((p) => Math.max(p.inbound, p.outbound)), 1);
-  const H = 160;
+  const H = 280;
   const half = H / 2;
   return (
     <Card
       title={`近 ${days} 天出入库流量`}
       extra={
         <Space>
-          <Tag icon={<ArrowUpOutlined />} color="green">
+          <Tag icon={<ArrowUpOutlined />} style={{ color: face.good, background: '#eef6f0', borderColor: 'transparent' }}>
             入库 {points.reduce((s, p) => s + p.inbound, 0)}
           </Tag>
-          <Tag icon={<ArrowDownOutlined />} color="red">
+          <Tag icon={<ArrowDownOutlined />} style={{ color: face.text2, background: face.raised, borderColor: 'transparent' }}>
             出库 {points.reduce((s, p) => s + p.outbound, 0)}
           </Tag>
         </Space>
@@ -127,14 +133,14 @@ function FlowTrendView() {
   );
 }
 
-/** SVG 迷你趋势图：中轴线，上半入库绿柱、下半出库红柱；hover 有 tooltip */
+/** SVG 趋势图：中轴线上半入库（墨色）、下半出库（中性灰）；hover 有 tooltip */
 function FlowChart({ points, max, half, H }: { points: FlowTrendPoint[]; max: number; half: number; H: number }) {
   const W = Math.max(points.length * 36, 360);
   const barW = 10;
   return (
     <div style={{ overflowX: 'auto' }}>
       <svg width={W} height={H + 28} role="img" aria-label="出入库流量趋势图">
-        <line x1={0} y1={half} x2={W} y2={half} stroke="rgba(0,0,0,0.15)" strokeWidth={1} />
+        <line x1={0} y1={half} x2={W} y2={half} stroke={face.lineStrong} strokeWidth={1} />
         {points.map((p, i) => {
           const cx = i * 36 + 18;
           const inH = Math.round((p.inbound / max) * (half - 12));
@@ -142,9 +148,9 @@ function FlowChart({ points, max, half, H }: { points: FlowTrendPoint[]; max: nu
           return (
             <g key={p.day}>
               <title>{`${p.day}：入 ${p.inbound} / 出 ${p.outbound}`}</title>
-              {inH > 0 ? <rect x={cx - barW - 1} y={half - inH} width={barW} height={inH} rx={2} fill="#52c41a" /> : null}
-              {outH > 0 ? <rect x={cx + 1} y={half} width={barW} height={outH} rx={2} fill="#ff4d4f" /> : null}
-              <text x={cx} y={H + 20} textAnchor="middle" fontSize={10} fill="rgba(0,0,0,0.45)">
+              {inH > 0 ? <rect x={cx - barW - 1} y={half - inH} width={barW} height={inH} rx={2} fill={face.ink} /> : null}
+              {outH > 0 ? <rect x={cx + 1} y={half} width={barW} height={outH} rx={2} fill="#a3a3a3" /> : null}
+              <text x={cx} y={H + 20} textAnchor="middle" fontSize={12} fill={face.text3} fontFamily={face.mono}>
                 {p.day.slice(5)}
               </text>
             </g>
@@ -174,10 +180,10 @@ function LocationsView() {
       title: '占比',
       key: 'bar',
       render: (_, r) => (
-        <div style={{ background: 'rgba(0,0,0,0.06)', borderRadius: 4, height: 14, width: '100%' }}>
+        <div style={{ background: face.line, borderRadius: 4, height: 8, width: '100%' }}>
           <div
             style={{
-              background: '#1677ff',
+              background: face.ink,
               borderRadius: 4,
               height: '100%',
               width: `${Math.max(2, Math.round((r.quantity / max) * 100))}%`,

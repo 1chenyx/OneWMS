@@ -21,14 +21,25 @@ import {
   type StoredAttachment,
 } from '../chat-attachments.js';
 import { scheduleMemoryExtraction } from '../memory-hook.js';
+import {
+  mergeTurns,
+  readThreadId,
+  sanitizeTurns,
+  titleFromHistory,
+  titleFromTurns,
+  type ChatThreadRecord,
+} from '../chat-threads.js';
 
 /**
  * AI 快通道入口（M12：SSE 流式 + 会话化 + ui.ask 挂起/唤醒；M16：多助手）。
  *
- *  - 会话是 server 内存态（不持久化）：id 由前端生成（页面生命周期唯一），
- *    首条消息自动建档；会话承载 AgentMessage[] 历史，跨轮次喂给编排层；
+ *  - 进行中的一轮在内存 Map：id 由前端生成，首条消息自动建档，承载
+ *    AgentMessage[] 历史，跨轮次喂给编排层。空闲两小时回收内存项；
+ *  - 每一轮成功结束后写入对话存档（ctx.chatThreads）。刷新或重启后
+ *    resume 把模型上下文装回内存，界面气泡一并返回。导入文件的全文
+ *    不进存档。失败或中断的轮次不进模型上下文；
  *  - 每条消息按 body.agentId 读 AgentDefinition 现场装配（缺省 'general'）——
- *    定义经慢通道确认后下一轮即生效；切助手 = 前端换新会话（历史按助手隔离）；
+ *    定义经慢通道确认后下一轮即生效；切助手 = 前端把当前段收进存档再换新会话；
  *  - POST /sessions/:id/message 逐事件推 SSE（text-delta / tool-call /
  *    tool-result / ask / turn-done / error）；turn-done 后才把完整历史提交
  *    会话——失败或中断的轮次不提交，会话回到上一完整轮；
@@ -143,7 +154,7 @@ function providerForProfile(
 export function chatRoutes(ctx: AppContext): Hono {
   const sessions = new Map<string, ChatSession>();
 
-  /** 取会话；不存在则建档，顺带清理过期空闲会话 */
+  /** 取会话；不存在则建档。存档里有这段时把模型上下文装回来。顺带清理过期空闲会话 */
   const getOrCreate = (id: string): ChatSession => {
     const found = sessions.get(id);
     if (found) return found;
@@ -151,9 +162,38 @@ export function chatRoutes(ctx: AppContext): Hono {
     for (const [sid, s] of sessions) {
       if (s.status === 'idle' && now - s.updatedAt > SESSION_IDLE_MS) sessions.delete(sid);
     }
-    const session: ChatSession = { id, history: [], attachments: [], status: 'idle', updatedAt: now };
+    const archived = ctx.chatThreads.get(id);
+    const session: ChatSession = {
+      id,
+      history: archived ? archived.history : [],
+      attachments: [],
+      status: 'idle',
+      updatedAt: now,
+    };
     sessions.set(id, session);
     return session;
+  };
+
+  /** turn-done 后把模型上下文落进存档。已有气泡更全时先留着，等客户端把界面写回来 */
+  const archiveCommitted = (session: ChatSession, agentId: string): void => {
+    if (session.history.length === 0) return;
+    try {
+      const prev = ctx.chatThreads.get(session.id);
+      const now = Date.now();
+      const turns = mergeTurns(session.history, prev?.turns);
+      const record: ChatThreadRecord = {
+        id: session.id,
+        agentId,
+        title: prev && prev.turns.length > 0 ? prev.title : titleFromHistory(session.history),
+        createdAt: prev?.createdAt ?? now,
+        updatedAt: now,
+        turns,
+        history: session.history,
+      };
+      ctx.chatThreads.upsert(record);
+    } catch (err) {
+      console.warn(`[one-server] 对话存档写入失败：${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   /** 结束挂起的 ask：摘字段、清 timer、回 deferred（幂等——已结算是空操作） */
@@ -166,6 +206,82 @@ export function chatRoutes(ctx: AppContext): Hono {
   };
 
   return new Hono()
+    .get('/threads', (c) => c.json({ threads: ctx.chatThreads.list() }))
+    .put('/threads/:id', async (c) => {
+      const id = readThreadId(c.req.param('id'));
+      if (!id) return c.json({ code: 'BAD_REQUEST', message: '会话无效' }, 400);
+      const body = await c.req.json().catch(() => null);
+      const row = body && typeof body === 'object' ? (body as { agentId?: unknown; turns?: unknown }) : {};
+      const turns = sanitizeTurns(row.turns);
+      if (!turns || turns.length === 0) return c.json({ code: 'BAD_REQUEST', message: '没有要保存的内容' }, 400);
+      const agentId =
+        typeof row.agentId === 'string' && row.agentId.trim() ? row.agentId.trim().slice(0, 80) : 'general';
+      const live = sessions.get(id);
+      const prev = ctx.chatThreads.get(id);
+      const history = live && live.history.length > 0 ? live.history : (prev?.history ?? []);
+      const now = Date.now();
+      const saved = ctx.chatThreads.upsert({
+        id,
+        agentId,
+        title: titleFromTurns(turns),
+        createdAt: prev?.createdAt ?? now,
+        updatedAt: now,
+        turns,
+        history,
+      });
+      return c.json({ thread: saved });
+    })
+    .delete('/threads/:id', (c) => {
+      const id = readThreadId(c.req.param('id'));
+      if (!id) return c.json({ code: 'BAD_REQUEST', message: '会话无效' }, 400);
+      const live = sessions.get(id);
+      if (live?.status === 'streaming') {
+        return c.json({ code: 'CHAT_SESSION_BUSY', message: '这段对话正在回答，请稍候' }, 409);
+      }
+      if (live) sessions.delete(id);
+      const removed = ctx.chatThreads.remove(id);
+      if (!live && !removed) {
+        return c.json({ code: 'CHAT_THREAD_NOT_FOUND', message: '没有这段对话' }, 404);
+      }
+      return c.json({ ok: true });
+    })
+    .post('/threads/clear', async (c) => {
+      const body = await c.req.json().catch(() => ({}) as { exceptId?: unknown });
+      const exceptRaw = typeof body.exceptId === 'string' ? body.exceptId.trim() : '';
+      const exceptId = exceptRaw ? readThreadId(exceptRaw) : undefined;
+      if (exceptRaw && !exceptId) return c.json({ code: 'BAD_REQUEST', message: '会话无效' }, 400);
+      ctx.chatThreads.clearExcept(exceptId);
+      for (const [sid, session] of sessions) {
+        if (sid === exceptId || session.status === 'streaming') continue;
+        sessions.delete(sid);
+      }
+      return c.json({ ok: true });
+    })
+    .post('/sessions/:id/resume', (c) => {
+      const id = readThreadId(c.req.param('id'));
+      if (!id) return c.json({ code: 'BAD_REQUEST', message: '会话无效' }, 400);
+      const record = ctx.chatThreads.get(id);
+      const existing = sessions.get(id);
+      if (!record && !existing) {
+        return c.json({ code: 'CHAT_THREAD_NOT_FOUND', message: '没有这段对话' }, 404);
+      }
+      if (existing?.status === 'streaming') {
+        return c.json({ code: 'CHAT_SESSION_BUSY', message: '这段对话正在回答，请稍候' }, 409);
+      }
+      const session = getOrCreate(id);
+      if (session.history.length === 0 && record) session.history = record.history;
+      session.updatedAt = Date.now();
+      return c.json({
+        thread: {
+          id,
+          agentId: record?.agentId ?? 'general',
+          title: record?.title ?? '新对话',
+          createdAt: record?.createdAt ?? session.updatedAt,
+          updatedAt: record?.updatedAt ?? session.updatedAt,
+          turns: record?.turns ?? [],
+        },
+      });
+    })
     .post('/sessions/:id/message', async (c) => {
       const base = ctx.provider;
       if (!base) {
@@ -265,6 +381,7 @@ export function chatRoutes(ctx: AppContext): Hono {
             reply = undefined;
             if (done) {
               session.history = value.messages;
+              archiveCommitted(session, agentId);
               // 自动记忆（fire-and-forget）：turn-done 历史提交后排队提取，
               // 不阻塞 SSE；autoMemory 关闭/空轮/失败均静默（memory-hook 纪律）
               void scheduleMemoryExtraction(ctx, agentProvider, value.messages);

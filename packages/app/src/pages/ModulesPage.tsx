@@ -26,7 +26,7 @@ const PAGE_STYLE = `
 }
 .cap-group {
   margin: 8px 0 0;
-  font-weight: 600;
+  font-weight: 500;
 }
 .cap-card {
   padding: 14px 16px;
@@ -46,7 +46,7 @@ const PAGE_STYLE = `
   gap: 12px;
 }
 .cap-name {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 16px;
 }
 .cap-card.is-off .cap-name {
