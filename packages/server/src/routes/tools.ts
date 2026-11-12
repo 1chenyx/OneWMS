@@ -38,7 +38,7 @@ export function toolRoutes(ctx: AppContext): Hono {
       );
     }
     const pending = ctx.confirmations.issue({
-      workspaceId: ctx.ws.workspaceId,
+      workspaceId: ctx.workspaceId,
       toolId,
       label: tool.label,
       params,
@@ -72,7 +72,7 @@ export function toolRoutes(ctx: AppContext): Hono {
       throw new ToolValidationError('缺少确认令牌 token（先调 invoke 拿令牌）');
     }
     const pending = ctx.confirmations.consume(raw.trim(), {
-      workspaceId: ctx.ws.workspaceId,
+      workspaceId: ctx.workspaceId,
       toolId,
     });
     // ⚠️ 执行用令牌里冻结的 params/actor，不用本次请求体里的任何东西：

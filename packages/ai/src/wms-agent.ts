@@ -66,7 +66,7 @@ export interface SessionTool {
 export interface CreateAgentFromDefOptions {
   /** 节点 id（进审计 actor 后缀 @nodeId）——多节点同步时保持通道唯一（M5，§8.5） */
   nodeId?: string;
-  /** 编排步数上限（透传 runAgent，默认 8） */
+  /** 编排步数上限（透传 runAgent，默认 20） */
   maxSteps?: number;
   /** 长期记忆上下文（T0 常驻段 + T2 预取全文；调用方从记忆投影现算） */
   memory?: AgentMemoryContext;

@@ -68,6 +68,7 @@ export { qualifyKey, privatePrefix } from './registry/key-naming.js';
 export type { FieldSharing } from './registry/key-naming.js';
 
 export { applyPatch, parsePointer } from './profile/patch.js';
+export { dedupeConfigState } from './profile/heal.js';
 export { validatePatch } from './profile/validate.js';
 export { buildImpactReport } from './profile/impact.js';
 export { evalWhenCondition } from './profile/when.js';
@@ -107,21 +108,24 @@ export type { MigrationBundle } from './migration/migration-service.js';
 
 // 模块系统（M6）：manifest 类型族 + 校验纯函数；ModuleRegistry 类不导出——
 // 装配唯一入口是 OneCore.exposeModuleRegistry（领域包）/ workspace().modules（应用面）
-export { CORE_VERSION, MODULE_CAPABILITIES } from './modules/manifest-types.js';
+export { CORE_VERSION, MODULE_CAPABILITIES, UI_PAGE_KINDS, UI_PAGE_PREFIX } from './modules/manifest-types.js';
 export type {
   InstalledModule,
   ManifestContribution,
   ManifestFieldProvide,
   ManifestRecord,
   ManifestRecordField,
+  ManifestUi,
+  ManifestUiPage,
   ManifestWorkflowTransition,
   ManifestFieldRequire,
   ManifestTool,
   ModuleCapability,
   ModuleLifecyclePayload,
   ModuleManifest,
+  UiPageKind,
 } from './modules/manifest-types.js';
-export { compareSemver, validateManifest } from './modules/manifest-validate.js';
+export { compareSemver, isUiPageId, validateManifest } from './modules/manifest-validate.js';
 export type { ModuleUninstallReport } from './modules/module-registry.js';
 
 export { migrate, MIN_SCHEMA_VERSION, SCHEMA_VERSION } from './db/migrations.js';

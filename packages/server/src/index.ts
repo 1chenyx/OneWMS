@@ -24,6 +24,7 @@ import { memoryRoutes } from './routes/memory.js';
 import { wmsRoutes } from './routes/wms.js';
 import { dynRoutes } from './routes/dyn.js';
 import { toolRoutes } from './routes/tools.js';
+import { uiRoutes } from './routes/ui.js';
 import { lanIPv4, syncRoutes } from './routes/sync.js';
 import { migrationRoutes } from './routes/migration.js';
 import { backupRoutes, backupSnapshot } from './routes/backups.js';
@@ -67,6 +68,7 @@ export function createApp(ctx: AppContext): Hono {
   app.route('/api/backups', backupRoutes(ctx));
   app.route('/api/dyn', dynRoutes(ctx)); // 声明式实体记录端点（B.3）：先于 /api 挂，避免被兜底路由吃掉
   app.route('/api/tools', toolRoutes(ctx)); // 通用工具调用 + 写操作二次确认（B.5）
+  app.route('/api/ui', uiRoutes(ctx)); // SDUI 页面清单（B.6）：同样先于 /api 兜底挂
   app.route('/api', wmsRoutes(ctx));
   mountStatic(app);
   return app;

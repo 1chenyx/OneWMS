@@ -24,18 +24,23 @@ import FlowsPage from './pages/FlowsPage';
 import RulesPage from './pages/RulesPage';
 import ModulesPage from './pages/ModulesPage';
 import SettingsPage from './pages/SettingsPage';
+import DynamicPage from './pages/DynamicPage';
 import { ChatProvider } from './chat/ChatProvider';
 import { AppNavProvider, useAppNav } from './app-nav';
-import type { Page } from './app-nav';
+import type { BuiltinPage, Page } from './app-nav';
 import ModuleRail from './components/ModuleRail';
 import Topbar from './components/Topbar';
 import ChatDock from './components/ChatDock';
 
 /**
- * 页面注册表：page key → 组件。新增页面：Page 联合类型加 key →
- * nav.ts 挂到对应大类 → 这里登记组件（替代原来的三元链，功能增多不用改渲染逻辑）。
+ * 页面注册表：内置 page key → 组件。新增内置页面：BuiltinPage 加 key →
+ * nav.ts 挂到对应大类 → 这里登记组件。
+ *
+ * 类型收在 BuiltinPage 而不是开放后的 Page：漏登记一个内置页面会当场编译报错。
+ * Page 自 B.6 起接纳运行时字符串（声明式模块的页面），这份穷尽性检查是
+ * 开放之后唯一还留着的安全网，别顺手改成 Record<Page, …>——那样它就查不出任何东西了。
  */
-const PAGE_COMPONENTS: Record<Page, ComponentType> = {
+const PAGE_COMPONENTS: Record<BuiltinPage, ComponentType> = {
   dashboard: DashboardPage,
   skus: SkusPage,
   locations: LocationsPage,
@@ -87,7 +92,10 @@ export default function App() {
 /** 页面壳（AppNavProvider 内）：导航状态经 useAppNav 消费 */
 function AppShell() {
   const { page } = useAppNav();
-  const ActivePage = PAGE_COMPONENTS[page];
+  // 查不到 = 不是内置页面，交给 DynamicPage 按 /api/ui/pages 的描述渲染（B.6）。
+  // ⚠️ 这个 ?? 不能省：本项目未开 noUncheckedIndexedAccess，索引不到不会报错，
+  //    会直接渲染 <undefined /> 把整个主区炸成白屏。
+  const ActivePage = (PAGE_COMPONENTS as Partial<Record<Page, ComponentType>>)[page] ?? DynamicPage;
 
   return (
     // antd Layout 只有内部有 Sider 时才横向排。左侧是自定义 rail，

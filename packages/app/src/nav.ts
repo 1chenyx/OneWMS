@@ -141,3 +141,61 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
 export function categoryOfPage(page: Page): NavCategory {
   return NAV_CATEGORIES.find((c) => c.items.some((item) => item.page === page)) ?? NAV_CATEGORIES[0];
 }
+
+// ── 声明式模块页面的归类与图标（B.6）────────────────────────
+//
+// manifest 里的 category / icon 是**自由字符串**：core 是领域无关层，
+// 导航大类与图标库都是本包的知识，让它认识 CategoryKey 就是反向依赖。
+// 所以映射规则只能长在这里，且必须是「认不出也有得渲染」——
+// 模块作者写错一个词，页面顶多位置不对/图标是默认的，不会消失、不会崩。
+
+const CATEGORY_KEYS: readonly CategoryKey[] = NAV_CATEGORIES.map((c) => c.key);
+
+/** 未知大类一律归「档案」：基础主数据是声明式模块最常见的落点 */
+export function navCategoryFor(raw?: string): CategoryKey {
+  return CATEGORY_KEYS.includes(raw as CategoryKey) ? (raw as CategoryKey) : 'registry';
+}
+
+/**
+ * 图标白名单。只收本文件已经在用的图标——不是懒得加，而是
+ * 「按名字取任意图标」在 Vite 打包后无从实现（没有全量图标表可查），
+ * 白名单是唯一能静态打包的做法。
+ */
+const NAV_ICONS: Record<string, NavIcon> = {
+  ApartmentOutlined,
+  AppstoreOutlined,
+  AuditOutlined,
+  BarcodeOutlined,
+  BookOutlined,
+  BulbOutlined,
+  CarOutlined,
+  CarryOutOutlined,
+  CloudServerOutlined,
+  ClusterOutlined,
+  ContainerOutlined,
+  ControlOutlined,
+  DashboardOutlined,
+  DatabaseOutlined,
+  EnvironmentOutlined,
+  ExportOutlined,
+  FieldTimeOutlined,
+  FileDoneOutlined,
+  ImportOutlined,
+  InboxOutlined,
+  MessageOutlined,
+  PartitionOutlined,
+  PieChartOutlined,
+  ReconciliationOutlined,
+  RobotOutlined,
+  SettingOutlined,
+  SlidersOutlined,
+  TagsOutlined,
+  TeamOutlined,
+  VerticalAlignTopOutlined,
+};
+
+export const DEFAULT_NAV_ICON: NavIcon = AppstoreOutlined;
+
+export function navIconFor(name?: string): NavIcon {
+  return (name !== undefined && NAV_ICONS[name]) || DEFAULT_NAV_ICON;
+}

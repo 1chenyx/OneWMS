@@ -32,6 +32,26 @@ export type ModuleCapability = (typeof MODULE_CAPABILITIES)[number];
  */
 export const DYN_RECORD_PREFIX = 'dyn.';
 
+/**
+ * 声明式模块的页面 id 命名空间前缀（B.6）。
+ *
+ * 与 `dyn.` 同一个理由：前端内置页面 key 是裸单词（skus/inventory/…），
+ * 所以 `ui.` 开头的 key 结构上不可能撞上任何一个内置页面。
+ * 完整形态 `ui.{moduleId}.{pageId}`，校验见 manifest-validate.ts。
+ */
+export const UI_PAGE_PREFIX = 'ui.';
+
+/**
+ * 页面种类白名单（B.6）。
+ *
+ * 只有 `record-list`：一种「服务端描述、前端通用组件渲染」的页面形态。
+ * 白名单而不是自由字符串——前端拿到未知 kind 只能整页兜底，等于白配；
+ * 新增形态要同时在 core 词表与 app 渲染器各加一处，两侧都编译期可见。
+ */
+export const UI_PAGE_KINDS = ['record-list'] as const;
+
+export type UiPageKind = (typeof UI_PAGE_KINDS)[number];
+
 /** manifest 字段分区：provides 声明（§7.1：不存在则创建并成为 owner） */
 export interface ManifestFieldProvide {
   entity: string;
@@ -98,6 +118,40 @@ export interface ManifestTool {
   permission: 'read' | 'write';
 }
 
+/**
+ * manifest 界面分区的一个页面（B.6：SDUI 主链路）。
+ *
+ * ⚠️ category / icon 是**字符串**而不是词表枚举：core 是领域无关层，
+ *    导航大类与图标库都是 `packages/app` 的知识，这里 import 就是反向依赖。
+ *    前端按白名单映射（未知 category → 「档案」大类，未知 icon → 默认图标），
+ *    所以模块写错顶多是长得不对，不会崩、也不会消失。
+ */
+export interface ManifestUiPage {
+  /** 稳定页面 key，须为 `ui.{moduleId}.{pageId}`（见 UI_PAGE_PREFIX） */
+  id: string;
+  /** 中文页面名（导航浮窗与页面标题都用它） */
+  label: string;
+  /** 页面形态（白名单见 UI_PAGE_KINDS） */
+  kind: UiPageKind;
+  /**
+   * kind='record-list' 必填：本页面渲染哪个实体。
+   * 必须指向**同一份 manifest 的 records 里已声明**的 id——跨模块指别人的实体，
+   * 页面就会在「那个模块被卸载」后指向空气（校验期拒绝，不留运行时惊喜）。
+   */
+  record?: string;
+  /** 归入前端哪个导航大类（前端白名单映射，未知归「档案」） */
+  category?: string;
+  /** 图标名（前端白名单映射 antd 图标，未知用默认图标） */
+  icon?: string;
+  /** 给用户的页面说明（导航浮窗副标题） */
+  description?: string;
+}
+
+/** manifest 界面分区：模块声明「我要哪些页面」，渲染由前端通用组件完成（B.6） */
+export interface ManifestUi {
+  pages?: ManifestUiPage[];
+}
+
 /** 模块声明的一条转移。effect 可选；安装时内核盖上 providedBy */
 export interface ManifestWorkflowTransition {
   from: string;
@@ -115,7 +169,8 @@ export interface ManifestContribution {
 /**
  * 模块清单（DESIGN.md §6.1 全景的 v1 子集）。
  * - signature 恒 null（v1 本地模块无签名，DESIGN §10 冻结决策）；
- * - ui / jobs / entry / rules 不实现（无 v1 消费方，v2 生长点）；
+ * - jobs / entry / rules 不实现（无 v1 消费方，v2 生长点）；
+ * - ui 自 B.6 起实现（SDUI：服务端描述页面，前端通用组件渲染）；
  * - workflows.base 是本实现新增：领域基线流程种子（目标流程不存在才生效）——
  *   「内核基础」由领域包提供（core 领域无关），core.wms 的特权，守卫保证不覆盖既有配置。
  */
@@ -169,6 +224,12 @@ export interface ModuleManifest {
   workflowAliases?: Record<string, string[]>;
 
   tools?: ManifestTool[];
+
+  /**
+   * 界面分区（B.6）。页面描述由 GET /api/ui/pages 组装下发（含内联列定义），
+   * 前端按 kind 挑通用渲染器——模块不提交代码就能长出可用的管理页。
+   */
+  ui?: ManifestUi;
 
   events?: {
     /** 事件命名空间 `模块.事件名`（§6.3）；v1 只做声明，不做前缀强校验（无路由消费方） */

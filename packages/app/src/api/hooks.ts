@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
-import type { InventoryListPage, InventoryRow, InventorySlicePage, Location, Order, Partner, Sku } from './client';
+import type { DynListQuery, InventoryListPage, InventoryRow, InventorySlicePage, Location, Order, Partner, Sku, UiPageRecord } from './client';
 import type { ListPage } from './page';
 
 /** Profile 快照：动态列 / 流转按钮的数据源（切页挂载即刷新，提议确认后自然可见） */
@@ -877,5 +877,42 @@ export function useDeleteBackup() {
   return useMutation({
     mutationFn: api.backupRemove,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['backups'] }),
+  });
+}
+
+// ── SDUI（B.6）：页面清单 + 通用记录读写 ────────────────────
+
+/** 页面清单：只有装卸/停用模块才会变，单独缓存（不跟 profile 快照一起每页重取） */
+export function useUiPages() {
+  return useQuery({ queryKey: ['ui-pages'], queryFn: api.uiPages, staleTime: 60_000 });
+}
+
+/** 通用记录清单（分页 + 单列过滤全走服务端）。queryKey 带查询条件，翻页与过滤互不串缓存 */
+export function useDynRecords(record: UiPageRecord, query: DynListQuery) {
+  return useQuery({
+    queryKey: ['dyn-records', record.id, query],
+    queryFn: () => api.dynRecords(record.module, record.type, query),
+    placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * 申请调用工具（B.5 确认闸口的第一步）。
+ * read 直接回结果；write 只回令牌 —— ⚠️ 拿到 pending 就以为「写完了」是这条链路
+ * 最容易踩的坑，服务端此刻什么都没做，必须再走 useToolConfirm。
+ */
+export function useToolInvoke() {
+  return useMutation({
+    mutationFn: (input: { toolId: string; params: Record<string, unknown> }) =>
+      api.invokeTool(input.toolId, input.params),
+  });
+}
+
+/** 带令牌落地。成功后失效所有通用记录清单（不知道具体是哪张表，全失效比漏失效便宜） */
+export function useToolConfirm() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { toolId: string; token: string }) => api.confirmTool(input.toolId, input.token),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['dyn-records'] }),
   });
 }

@@ -7,6 +7,7 @@ import type { ProfileSnapshot } from '@one/core';
 import App from '../src/App';
 import { AppNavProvider, useAppNav } from '../src/app-nav';
 import ModuleRail from '../src/components/ModuleRail';
+import type { UiPageDescriptor } from '../src/api/client';
 
 /**
  * 左侧大类：点击立刻浮出功能网格，悬停约 0.4 秒也会浮出。点功能才切页。
@@ -27,11 +28,40 @@ function Probe() {
   );
 }
 
-function renderRail(profile?: ProfileSnapshot) {
+/** 声明式模块下发的一个页面（B.6）；只填导航要看的字段，列定义留最小可用 */
+function uiPage(id: string, label: string, category?: string): UiPageDescriptor {
+  return {
+    id,
+    label,
+    kind: 'record-list',
+    ...(category ? { category } : {}),
+    moduleId: 'vendor.asset',
+    moduleName: '资产模块',
+    record: {
+      id: 'dyn.vendor.asset.device',
+      label: '设备',
+      module: 'vendor.asset',
+      type: 'device',
+      fields: [{ key: 'name', label: '名称', queryable: true }],
+      tools: {
+        list: 'dyn.vendor.asset.device.list',
+        get: 'dyn.vendor.asset.device.get',
+        create: 'dyn.vendor.asset.device.create',
+        update: 'dyn.vendor.asset.device.update',
+        delete: 'dyn.vendor.asset.device.delete',
+      },
+    },
+  };
+}
+
+function renderRail(profile?: ProfileSnapshot, pages?: UiPageDescriptor[]) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   if (profile) client.setQueryData(['profile'], profile);
+  // ⚠️ 必须预置空清单：ModuleRail 会调 useUiPages，jsdom 里没有服务端，
+  //    放任真 fetch 失败会让「动态页面」这几例永远测不到东西
+  client.setQueryData(['ui-pages'], { pages: pages ?? [] });
   return render(
     <ConfigProvider>
       <QueryClientProvider client={client}>
@@ -147,5 +177,59 @@ describe('ModuleRail：悬停浮出功能网格', () => {
     await user.click(screen.getByRole('button', { name: '系统' }));
     await user.click(screen.getByText('规则'));
     expect(screen.getByTestId('page').textContent).toBe('rules');
+  });
+});
+
+describe('ModuleRail：声明式模块的页面（B.6）', () => {
+  it('按 category 落进对应大类，点它进入 ui.* 页面', async () => {
+    const user = userEvent.setup();
+    renderRail(undefined, [
+      uiPage('ui.vendor.asset.devices', '设备台账', 'ops'),
+      uiPage('ui.vendor.asset.brands', '设备品牌', 'registry'),
+    ]);
+
+    await user.click(screen.getByRole('button', { name: '作业' }));
+    expect(screen.getByText('设备台账')).toBeInTheDocument();
+    expect(screen.queryByText('设备品牌')).not.toBeInTheDocument();
+    await user.click(screen.getByText('设备台账'));
+    expect(screen.getByTestId('page').textContent).toBe('ui.vendor.asset.devices');
+
+    await user.click(screen.getByRole('button', { name: '档案' }));
+    expect(screen.getByText('设备品牌')).toBeInTheDocument();
+    expect(screen.getByText('SKU 管理')).toBeInTheDocument();
+    await user.click(screen.getByText('设备品牌'));
+    expect(screen.getByTestId('page').textContent).toBe('ui.vendor.asset.brands');
+  });
+
+  it('category 认不出来就归「档案」，页面不会消失', async () => {
+    const user = userEvent.setup();
+    renderRail(undefined, [
+      uiPage('ui.vendor.asset.a', '写了大类', 'ops'),
+      uiPage('ui.vendor.asset.b', '写错大类', 'not-a-category'),
+      uiPage('ui.vendor.asset.c', '没写大类'),
+    ]);
+
+    await user.click(screen.getByRole('button', { name: '档案' }));
+    expect(screen.getByText('写错大类')).toBeInTheDocument();
+    expect(screen.getByText('没写大类')).toBeInTheDocument();
+    expect(screen.queryByText('写了大类')).not.toBeInTheDocument();
+  });
+
+  it('进入动态页面后，高亮跟到它所属的大类而不是兜底到看板', async () => {
+    const user = userEvent.setup();
+    renderRail(undefined, [uiPage('ui.vendor.asset.devices', '设备台账', 'ops')]);
+
+    await user.click(screen.getByRole('button', { name: '作业' }));
+    await user.click(screen.getByText('设备台账'));
+    expect(screen.getByTestId('page').textContent).toBe('ui.vendor.asset.devices');
+
+    // categoryOfPage 对 ui.* 只会兜底到第一个大类（看板），
+    // 所以这里断言「看板不亮、作业亮」正好卡住那条回归路径
+    expect(screen.getByRole('button', { name: '看板' }).style.background).toBe('transparent');
+    expect(screen.getByRole('button', { name: '档案' }).style.background).toBe('transparent');
+    expect(screen.getByRole('button', { name: '作业' }).style.background).not.toBe('transparent');
+
+    await user.click(screen.getByRole('button', { name: '作业' }));
+    expect(screen.getByText('设备台账').closest('button')).toHaveAttribute('aria-current', 'page');
   });
 });

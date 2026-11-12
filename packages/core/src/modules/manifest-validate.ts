@@ -10,9 +10,11 @@ import type {
   ManifestFieldProvide,
   ManifestFieldRequire,
   ManifestRecord,
+  ManifestUi,
+  ManifestUiPage,
   ModuleManifest,
 } from './manifest-types.js';
-import { DYN_RECORD_PREFIX, MODULE_CAPABILITIES } from './manifest-types.js';
+import { DYN_RECORD_PREFIX, MODULE_CAPABILITIES, UI_PAGE_KINDS, UI_PAGE_PREFIX } from './manifest-types.js';
 import type { ValidationIssue } from '../profile/validate.js';
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'date', 'json'] as const;
@@ -114,6 +116,7 @@ export function validateManifest(manifest: ModuleManifest): { errors: Validation
   validateRecords(manifest.records, manifest.id, errors);
   validateAliases(manifest.aliases, manifest.id, errors);
   validateWorkflowAliases(manifest.workflowAliases, errors);
+  validateUi(manifest.ui, manifest.id, manifest.records, errors);
 
   // ── 工具分区（§6 命名空间规则）─────────────────────────
   const tools = manifest.tools ?? [];
@@ -255,6 +258,105 @@ function validateWorkflowAliases(
         errors.push(err('MANIFEST_WORKFLOW_ALIAS', `流程别名重复: ${name}`, at));
       }
       seen.add(key);
+    }
+  }
+}
+
+/**
+ * 页面 id 的完整校验（导出供 ModuleRegistry 提案期复用）。
+ * 形态 `ui.{moduleId}.{pageId}`，pageId 沿用实体 id 的词法（小写字母开头，只含小写字母/数字/_）。
+ */
+export function isUiPageId(id: string, moduleId: string): boolean {
+  const prefix = `${UI_PAGE_PREFIX}${moduleId}.`;
+  return id.startsWith(prefix) && RECORD_ID_RE.test(id.slice(prefix.length));
+}
+
+/**
+ * 界面分区校验（B.6）。
+ *
+ * 除了通用的「id 命名空间 / label 非空 / kind 白名单 / 段内唯一」，
+ * 还有一条别处没有的硬约束：`record` 必须指向**本 manifest records 里已声明**的 id。
+ * 为什么这么严：页面是长在本模块导航位上的，若允许指向别人的实体，
+ * 那个模块卸载后页面就成了「打得开但 404」的死链——而 404 只在运行时出现，
+ * 配置期一声不吭。校验期拒掉，问题留在提交 manifest 的那一刻。
+ */
+function validateUi(
+  ui: ManifestUi | undefined,
+  moduleId: string,
+  records: ManifestRecord[] | undefined,
+  errors: ValidationIssue[],
+): void {
+  if (ui === undefined) return;
+  if (typeof ui !== 'object' || ui === null) {
+    errors.push(err('MANIFEST_UI', 'ui 必须是对象', '/ui'));
+    return;
+  }
+  const pages = ui.pages;
+  if (pages === undefined) return;
+  if (!Array.isArray(pages)) {
+    errors.push(err('MANIFEST_UI', 'ui.pages 必须是数组', '/ui/pages'));
+    return;
+  }
+  const declared = new Set((records ?? []).map((r) => String(r?.id)));
+  const seen = new Set<string>();
+  for (const page of pages as ManifestUiPage[]) {
+    validateUiPage(page, moduleId, declared, seen, errors);
+  }
+}
+
+function validateUiPage(
+  page: ManifestUiPage,
+  moduleId: string,
+  declared: Set<string>,
+  seen: Set<string>,
+  errors: ValidationIssue[],
+): void {
+  const id = String(page?.id ?? '');
+  const at = `/ui/pages/${id || '(缺 id)'}`;
+  if (!isNonEmptyString(page?.id)) {
+    errors.push(err('MANIFEST_UI_PAGE', '页面缺少 id', at));
+  } else if (!isUiPageId(id, moduleId)) {
+    errors.push(
+      err(
+        'MANIFEST_UI_PAGE',
+        `页面 id 非法: "${id}"（须为 ${UI_PAGE_PREFIX}${moduleId}.{pageId}，` +
+          `pageId 小写字母开头、仅含小写字母/数字/_）`,
+        at,
+      ),
+    );
+  } else if (seen.has(id)) {
+    errors.push(err('MANIFEST_UI_PAGE', `页面 id 重复: ${id}`, at));
+  }
+  seen.add(id);
+
+  if (!isNonEmptyString(page?.label)) {
+    errors.push(err('MANIFEST_UI_PAGE', `页面 ${id || '(缺 id)'} 缺少 label`, at));
+  }
+  if (!(UI_PAGE_KINDS as readonly string[]).includes(page?.kind)) {
+    errors.push(
+      err(
+        'MANIFEST_UI_PAGE',
+        `页面 ${id} 的 kind 非法: "${String(page?.kind)}"（白名单：${UI_PAGE_KINDS.join('/')}）`,
+        at,
+      ),
+    );
+  } else if (page.kind === 'record-list') {
+    // 实体白名单：只认本 manifest 声明过的 records（理由见 validateUi）
+    if (!isNonEmptyString(page.record)) {
+      errors.push(err('MANIFEST_UI_PAGE', `页面 ${id} 是 record-list，必须给出 record`, `${at}/record`));
+    } else if (!declared.has(page.record)) {
+      errors.push(
+        err(
+          'MANIFEST_UI_PAGE',
+          `页面 ${id} 的 record "${page.record}" 未在本 manifest 的 records 里声明`,
+          `${at}/record`,
+        ),
+      );
+    }
+  }
+  for (const key of ['category', 'icon', 'description'] as const) {
+    if (page?.[key] !== undefined && !isNonEmptyString(page[key])) {
+      errors.push(err('MANIFEST_UI_PAGE', `页面 ${id} 的 ${key} 须为非空字符串`, `${at}/${key}`));
     }
   }
 }

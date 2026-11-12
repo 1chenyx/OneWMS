@@ -294,7 +294,7 @@ dyn_index(
 - **验收（已达成）**：新增 `core/test/dyn-tools.test.ts` 10 例——装前总线为空/装后五个工具与读写权限分明、description 含实体名与 note 与列含义且 queryable 标记只落在声明列上、`filterField` enum 收窄、无 queryable 列时不给 enum、经总线端到端 create→list(过滤/排序/翻页)→get→update→delete、缺 `expectedVersion` 与版本不对都被拒、四类错误消息可行动（含「另一个 workspace 调用同一条总线上的工具解析不到实体」）、**重启后工具自己装回总线**、**卸载后工具仍在但调用失败且重装即恢复**、重复同步幂等不留两份。
 - 基线：typecheck 全绿（core/wms/ai/server）；core 177 → **187**（+10）、server **186** 全绿、wms **361** 全绿。§B.3 遗留的那条已知红灯（`api.test.ts` mock provider 剧本）本轮已不复现。
 
-### B.5 写操作二次确认
+### B.5 写操作二次确认 ✅ 已完成
 
 ⚠️ **更正方案原文的两处事实错误**：
 1. `permission` 的实际类型是 `'read' | 'write'` 二值（`core/src/bus/tool-bus.ts :: ToolDefinition.permission`），**不存在** `.write` / `.create` / `.delete` 这种点分词表。擅自扩枚举会连带打破 `install()` 预检 5 的 permission 一致性比对与 `manifest-validate.ts` 的白名单校验。
@@ -308,7 +308,24 @@ dyn_index(
 - `permission === 'write'` 的工具返回待确认令牌，前端二次提交才执行
 - 令牌需带过期与幂等键，避免重复提交造成双写
 
-### B.6 SDUI（界面）
+**实施结果（事实记录）**：
+
+- **落点**：新增 `server/src/tool-confirm.ts`（`ConfirmGate`：内存 Map + TTL）与 `server/src/routes/tools.ts`（`POST /api/tools/:toolId/invoke`、`POST /api/tools/:toolId/confirm`）。闸门挂在 `AppContext.confirmations`，路由随 `createApp` 挂到 `/api/tools`。
+- **分流口径**：`read` → 直接 `ws.tools.invoke`，200 `{ pending:false, toolId, label, result }`；`write` → **不执行**，202 `{ pending:true, token, expiresAt, toolId, label, permission, params }`。⚠️ 用 202 而不是 200：让「还没执行」在状态码上就看得出来，只看 `res.ok` 的粗心客户端不会把它当成写成功。
+- **令牌 TTL** 默认 5 分钟（`CONFIRM_TOKEN_TTL_MS`），可由 `createAppContext({ confirmTokenTtlMs })` 注入（测试注入位，与既有 `appVersion` 同类）。过期项靠**惰性清扫**回收，不起定时器——定时器会吊住测试进程，还得管卸载时机。
+- ⚠️ **令牌的「一次性」不靠删除实现**：`consume()` 校验后不删，而是把令牌本身当幂等键传给 `ws.tools.invoke` → 命中既有 `tool_idempotency` 表，第二次确认**回放首次成功结果**而不重跑 handler。于是双击 / 网络重发既不双写，客户端还能拿到同一份结果。该表只缓存成功，所以业务失败后同令牌可重试（测试里有对照组：先失败、补建记录、同令牌再确认即成功）。
+- **顺带更正上面第 2 条**：`permission` 的消费方其实是**四处**，漏了 `ai/src/wms-agent.ts`——它按 `permission === 'write'` 挑出写工具，用 callId 当幂等键调 `ws.tools.invoke`。B.5 正是复用这套幂等基建，没有新造去重表。
+- **令牌绑定 `(workspaceId, toolId)`**，`consume` 两者都校验，串工具 / 串工作区 → 409。⚠️ 少这两行，任意一张令牌就成了万能钥匙。
+- **确认时执行的是令牌里冻结的 params 与 actor**，本次请求体除 `token` 外一律忽略——「确认的」和「执行的」必须是同一件事，否则确认框只是装饰（测试直接塞了一份 `params` 试图改主意，落库内容不受影响）。
+- **调用方不许在 `params` 里自带 `idempotencyKey`**（→ 400）：幂等键只能由令牌充当，否则「确认的那次」和「执行的那次」可能落在不同幂等键上，防双写失效。
+- **错误码**：新增 `ConfirmTokenError`（`CONFIRM_TOKEN_INVALID`）→ **409**（语义是「这次确认作废了」，前端该重新发起，不是原地改参数重试）；`STATUS_BY_CODE` 补 `TOOL_NOT_FOUND: 404`（此前该码落到 400 兜底，与「没这东西」的语义不符）。工具入参类问题沿用 core 的 `ToolValidationError` → 400，不新造错误类。
+- **刻意不动的部分（范围决策）**：① 既有点名端点 `/api/dyn/*`、`/api/wms/*` 不加闸——各有业务语义与既有前端契约，B.2/B.3 测试零改动；② AI 通道不加闸——AI 写操作的护栏是慢通道 `propose→confirm`（配置类）+ 幂等键（数据类），给每个 write 工具插一次人工确认会直接毁掉对话体验。本端点是「写操作暴露给前端」的唯一确认口，B.6 的 SDUI 通用列表页从这里写。
+- ⚠️ **令牌是进程内存态**：重启即全失效（前端拿到「令牌不存在」重新发起即可，无数据损失），也不跨进程。①② 的实际形态是单进程单机（`ONE_WORKSPACE`），不构成问题；真要多进程，把 Map 换成一张表即可，调用点不动。
+- **前端消费者随 B.6 落地**：通用端点已就绪，SDUI 列表页的写按钮走 invoke → 弹确认框 → confirm 三步。
+- **验收（已达成）**：新增 `server/test/tool-confirm.test.ts` 15 例——read 直通 / write 只发令牌且库里一条没多 / confirm 才落地 / 过期 409 / 串工具 409 / 跨工作区 409 / 伪造与缺失令牌 / 工具不存在 404（invoke 与 confirm 同口径）/ read 调 confirm 被拒 / 自带幂等键被拒 / 请求体与 params 不合法 400（空 body 合法）/ 同令牌双确认幂等回放且只有一条 / 两张令牌写同记录仍真冲突（闸门不掩盖业务错误）/ 参数冻结 / 失败可重试。
+- 基线：typecheck 全绿（core/wms/memory/ai/server）；`packages/server` 186 → **201**（+15）全过，core/wms/app 本轮未改动。
+
+### B.6 SDUI（界面）✅ 已完成（`settings.schema` 渲染器拆下一轮）
 
 前端是 Vite 打包的静态 `dist`，**运行时无法加载新的 React 组件**。方案是服务端驱动 UI：
 
@@ -316,10 +333,28 @@ dyn_index(
 2. `app-nav.tsx :: Page` 从字面量联合改为 `BuiltinPage | (string & {})`——**保留内置调用点的编译期检查与补全**
 3. 新增运行时页面注册表
 4. 通用实体列表页组件——推广 `SkusPage.tsx` 的动态列闭环（列定义来自 manifest）
-5. `settings.schema` 表单渲染器——复用 `SkuFormModal.tsx :: fieldControl` 模式
+5. `settings.schema` 表单渲染器——复用 `SkuFormModal.tsx :: fieldControl` 模式（⚠️ **本轮未做，拆到单独一轮**：它与页面清单不同源，是「模块设置项」而不是「实体页面」，硬塞进本轮会让通用列表页背上第二套表单语义）
 6. `nav.ts :: categoryOfPage` 的兜底逻辑**原样保留**，保证未知页面不崩
 
 **不做**：Web Component（AntD 的 portal/弹窗会逃出 shadow DOM）、动态 `import()` ESM（React 实例共享 + 版本对齐极脆弱）、iframe（除非将来出现声明式覆盖不了的需求，届时再在 `static.ts` 加插件资源挂载点）。
+
+**实施结果（事实记录）**：
+
+- **落点**：core 新增 `ManifestUi` / `ManifestUiPage` / `UiPageKind` / `UI_PAGE_PREFIX` / `UI_PAGE_KINDS`（`manifest-types.ts`）与 `validateUi` + `isUiPageId`（`manifest-validate.ts`）；server 新增 `routes/ui.ts`（`GET /api/ui/pages`）；app 新增 `api/ui-api.ts`、`pages/DynamicPage.tsx`、`pages/RecordListPage.tsx`。
+- **页面清单端点**：`GET /api/ui/pages` 一次返回 `{ pages: [...] }`，**内联该实体的列定义与读写工具 id**（`record.fields[]`、`record.tools.{list,get,create,update,delete}`）。不扩 `/api/profile/catalog`——那份是「配置能力目录」，混进渲染描述会让两个消费方互相牵制。
+- **只下发已安装且 `enabled` 的模块页面**，且 `record` 必须能在 `ModulesView.dynRecords()` 白名单里解析到；解析不到就**整页跳过**而不是发个空壳——⚠️ 空壳会在前端渲染成一张 404 的表，比「导航里没这一项」难查得多。
+- **`record.type` 用 `record.id.slice(record.id.lastIndexOf('.') + 1)` 反推**，不引 `DYN_RECORD_PREFIX` 常量拼串。⚠️ 曾按前缀长度 slice，结果 `@one/core` 在 vitest 下解析到陈旧 `dist`、常量运行时为 `undefined`，切出来的 type 是错的；改用 `lastIndexOf('.')` 后与打包产物无关（type 词法不含点号，安全）。
+- **命名空间**：页面 key 形如 `ui.{moduleId}.{pageId}`，与实体的 `dyn.{moduleId}.{recordId}` 同构。`isUiPageId` 复用 `RECORD_ID_RE`（不含点号）保证段内不再嵌点，与内置裸 key（`skus`、`inbound`…）结构性不撞。
+- **`category` / `icon` 存自由字符串**：core 是领域无关层，导航大类与图标库都是 app 的知识，让它认识 `CategoryKey` 就是反向依赖。映射规则长在 `app/src/nav.ts`：`navCategoryFor` 认不出一律归「档案」，`navIconFor` 走**图标白名单**（只收本文件已 import 的 30 个）——⚠️ 「按名字取任意图标」在 Vite 打包后无从实现，白名单是唯一能静态打包的做法。写错一个词的后果是位置不对/图标默认，页面不会消失也不会崩。
+- **`Page` 开放**：`app-nav.tsx` 拆成 `BuiltinPage`（27 个字面量）与 `Page = BuiltinPage | (string & {})`。⚠️ 不能写 `BuiltinPage | string`——TS 会直接塌成 `string`，18 处 `navigate('字面量')` 调用点的编译期检查与补全全丢。本轮 typecheck 验证既有调用点零改动。
+- **运行时注册表**：`App.tsx :: PAGE_COMPONENTS` 的类型**仍收在 `Record<BuiltinPage, ComponentType>`**（不是开放后的 `Page`）——漏登记内置页面会当场编译报错，这份穷尽性检查是白拿的，别顺手改宽。查不到就落到 `DynamicPage`。⚠️ 那句 `?? DynamicPage` 不能省：本项目未开 `noUncheckedIndexedAccess`，索引不到不会报错，只会渲染 `<undefined />` 白屏。
+- **`DynamicPage` 三个分支都必须渲染出东西**：清单加载中 → `Spin`；清单失败 / 找不到该 page（模块刚停用、已卸载、旧书签）→ `Result「页面不可用」`；kind 前端不认识（新模块配旧前端）→ `Result「暂不支持这种页面」`。渲染器表用 `Partial<Record<UiPageKind, …>>`，让「未知 kind」在类型上就诚实返回 undefined。
+- **通用列表页 `RecordListPage`**：表头、单元格呈现、表单控件、可过滤列、读写工具 id 全部来自 descriptor，不含任何领域知识（与 `SkusPage` 分工：那是内置页，有 SKU 专属动作与跳转）。`date` 列用纯文本框而非日期控件——不为一个声明式页面引入日期库。
+- **写操作三步（消费 B.5 闸门）**：`invoke` 拿令牌 → `modal.confirm` 摊开「服务端将要写什么」（入参 JSON 原文）→ `confirm` 落地。封成 `useRecordWrite` 一个 hook，⚠️ 漏掉第三步的后果是「界面提示成功、库里没数据」，这种静默失败不该依赖每个调用点都记得。表单弹框在 `invoke` 前先关，两层弹框叠着人看不清要确认哪一层。确认失败（令牌过期 409）只提示不 rethrow——重试没有意义，关掉让人重新发起。
+- **过滤能力受 `/api/dyn` 约束**：只支持 `filter` + `equals`（单列精确匹配，且列必须 `queryable`），所以通用页做成「下拉选列 + 输入框精确匹配」，**不做自由文本搜索**。`filter`/`equals` 必须成对才下发，只给字段不给值服务端会 400。
+- **导航高亮**：`categoryOfPage` 对 `ui.*` 只会兜底到第一个大类（看板），高亮就错了。`ModuleRail` 先查页面清单再回落内置那套；`nav.ts` 的兜底逻辑按子项 6 **原样保留**。动态导航项**不设 `NavItem.moduleId`**——那字段是「内置项按模块开关显隐」的过滤条件，而动态页面已由服务端按 enabled 过滤过一遍，再挂上只会被二次过滤，两份真相迟早对不上。
+- **验收（已达成）**：core 新增 3 例（合法页面零错误 + `isUiPageId` 四形态 / 七项非法逐条 / `ui` 与 `ui.pages` 结构错误）；server 新增 `test/ui-routes.test.ts` 8 例（空清单 / 内联列与 `module`+`type` 对齐且回打 `/api/dyn` 得 200 / 工具 id 与总线注册一致 / `category`+`icon`+`description` 透传 / 可选字段键缺席 / 停用模块不下发 / 卸载后消失 / 多页面顺序）；app 新增 `test/record-list-page.test.tsx` 8 例 + `module-rail.test.tsx` 3 例。
+- 基线：typecheck 全绿（core/server/app）；core 187 → **190**，server 201 → **209**，app 197 → **208**（197 例既有回归全过）。
 
 ### B.7 示例模块 + CI 守卫
 
@@ -406,8 +441,8 @@ Phase B · 声明式模块（主线）
   [x] B.2 dyn_records 单表 JSON + dyn_index 独立索引表 + record.* 事件 —— 已完成（per-module 投影组 + 构造期追账 + 安装后整组重投影 + facade.replay 纳入 dyn；孤儿数据保留但不可访问）
   [x] B.3 通用 record 端点（白名单严格来自 manifest，未声明一律 404）—— 已完成（`/api/dyn/:module/:type[/:id]`；白名单取自 `ModulesView.dynRecords()` 与存储层同源；分页/排序/过滤只作用 queryable 列；404/409/422/400 四档分明）
   [x] B.4 通用 record 工具注册，description 从 manifest 动态拼装 —— 已完成（`core/src/dyn/dyn-tools.ts`；两处注册时机：facade 构造全量同步 + install 成功后回调；description/parameters 全部按 manifest 生成；同 id 覆盖注册，⚠️ 从不 unregister（§A.4））
-  [ ] B.5 写操作二次确认（沿用现有 `permission === 'write'`，不扩枚举）
-  [ ] B.6 SDUI：新增 ModuleManifest.ui + Page 改 string + 运行时注册表 + 通用列表页 + settings.schema 渲染器
+  [x] B.5 写操作二次确认（沿用现有 `permission === 'write'`，不扩枚举）—— 已完成（`server/src/tool-confirm.ts` + `server/src/routes/tools.ts`；`POST /api/tools/:id/invoke` read 直通 200、write 只发令牌 202，`POST /api/tools/:id/confirm` 才执行；令牌 TTL 5 分钟、绑定 (workspaceId, toolId)、冻结 params/actor，且自身充当幂等键复用既有 `tool_idempotency` 防双写；既有 `/api/dyn`、`/api/wms` 与 AI 通道刻意不加闸）
+  [x] B.6 SDUI：新增 ModuleManifest.ui + Page 改 string + 运行时注册表 + 通用列表页 + settings.schema 渲染器 —— 主体已完成（`settings.schema` 渲染器**拆到单独一轮**，本轮未做）。core 加 `ManifestUi`/`ManifestUiPage` 与 `validateUi`+`isUiPageId`；server 加 `GET /api/ui/pages`（内联列定义与读写工具 id，只发已安装且 enabled 的模块，解析不到整页跳过）；app 拆 `BuiltinPage | (string & {})`、`PAGE_COMPONENTS` 查不到落 `DynamicPage`、新增 `RecordListPage` 通用列表页（列/表单/过滤全来自描述，写操作走 B.5 的 invoke→确认框→confirm），`ModuleRail` 按 `category` 白名单插动态页面（认不出归「档案」，图标走白名单）
   [ ] B.7 纯 JSON 示例模块 + CI 全链路守卫
   ── 验收：一份 JSON 即可新增业务对象，端到端可用，AI 立刻可用，零第三方代码 ──
 

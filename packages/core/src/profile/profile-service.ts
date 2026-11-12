@@ -3,6 +3,7 @@ import { ProfileValidationError, StaleProposalError } from '../errors.js';
 import type { EventEnvelope } from '../oplog/envelope.js';
 import type { OplogStore } from '../oplog/oplog-store.js';
 import type { FieldRegistry, RegisteredField } from '../registry/field-registry.js';
+import { dedupeConfigState } from './heal.js';
 import { applyPatch, parsePointer } from './patch.js';
 import { buildImpactReport, type ImpactReport } from './impact.js';
 import { ProposalStore, type Proposal, type ProposalSummary } from './proposal-store.js';
@@ -323,7 +324,9 @@ export class ProfileService {
     if (p.profileVersion !== currentVersion + 1) return;
 
     const state = row ? this.#parseRow(row) : emptyConfigState();
-    const next = applyPatch(state, p.patch);
+    // 拼链后同一条「追加状态」可能执行两次。先折叠再落盘，
+    // 否则投影里的重复状态会让下一次启动的 applyDirect 拒绝整份快照。
+    const next = dedupeConfigState(applyPatch(state, p.patch));
     this.#upsert(ws, p.profileVersion, next);
   }
 
@@ -364,11 +367,13 @@ export class ProfileService {
   }
 
   #parseRow(row: ProfileStateRow): ConfigState {
-    return {
+    // 已落盘的脏投影（同步拼链之后、本修复之前写下的）在读的时候折叠。
+    // 不在读路径回写：下一次 config.change（启动时补装缺失模块就会发生）会把干净结果写回去。
+    return dedupeConfigState({
       workflows: JSON.parse(row.workflows) as ConfigState['workflows'],
       modules: JSON.parse(row.modules) as ConfigState['modules'],
       roles: JSON.parse(row.roles) as ConfigState['roles'],
-    };
+    });
   }
 
   #configState(workspaceId: string): ConfigState {

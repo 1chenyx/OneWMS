@@ -79,7 +79,7 @@ export interface RunAgentDeps {
  */
 export async function runAgent(userText: string, deps: RunAgentDeps): Promise<AgentRunResult> {
   const { provider, system, tools, invoke } = deps;
-  const maxSteps = deps.maxSteps ?? 8;
+  const maxSteps = deps.maxSteps ?? 20;
 
   const messages: AgentMessage[] = [{ role: 'user', text: userText }];
   const invocations: AgentInvocation[] = [];
@@ -167,7 +167,7 @@ export async function* streamAgent(
   deps: StreamAgentDeps,
 ): AsyncGenerator<AgentStreamEvent, AgentTurnResult, AskReply> {
   const { provider, system, tools, invoke } = deps;
-  const maxSteps = deps.maxSteps ?? 8;
+  const maxSteps = deps.maxSteps ?? 20;
 
   const messages: AgentMessage[] = [...(deps.history ?? []), { role: 'user', text: userText }];
   let steps = 0;

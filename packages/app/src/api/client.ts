@@ -2,6 +2,7 @@ import { agentApi } from './agent-api';
 import { memoryApi } from './memory-api';
 import { profileApi } from './profile-api';
 import { settingsApi } from './settings-api';
+import { uiApi } from './ui-api';
 import { wmsApi } from './wms-api';
 
 /**
@@ -14,12 +15,23 @@ export const api = {
   ...settingsApi,
   ...agentApi,
   ...memoryApi,
+  ...uiApi,
 };
 
 export { ApiError } from './request';
 export { answerChatAsk, streamChatMessage } from './chat-api';
 export type { ChatAttachmentChip, ChatAttachmentPayload, ChatInvocation, ChatStreamEvent } from './chat-api';
 export type { ConfirmResponse } from './profile-api';
+export type {
+  DynListQuery,
+  DynRow,
+  ToolInvokeDone,
+  ToolInvokePending,
+  ToolInvokeResult,
+  UiPageDescriptor,
+  UiPageField,
+  UiPageRecord,
+} from './ui-api';
 export type {
   AddSyncPeerResult,
   BackupCreateResult,

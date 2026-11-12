@@ -6,6 +6,7 @@ import {
   ModuleNotFoundError,
   ModuleValidationError,
   compareSemver,
+  isUiPageId,
   validateManifest,
   type ModuleManifest,
   type WorkspaceFacade,
@@ -241,6 +242,80 @@ describe('validateManifest（结构校验纯函数）', () => {
     expect(wfErrors).toContain('至少需要一个状态');
     expect(wfErrors).toContain('重复');
     expect(wfErrors).toContain('from/to');
+  });
+
+  // ── ui 分区（B.6：SDUI）───────────────────────────────
+
+  /** 带一个声明式实体的基线 manifest——ui.pages 的 record 只能指向它 */
+  const dynManifest = (): ModuleManifest =>
+    makeManifest({
+      id: 'module.asset',
+      records: [
+        {
+          id: 'dyn.module.asset.device',
+          label: '设备台账',
+          fields: [
+            { key: 'name', label: '设备名', type: 'string', queryable: true },
+            { key: 'count', label: '数量', type: 'number' },
+          ],
+        },
+      ],
+    });
+
+  it('合法 ui 页面零错误；isUiPageId 只认 ui.{模块id}.{pageId}', () => {
+    const ok = dynManifest();
+    ok.ui = {
+      pages: [
+        {
+          id: 'ui.module.asset.devices',
+          label: '设备台账',
+          kind: 'record-list',
+          record: 'dyn.module.asset.device',
+          category: 'registry',
+          icon: 'DatabaseOutlined',
+          description: '设备清单',
+        },
+      ],
+    };
+    expect(validateManifest(ok).errors).toEqual([]);
+    expect(isUiPageId('ui.module.asset.devices', 'module.asset')).toBe(true);
+    expect(isUiPageId('devices', 'module.asset')).toBe(false); // 裸 key：会撞内置页面
+    expect(isUiPageId('ui.module.other.devices', 'module.asset')).toBe(false); // 别的模块命名空间
+    expect(isUiPageId('ui.module.asset.Devices', 'module.asset')).toBe(false); // 大写非法
+  });
+
+  it('ui 分区逐项非法：命名空间 / kind 白名单 / record 越界 / 缺 label / 段内重复', () => {
+    const bad = dynManifest();
+    bad.ui = {
+      pages: [
+        { id: 'devices', label: '裸 key', kind: 'record-list', record: 'dyn.module.asset.device' },
+        { id: 'ui.module.asset.a', label: '', kind: 'record-list', record: 'dyn.module.asset.device' },
+        { id: 'ui.module.asset.b', label: '未知形态', kind: 'dashboard' as never, record: 'dyn.module.asset.device' },
+        { id: 'ui.module.asset.c', label: '缺 record', kind: 'record-list' },
+        // 指向别的模块的实体：那个模块卸载后页面就是运行时死链，配置期必须拒
+        { id: 'ui.module.asset.d', label: '越界', kind: 'record-list', record: 'dyn.module.expiry.asset' },
+        { id: 'ui.module.asset.a', label: '重复', kind: 'record-list', record: 'dyn.module.asset.device' },
+        { id: 'ui.module.asset.e', label: '空类别', kind: 'record-list', record: 'dyn.module.asset.device', category: '  ' },
+      ],
+    };
+    const messages = validateManifest(bad).errors.map((e) => e.message).join();
+    expect(messages).toContain('页面 id 非法: "devices"');
+    expect(messages).toContain('缺少 label');
+    expect(messages).toContain('kind 非法: "dashboard"');
+    expect(messages).toContain('必须给出 record');
+    expect(messages).toContain('未在本 manifest 的 records 里声明');
+    expect(messages).toContain('页面 id 重复');
+    expect(messages).toContain('category 须为非空字符串');
+  });
+
+  it('ui.pages 不是数组 / ui 不是对象：结构错误', () => {
+    const badPages = dynManifest();
+    badPages.ui = { pages: 'nope' as never };
+    expect(validateManifest(badPages).errors.map((e) => e.code)).toContain('MANIFEST_UI');
+
+    const badUi = dynManifest();
+    badUi.ui = null as never;
+    expect(validateManifest(badUi).errors.map((e) => e.code)).toContain('MANIFEST_UI');
   });
 
   it('compareSemver：数值三元组比较（非字典序）', () => {

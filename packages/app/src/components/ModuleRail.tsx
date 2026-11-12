@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Popover, theme } from 'antd';
-import { useProfileSnapshot } from '../api/hooks';
+import { useProfileSnapshot, useUiPages } from '../api/hooks';
+import type { UiPageDescriptor } from '../api/client';
 import { useAppNav } from '../app-nav';
 import type { Page } from '../app-nav';
-import { NAV_CATEGORIES, categoryOfPage } from '../nav';
+import { NAV_CATEGORIES, categoryOfPage, navCategoryFor, navIconFor } from '../nav';
 import type { CategoryKey, NavCategory, NavItem } from '../nav';
 
 /** 划过大类时稍等再打开，避免鼠标掠过就闪出浮窗 */
@@ -19,10 +20,16 @@ const FLYOUT_CLOSE_DELAY_S = 0.2;
 export default function ModuleRail() {
   const { page, navigate } = useAppNav();
   const snapshot = useProfileSnapshot();
+  const uiPages = useUiPages();
   const { token } = theme.useToken();
   const [openKey, setOpenKey] = useState<CategoryKey | null>(null);
   const [hotKey, setHotKey] = useState<CategoryKey | null>(null);
-  const activeKey = categoryOfPage(page).key;
+  const descriptors = uiPages.data?.pages;
+  const dynamic = useMemo(() => dynamicItemsByCategory(descriptors), [descriptors]);
+  // 动态页面不在 NAV_CATEGORIES 里，categoryOfPage 只会兜底到第一个大类（看板），
+  // 高亮就错了——所以先问页面清单，问不到再走内置那套（兜底逻辑原样保留）
+  const current = descriptors?.find((item) => item.id === page);
+  const activeKey = current ? navCategoryFor(current.category) : categoryOfPage(page).key;
 
   const pick = (next: Page) => {
     navigate(next);
@@ -70,7 +77,7 @@ export default function ModuleRail() {
             content={
               <ModuleFlyout
                 category={category}
-                items={visibleNavItems(category, snapshot.data?.modules)}
+                items={visibleNavItems(category, snapshot.data?.modules).concat(dynamic[category.key])}
                 page={page}
                 onPick={pick}
               />
@@ -117,6 +124,30 @@ function visibleNavItems<T extends { enabled?: boolean }>(
   modules: Record<string, T> | undefined,
 ): NavItem[] {
   return category.items.filter((item) => item.moduleId == null || modules?.[item.moduleId]?.enabled === true);
+}
+
+/**
+ * 声明式模块的页面 → 按大类分桶的导航项（B.6）。
+ *
+ * 不设 NavItem.moduleId：那字段是「内置项按模块开关显隐」的过滤条件，
+ * 而动态页面已经由服务端按「已安装且 enabled」过滤过一遍（GET /api/ui/pages），
+ * 再挂上 moduleId 只会被 visibleNavItems 二次过滤，两份真相迟早对不上。
+ */
+function dynamicItemsByCategory(
+  pages: readonly UiPageDescriptor[] | undefined,
+): Record<CategoryKey, NavItem[]> {
+  const buckets = Object.fromEntries(NAV_CATEGORIES.map((c) => [c.key, [] as NavItem[]])) as Record<
+    CategoryKey,
+    NavItem[]
+  >;
+  for (const item of pages ?? []) {
+    buckets[navCategoryFor(item.category)].push({
+      page: item.id,
+      label: item.label,
+      icon: navIconFor(item.icon),
+    });
+  }
+  return buckets;
 }
 
 function ModuleFlyout({

@@ -1,6 +1,6 @@
 [package]
 name = "onewms-desktop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "OneWMS 桌面壳：内置 Node 服务端 sidecar"
 
