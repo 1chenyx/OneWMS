@@ -74,6 +74,65 @@ export class WarehouseNotFoundError extends CoreError {
   }
 }
 
+// ── 库区（module.zone）─────────────────────────────
+
+/** 库区模块已关闭 */
+export class ZoneDisabledError extends CoreError {
+  constructor() {
+    super(
+      'WMS_ZONE_DISABLED',
+      '库区已关闭（module.zone）。请去掉库区参数，或在设置里重新启用该模块。',
+    );
+  }
+}
+
+/** 库区编码已存在 */
+export class ZoneAlreadyExistsError extends CoreError {
+  constructor(zoneCode: string) {
+    super('WMS_ZONE_EXISTS', `库区编码已存在: ${zoneCode}`);
+  }
+}
+
+/** 库区不存在 */
+export class ZoneNotFoundError extends CoreError {
+  constructor(zoneCode: string) {
+    super('WMS_ZONE_NOT_FOUND', `库区不存在: ${zoneCode}`);
+  }
+}
+
+/** 分类不在词表里 */
+export class ZoneKindError extends CoreError {
+  constructor(kind: string) {
+    super(
+      'WMS_ZONE_KIND',
+      kind
+        ? `库区分类不对: ${kind}。可用 receiving 收货区、qc 质检区、storage 存货区、picking 拣货区、staging 暂存区、shipping 发货区、return 退货区、defective 不良品区。`
+        : '请选择库区分类。',
+    );
+  }
+}
+
+/** 库位的仓库和库区的仓库不一致 */
+export class ZoneWarehouseMismatchError extends CoreError {
+  constructor(zoneCode: string, warehouseCode: string | null) {
+    const where = warehouseCode ? `仓库 ${warehouseCode}` : '未分仓';
+    super(
+      'WMS_ZONE_WAREHOUSE',
+      `库区 ${zoneCode} 属于${where}，和库位的仓库对不上。请改成同一个仓库，或先把库位划出库区。`,
+    );
+  }
+}
+
+/** 库区里还有库位，不能改它的仓库 */
+export class ZoneOccupiedError extends CoreError {
+  constructor(zoneCode: string, locationCount: number) {
+    super(
+      'WMS_ZONE_OCCUPIED',
+      `库区 ${zoneCode} 里还有 ${locationCount} 个库位，不能改所属仓库。先把这些库位划走。`,
+    );
+  }
+}
+
 /** 模块关闭时拒绝序列号参数。 */
 export class SerialDisabledError extends CoreError {
   constructor() {
@@ -906,5 +965,33 @@ export class SerialManagedNotSupportedError extends CoreError {
       'WMS_SERIAL_MANAGED_NOT_SUPPORTED',
       `SKU ${skuCode} 按序列号管理，暂不支持在${doc}中操作——请先经库存调整逐件处理序列号`,
     );
+  }
+}
+
+/** 报表定义不合格，或跑的时候缺了参数。不产生事件。 */
+export class ReportInvalidError extends CoreError {
+  constructor(message: string) {
+    super('WMS_REPORT_INVALID', message);
+  }
+}
+
+/** 要改或删的报表不存在 */
+export class ReportNotFoundError extends CoreError {
+  constructor(reportId: string) {
+    super('WMS_REPORT_NOT_FOUND', `没有这张报表：${reportId}`);
+  }
+}
+
+/** 报表模块关闭时不能保存或删除。已经保存的报表还在。 */
+export class ReportDisabledError extends CoreError {
+  constructor() {
+    super('WMS_REPORT_DISABLED', '报表已关闭（module.report）。已经保存的报表还在；请在模块里重新启用后再改。');
+  }
+}
+
+/** 编码对照写不进去：编码不合法，或这一对已经被占用。 */
+export class IntegrationCodeError extends CoreError {
+  constructor(message: string) {
+    super('INTEGRATION_CODE', message);
   }
 }

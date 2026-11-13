@@ -15,6 +15,7 @@
     "types": ["vite/client"],
     "paths": {
       "@one/wms/numbering": ["../wms/src/numbering/pattern.ts"],
+      "@one/wms/zone-kinds": ["../wms/src/zone-kinds.ts"],
       "@one/wms/order-edit-policy": ["../wms/src/state/order-edit-policy.ts"],
       "@one/wms/page": ["../wms/src/queries/page.ts"],
       "@one/core/when": ["../core/src/profile/when.ts"],

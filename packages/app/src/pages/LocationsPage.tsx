@@ -19,7 +19,8 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { useCreateLocation, useLocations, useProfileSnapshot, useUpdateLocation } from '../api/hooks';
 import { api, ApiError } from '../api/client';
-import type { Location, Warehouse } from '../api/client';
+import type { Location, Warehouse, Zone } from '../api/client';
+import { ZONE_KINDS, zoneKindLabel } from '@one/wms/zone-kinds';
 import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
 import PageHeader from '../components/PageHeader';
 import { filledCode, useSeededField } from '../components/use-seeded-code';
@@ -99,9 +100,10 @@ const SPLIT_STYLE = `
   font-size: 12px;
   color: var(--loc-muted);
 }
+.loc-zones { width: 240px; }
 @media (max-width: 800px) {
   .loc-split { flex-direction: column; min-height: 0; }
-  .loc-parents {
+  .loc-parents, .loc-zones {
     width: auto;
     max-height: 280px;
     border-right: none;
@@ -111,6 +113,7 @@ const SPLIT_STYLE = `
 `;
 
 type ParentSel = { kind: 'warehouse'; code: string } | { kind: 'unassigned' };
+type ZoneSel = { kind: 'zone'; code: string } | { kind: 'unzoned' };
 
 /**
  * 还没点过左侧时，选中第一个仓库；清单还在加载则先不定。
@@ -129,6 +132,31 @@ function parentKeyOf(warehouseOn: boolean, parent: ParentSel | null): string {
   return parent.kind === 'warehouse' ? `wh:${parent.code}` : 'unassigned';
 }
 
+/** 当前仓库里的库区。多仓关着时，全部库区都算在这一层。 */
+function zonesInParent(zones: Zone[], warehouseOn: boolean, parent: ParentSel | null): Zone[] {
+  if (!warehouseOn) return zones;
+  if (!parent) return [];
+  if (parent.kind === 'unassigned') return zones.filter((zone) => !zone.warehouseCode);
+  return zones.filter((zone) => zone.warehouseCode === parent.code);
+}
+
+/**
+ * 还没点过库区时停在未分区，已经建好的库位不会被藏起来。
+ * 点中的库区还在当前仓库里就留在那里；换了仓库、那个库区不在这一边，回到未分区。
+ */
+function resolveZone(picked: ZoneSel | null, zones: Zone[] | undefined): ZoneSel | null {
+  if (!zones) return null;
+  if (picked?.kind === 'zone' && zones.some((zone) => zone.zoneCode === picked.code)) return picked;
+  return { kind: 'unzoned' };
+}
+
+function listKeyOf(warehouseOn: boolean, parent: ParentSel | null, zoneOn: boolean, zone: ZoneSel | null): string {
+  const warehouseKey = parentKeyOf(warehouseOn, parent);
+  if (!zoneOn) return warehouseKey;
+  if (!zone) return `${warehouseKey}|zone-pending`;
+  return `${warehouseKey}|${zone.kind === 'zone' ? `zn:${zone.code}` : 'unzoned'}`;
+}
+
 /**
  * 库位管理页——档案大类下的物理存储位主数据。
  * 只能建 + 改名，不能删也不能改编码：locationCode 是业务键，历史单据/
@@ -137,6 +165,7 @@ function parentKeyOf(warehouseOn: boolean, parent: ParentSel | null): string {
  * 页脚说明里顺带交代它可直接在单据/调整中引用。
  * module.warehouse 开启时，仓库是父、库位是子：左侧选仓库（或未分仓），
  * 右侧只列这个父节点下面的库位。库位按页向服务端要，并带上仓库范围。
+ * module.zone 也打开时，中间再选库区（或未分区）。只开库区时，左侧就是库区。
  */
 export default function LocationsPage() {
   const { token } = theme.useToken();
@@ -144,10 +173,16 @@ export default function LocationsPage() {
   const queryClient = useQueryClient();
   const snapshot = useProfileSnapshot();
   const warehouseOn = snapshot.data?.modules['module.warehouse']?.enabled === true;
+  const zoneOn = snapshot.data?.modules['module.zone']?.enabled === true;
   const warehouses = useQuery({
     queryKey: ['warehouses'],
     queryFn: api.warehouses,
     enabled: warehouseOn,
+  });
+  const zoneQuery = useQuery({
+    queryKey: ['zones'],
+    queryFn: api.zones,
+    enabled: zoneOn,
   });
   const unassignedCount = useQuery({
     queryKey: ['locations', 'unassigned-count'],
@@ -155,11 +190,14 @@ export default function LocationsPage() {
     enabled: warehouseOn,
   });
   const [picked, setPicked] = useState<ParentSel | null>(null);
+  const [pickedZone, setPickedZone] = useState<ZoneSel | null>(null);
   const warehouseRows = warehouses.data;
   const parent = warehouseOn
     ? resolveParent(picked, warehouses.isPending ? undefined : (warehouseRows ?? []))
     : null;
-  const parentKey = parentKeyOf(warehouseOn, parent);
+  const zoneRows = zonesInParent(zoneQuery.data ?? [], warehouseOn, parent);
+  const zoneSel = zoneOn ? resolveZone(pickedZone, zoneQuery.isPending ? undefined : zoneRows) : null;
+  const parentKey = listKeyOf(warehouseOn, parent, zoneOn, zoneSel);
   const [query, setQuery] = useState('');
   const [queryScope, setQueryScope] = useState(parentKey);
   if (queryScope !== parentKey) {
@@ -168,16 +206,29 @@ export default function LocationsPage() {
   }
   const activeQuery = queryScope === parentKey ? query : '';
   const list = useListPage(`${activeQuery}|${parentKey}`);
-  const scoped = !warehouseOn
+  const warehouseScope = !warehouseOn
     ? {}
     : parent?.kind === 'warehouse'
       ? { warehouseCode: parent.code }
       : { unassigned: true as const };
+  const zoneScope = !zoneOn ? {} : zoneSel?.kind === 'zone' ? { zoneCode: zoneSel.code } : { unzoned: true as const };
+  const unzonedCount = useQuery({
+    queryKey: ['locations', 'unzoned-count', parentKeyOf(warehouseOn, parent)],
+    queryFn: () =>
+      api.locations({
+        ...warehouseScope,
+        unzoned: true,
+        limit: 1,
+        offset: 0,
+      }),
+    enabled: zoneOn && zoneSel != null && (!warehouseOn || parent != null),
+  });
   const { data: locationPayload, isLoading } = useLocations({
     q: activeQuery || undefined,
     limit: list.limit,
     offset: list.offset,
-    ...scoped,
+    ...warehouseScope,
+    ...zoneScope,
   });
   const locationPage = locationPayload as Location[] | ListPage<Location> | undefined;
   const locations = rowsOf(locationPage);
@@ -185,18 +236,33 @@ export default function LocationsPage() {
   const update = useUpdateLocation();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Location | null>(null);
-  const [form] = Form.useForm<{ locationCode: string; name?: string; warehouseCode?: string; capacity?: number | null }>();
+  const [form] = Form.useForm<{
+    locationCode: string;
+    name?: string;
+    warehouseCode?: string;
+    zoneCode?: string;
+    capacity?: number | null;
+  }>();
+  const watchedWarehouse = Form.useWatch('warehouseCode', form);
   const [warehouseOpen, setWarehouseOpen] = useState(false);
   const [editingWarehouse, setEditingWarehouse] = useState<Warehouse | null>(null);
   const [warehouseSaving, setWarehouseSaving] = useState(false);
   const [warehouseForm] = Form.useForm<{ warehouseCode: string; name?: string }>();
+  const [zoneOpen, setZoneOpen] = useState(false);
+  const [editingZone, setEditingZone] = useState<Zone | null>(null);
+  const [zoneSaving, setZoneSaving] = useState(false);
+  const [zoneForm] = Form.useForm<{ zoneCode: string; name?: string; kind?: string; warehouseCode?: string }>();
   useSeededField(form, 'locationCode', open && !editing ? 'location' : null);
   useSeededField(warehouseForm, 'warehouseCode', warehouseOpen && !editingWarehouse ? 'warehouse' : null);
+  useSeededField(zoneForm, 'zoneCode', zoneOpen && !editingZone ? 'zone' : null);
 
-  const openCreate = (warehouseCode?: string) => {
+  const openCreate = (warehouseCode?: string, zoneCode?: string) => {
     setEditing(null);
     form.resetFields();
-    if (warehouseCode) form.setFieldsValue({ warehouseCode });
+    form.setFieldsValue({
+      ...(warehouseCode ? { warehouseCode } : {}),
+      ...(zoneCode ? { zoneCode } : {}),
+    });
     setOpen(true);
   };
 
@@ -206,15 +272,24 @@ export default function LocationsPage() {
       locationCode: row.locationCode,
       name: row.name,
       warehouseCode: row.warehouseCode ?? undefined,
+      zoneCode: row.zoneCode ?? undefined,
       capacity: typeof row.capacity === 'number' ? row.capacity : undefined,
     });
     setOpen(true);
   };
 
-  const submit = async (values: { locationCode: string; name?: string; warehouseCode?: string; capacity?: number | null }) => {
+  const submit = async (values: {
+    locationCode: string;
+    name?: string;
+    warehouseCode?: string;
+    zoneCode?: string;
+    capacity?: number | null;
+  }) => {
     const name = values.name?.trim();
     const warehouseCode = values.warehouseCode?.trim() ?? '';
+    const zoneCode = values.zoneCode?.trim() ?? '';
     const capacity = typeof values.capacity === 'number' ? values.capacity : null;
+    const place = warehouseOn || zoneOn;
     try {
       if (editing) {
         if (!name) {
@@ -223,22 +298,27 @@ export default function LocationsPage() {
         }
         const r = await update.mutateAsync({
           locationCode: editing.locationCode,
-          body: warehouseOn ? { name, warehouseCode, capacity } : { name, capacity },
+          body: {
+            name,
+            capacity,
+            ...(warehouseOn ? { warehouseCode } : {}),
+            ...(zoneOn ? { zoneCode } : {}),
+          },
         });
-        message.success(
-          warehouseOn ? `库位 ${r.locationCode} 已保存` : `库位 ${r.locationCode} 已更名为「${r.name}」`,
-        );
+        message.success(place ? `库位 ${r.locationCode} 已保存` : `库位 ${r.locationCode} 已更名为「${r.name}」`);
       } else {
         const code = filledCode(values.locationCode);
         const r = await create.mutateAsync({
           ...(code ? { locationCode: code } : {}),
           name: name || undefined,
           ...(warehouseOn && warehouseCode ? { warehouseCode } : {}),
+          ...(zoneOn && zoneCode ? { zoneCode } : {}),
           ...(capacity != null ? { capacity } : {}),
         });
         message.success(`库位 ${r.locationCode} 已创建`);
       }
       if (warehouseOn) setPicked(warehouseCode ? { kind: 'warehouse', code: warehouseCode } : { kind: 'unassigned' });
+      if (zoneOn) setPickedZone(zoneCode ? { kind: 'zone', code: zoneCode } : { kind: 'unzoned' });
       setOpen(false);
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : `${editing ? '保存' : '创建'}失败：${String(e)}`);
@@ -287,6 +367,73 @@ export default function LocationsPage() {
     }
   };
 
+  const openCreateZone = (warehouseCode?: string) => {
+    setEditingZone(null);
+    zoneForm.resetFields();
+    if (warehouseCode) zoneForm.setFieldsValue({ warehouseCode });
+    setZoneOpen(true);
+  };
+
+  const openEditZone = (row: Zone) => {
+    setEditingZone(row);
+    zoneForm.setFieldsValue({
+      zoneCode: row.zoneCode,
+      name: row.name,
+      kind: row.kind,
+      warehouseCode: row.warehouseCode ?? undefined,
+    });
+    setZoneOpen(true);
+  };
+
+  const submitZone = async (values: { zoneCode: string; name?: string; kind?: string; warehouseCode?: string }) => {
+    const name = values.name?.trim();
+    const kind = values.kind?.trim() ?? '';
+    const warehouseCode = values.warehouseCode?.trim() ?? '';
+    if (!kind) {
+      message.error('请选择库区分类');
+      return;
+    }
+    setZoneSaving(true);
+    try {
+      if (editingZone) {
+        if (!name) {
+          message.error('库区名称不能为空');
+          return;
+        }
+        await api.updateZone(editingZone.zoneCode, {
+          name,
+          kind,
+          ...(warehouseOn ? { warehouseCode } : {}),
+        });
+        message.success(`库区 ${editingZone.zoneCode} 已保存`);
+      } else {
+        const code = filledCode(values.zoneCode);
+        const created = await api.createZone({
+          ...(code ? { zoneCode: code } : {}),
+          name: name || undefined,
+          kind,
+          ...(warehouseOn && warehouseCode ? { warehouseCode } : {}),
+        });
+        message.success(`库区 ${created.zoneCode} 已创建`);
+        if (warehouseOn) setPicked(warehouseCode ? { kind: 'warehouse', code: warehouseCode } : { kind: 'unassigned' });
+        setPickedZone({ kind: 'zone', code: created.zoneCode });
+      }
+      await queryClient.invalidateQueries({ queryKey: ['zones'] });
+      await queryClient.invalidateQueries({ queryKey: ['locations'] });
+      await queryClient.invalidateQueries({ queryKey: ['numbering'] });
+      setZoneOpen(false);
+    } catch (e) {
+      message.error(e instanceof ApiError ? e.message : `${editingZone ? '保存' : '创建'}失败：${String(e)}`);
+    } finally {
+      setZoneSaving(false);
+    }
+  };
+
+  const zoneChoices = (zoneQuery.data ?? []).filter((zone) => {
+    if (!warehouseOn) return true;
+    return (zone.warehouseCode ?? '') === (watchedWarehouse?.trim() ?? '');
+  });
+
   const columns: ColumnsType<Location> = [
     { title: '库位编码', dataIndex: 'locationCode', onCell: monoCell },
     { title: '名称', dataIndex: 'name' },
@@ -314,7 +461,7 @@ export default function LocationsPage() {
       width: 90,
       render: (_, row) => (
         <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)}>
-          {warehouseOn ? '编辑' : '改名'}
+          {warehouseOn || zoneOn ? '编辑' : '改名'}
         </Button>
       ),
     },
@@ -322,8 +469,14 @@ export default function LocationsPage() {
 
   const selectedWarehouse =
     parent?.kind === 'warehouse' ? warehouseRows?.find((row) => row.warehouseCode === parent.code) : undefined;
+  const selectedZone = zoneSel?.kind === 'zone' ? zoneRows.find((row) => row.zoneCode === zoneSel.code) : undefined;
   const createIn = parent?.kind === 'warehouse' ? parent.code : undefined;
-  const block = snapshot.isPending || (warehouseOn && picked == null && warehouses.isPending);
+  const createZone = zoneSel?.kind === 'zone' ? zoneSel.code : undefined;
+  const block =
+    snapshot.isPending ||
+    (warehouseOn && picked == null && warehouses.isPending) ||
+    (zoneOn && zoneQuery.isPending);
+  const showSplit = (warehouseOn && parent != null) || (zoneOn && zoneSel != null);
   const unassignedTotal = unassignedCount.isSuccess ? totalOf(unassignedCount.data) : undefined;
 
   const locationTable = (
@@ -340,14 +493,16 @@ export default function LocationsPage() {
       })}
       locale={{
         emptyText: activeQuery
-          ? parent?.kind === 'warehouse'
-            ? '这个仓库里没有匹配的库位'
-            : '没有匹配的库位'
-          : parent?.kind === 'unassigned'
-            ? '没有未分仓的库位。新建时不选仓库，就会出现在这里。'
-            : parent?.kind === 'warehouse'
-              ? '这个仓库还没有库位。点右上角「新建库位」。'
-              : '还没有库位，点右上角新建（不建也能用——库存全归 DEFAULT）',
+          ? '没有匹配的库位'
+          : zoneOn && zoneSel?.kind === 'unzoned'
+            ? '没有未分区的库位。新建时不选库区，就会出现在这里。'
+            : zoneOn && zoneSel?.kind === 'zone'
+              ? '这个库区还没有库位。点右上角「新建库位」。'
+              : parent?.kind === 'unassigned'
+                ? '没有未分仓的库位。新建时不选仓库，就会出现在这里。'
+                : parent?.kind === 'warehouse'
+                  ? '这个仓库还没有库位。点右上角「新建库位」。'
+                  : '还没有库位，点右上角新建（不建也能用——库存全归 DEFAULT）',
       }}
     />
   );
@@ -355,7 +510,7 @@ export default function LocationsPage() {
   const locationModals = (
     <>
       <Modal
-        title={editing ? `${warehouseOn ? '编辑库位' : '库位改名'} · ${editing.locationCode}` : '新建库位'}
+        title={editing ? `${warehouseOn || zoneOn ? '编辑库位' : '库位改名'} · ${editing.locationCode}` : '新建库位'}
         open={open}
         onCancel={() => setOpen(false)}
         onOk={() => form.submit()}
@@ -390,6 +545,29 @@ export default function LocationsPage() {
                   value: warehouse.warehouseCode,
                   label: `${warehouse.name}（${warehouse.warehouseCode}）`,
                 }))}
+                onChange={(value) => {
+                  const next = typeof value === 'string' ? value : '';
+                  const current = form.getFieldValue('zoneCode') as string | undefined;
+                  const zone = (zoneQuery.data ?? []).find((item) => item.zoneCode === current);
+                  if (zone && (zone.warehouseCode ?? '') !== next) form.setFieldValue('zoneCode', undefined);
+                }}
+              />
+            </Form.Item>
+          )}
+          {zoneOn && (
+            <Form.Item name="zoneCode" label="所属库区" extra="不选就是未分区。库位的仓库要和库区一致。">
+              <Select
+                allowClear
+                placeholder="未分区"
+                options={zoneChoices.map((zone) => ({
+                  value: zone.zoneCode,
+                  label: `${zone.name}（${zoneKindLabel(zone.kind)}）`,
+                }))}
+                onChange={(value) => {
+                  if (!warehouseOn || typeof value !== 'string' || !value) return;
+                  const zone = (zoneQuery.data ?? []).find((item) => item.zoneCode === value);
+                  if (zone?.warehouseCode) form.setFieldValue('warehouseCode', zone.warehouseCode);
+                }}
               />
             </Form.Item>
           )}
@@ -427,8 +605,81 @@ export default function LocationsPage() {
           </Form>
         </Modal>
       )}
+      {zoneOn && (
+        <Modal
+          title={editingZone ? `编辑库区 · ${editingZone.zoneCode}` : '新建库区'}
+          open={zoneOpen}
+          onCancel={() => setZoneOpen(false)}
+          onOk={() => zoneForm.submit()}
+          okText={editingZone ? '保存' : '创建'}
+          confirmLoading={zoneSaving}
+          destroyOnHidden
+        >
+          <Form form={zoneForm} layout="vertical" onFinish={submitZone}>
+            <Form.Item
+              name="zoneCode"
+              label="库区编码"
+              extra={
+                editingZone
+                  ? '编码是业务键，不可修改'
+                  : '已填入建议编号，可以改。留空则按编号规则生成。同一工作区里编码不能重复'
+              }
+            >
+              <Input placeholder="如 ZN-01" disabled={editingZone != null} />
+            </Form.Item>
+            <Form.Item name="name" label="库区名称" rules={editingZone ? [{ required: true, message: '请输入名称' }] : []}>
+              <Input placeholder={editingZone ? '如 一层拣货' : '可选，缺省同编码'} />
+            </Form.Item>
+            <Form.Item name="kind" label="分类" rules={[{ required: true, message: '请选择分类' }]}>
+              <Select
+                placeholder="拣货区、存货区…"
+                options={ZONE_KINDS.map((kind) => ({ value: kind.id, label: kind.label }))}
+              />
+            </Form.Item>
+            {warehouseOn && (
+              <Form.Item
+                name="warehouseCode"
+                label="所属仓库"
+                extra="不选就是未分仓。库区里还有库位时不能改仓库。"
+              >
+                <Select
+                  allowClear
+                  placeholder="未分仓"
+                  options={(warehouseRows ?? []).map((warehouse) => ({
+                    value: warehouse.warehouseCode,
+                    label: `${warehouse.name}（${warehouse.warehouseCode}）`,
+                  }))}
+                />
+              </Form.Item>
+            )}
+          </Form>
+        </Modal>
+      )}
     </>
   );
+
+  const childTitle = zoneOn
+    ? zoneSel?.kind === 'unzoned'
+      ? '未分区'
+      : (selectedZone?.name ?? zoneSel?.code ?? '')
+    : parent?.kind === 'unassigned'
+      ? '未分仓'
+      : (selectedWarehouse?.name ?? parent?.code ?? '');
+  const childHint = zoneOn
+    ? zoneSel?.kind === 'unzoned'
+      ? '这些库位还没有划进库区'
+      : `${selectedZone ? `${zoneKindLabel(selectedZone.kind)} · ` : ''}${selectedZone?.zoneCode ?? zoneSel?.code ?? ''}`
+    : parent?.kind === 'unassigned'
+      ? '这些库位还没有划进仓库'
+      : `${selectedWarehouse?.warehouseCode ?? parent?.code ?? ''} · 这个仓库里的库位`;
+  const pageSubtitle = warehouseOn && zoneOn
+    ? '仓库下面再分库区。左侧选仓库，中间选库区，右侧是这个库区里的库位。编码不能改，库位不删除。'
+    : zoneOn
+      ? '库区给库位分类，比如拣货区、存货区。左侧选库区，右侧是这个库区里的库位。编码不能改，库位不删除。'
+      : warehouseOn
+        ? '仓库是上一层，库位挂在仓库下面。左侧选仓库，右侧是这个仓库里的库位。编码不能改，库位不删除。'
+        : '仓库内的物理存储位：建库位、改名称（编码是业务键不可改，库位不删除以保留历史账）';
+  const unzonedTotal = unzonedCount.isSuccess ? totalOf(unzonedCount.data) : undefined;
 
   const splitVars = {
     '--loc-line': token.colorBorderSecondary,
@@ -456,15 +707,11 @@ export default function LocationsPage() {
     >
       <PageHeader
         title="库位管理"
-        subtitle={
-          warehouseOn
-            ? '仓库是上一层，库位挂在仓库下面。左侧选仓库，右侧是这个仓库里的库位。编码不能改，库位不删除。'
-            : '仓库内的物理存储位：建库位、改名称（编码是业务键不可改，库位不删除以保留历史账）'
-        }
+        subtitle={pageSubtitle}
         extra={
           block ? null : (
             <>
-              {warehouseOn ? null : (
+              {showSplit ? null : (
                 <Input.Search
                   allowClear
                   placeholder="按编码/名称搜索"
@@ -478,7 +725,12 @@ export default function LocationsPage() {
                   新建仓库
                 </Button>
               )}
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate(createIn)}>
+              {zoneOn && (
+                <Button icon={<PlusOutlined />} onClick={() => openCreateZone(createIn)}>
+                  新建库区
+                </Button>
+              )}
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate(createIn, createZone)}>
                 新建库位
               </Button>
             </>
@@ -491,13 +743,14 @@ export default function LocationsPage() {
             <Spin />
           </div>
         </Card>
-      ) : warehouseOn && parent ? (
+      ) : showSplit ? (
         <Card
           style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
           styles={{ body: { flex: 1, minHeight: 0, overflow: 'hidden', padding: 0, display: 'flex', flexDirection: 'column' } }}
         >
           <style>{SPLIT_STYLE}</style>
           <div className="loc-split" style={splitVars}>
+            {warehouseOn && parent ? (
             <nav className="loc-parents" aria-label="仓库">
               <div className="loc-parents-head">仓库</div>
               <div className="loc-parents-body">
@@ -545,6 +798,58 @@ export default function LocationsPage() {
                 </button>
               </div>
             </nav>
+            ) : null}
+            {zoneOn && zoneSel ? (
+              <nav className="loc-parents loc-zones" aria-label="库区">
+                <div className="loc-parents-head">库区</div>
+                <div className="loc-parents-body">
+                  {zoneQuery.isError ? (
+                    <Typography.Text type="danger" style={{ display: 'block', padding: '8px 16px' }}>
+                      库区没有加载出来
+                    </Typography.Text>
+                  ) : null}
+                  {zoneRows.length === 0 && !zoneQuery.isError ? (
+                    <Typography.Text type="secondary" style={{ display: 'block', padding: '4px 16px 8px', fontSize: 12 }}>
+                      还没有库区。库位可以先放在未分区。
+                    </Typography.Text>
+                  ) : (
+                    zoneRows.map((zone) => {
+                      const active = zoneSel.kind === 'zone' && zoneSel.code === zone.zoneCode;
+                      return (
+                        <button
+                          key={zone.id}
+                          type="button"
+                          className="loc-parent"
+                          aria-current={active ? 'true' : undefined}
+                          onClick={() => setPickedZone({ kind: 'zone', code: zone.zoneCode })}
+                        >
+                          <span className="loc-parent-text">
+                            <span className="loc-parent-name">{zone.name}</span>
+                            <span className="loc-parent-code">
+                              {zoneKindLabel(zone.kind)} · {zone.zoneCode}
+                            </span>
+                          </span>
+                          <span className="loc-parent-count">{zone.locationCount}</span>
+                        </button>
+                      );
+                    })
+                  )}
+                  <div className="loc-section">未归属</div>
+                  <button
+                    type="button"
+                    className="loc-parent"
+                    aria-current={zoneSel.kind === 'unzoned' ? 'true' : undefined}
+                    onClick={() => setPickedZone({ kind: 'unzoned' })}
+                  >
+                    <span className="loc-parent-text">
+                      <span className="loc-parent-name">未分区</span>
+                      <span className="loc-parent-code">还没划进任何库区</span>
+                    </span>
+                    {unzonedTotal != null ? <span className="loc-parent-count">{unzonedTotal}</span> : null}
+                  </button>
+                </div>
+              </nav>
+            ) : null}
             <section className="loc-children" aria-label="库位">
               <div
                 style={{
@@ -558,13 +863,11 @@ export default function LocationsPage() {
               >
                 <div style={{ minWidth: 0 }}>
                   <Typography.Text strong style={{ fontSize: 16 }}>
-                    {parent.kind === 'unassigned' ? '未分仓' : (selectedWarehouse?.name ?? parent.code)}
+                    {childTitle}
                   </Typography.Text>
                   <div>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {parent.kind === 'unassigned'
-                        ? '这些库位还没有划进仓库'
-                        : `${selectedWarehouse?.warehouseCode ?? parent.code} · 这个仓库里的库位`}
+                      {childHint}
                     </Typography.Text>
                   </div>
                 </div>
@@ -572,6 +875,11 @@ export default function LocationsPage() {
                   {selectedWarehouse ? (
                     <Button size="small" icon={<EditOutlined />} onClick={() => openEditWarehouse(selectedWarehouse)}>
                       改名
+                    </Button>
+                  ) : null}
+                  {selectedZone ? (
+                    <Button size="small" icon={<EditOutlined />} onClick={() => openEditZone(selectedZone)}>
+                      编辑库区
                     </Button>
                   ) : null}
                   <Input.Search

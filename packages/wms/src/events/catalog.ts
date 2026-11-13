@@ -1,4 +1,6 @@
+import type { ReportParameter, ReportSection } from '../reports/types.js';
 import type { OrderDirection } from '../state/order-state-machine.js';
+import type { ZoneKind } from '../zone-kinds.js';
 
 /**
  * 领域事件目录（DESIGN.md §8.2 事件目录的 wms 子集）。
@@ -19,6 +21,8 @@ export const WMS_EVENT_TYPES = {
   locationUpdated: 'wms.location.updated',
   warehouseCreated: 'wms.warehouse.created',
   warehouseUpdated: 'wms.warehouse.updated',
+  zoneCreated: 'wms.zone.created',
+  zoneUpdated: 'wms.zone.updated',
   serialReceived: 'wms.serial.received',
   serialMoved: 'wms.serial.moved',
   serialIssued: 'wms.serial.issued',
@@ -49,6 +53,10 @@ export const WMS_EVENT_TYPES = {
   transferStateChanged: 'wms.transfer.state_changed',
   scrapCreated: 'wms.scrap.created',
   scrapStateChanged: 'wms.scrap.state_changed',
+  reportSaved: 'wms.report.saved',
+  reportDeleted: 'wms.report.deleted',
+  integrationCodeBound: 'wms.integration.code_bound',
+  integrationCodeUnbound: 'wms.integration.code_unbound',
 } as const;
 
 export type WmsEventType = (typeof WMS_EVENT_TYPES)[keyof typeof WMS_EVENT_TYPES];
@@ -119,6 +127,8 @@ export interface LocationCreatedPayload {
   readonly name: string;
   /** 所属仓库（module.warehouse）。缺省 = 未分仓 */
   readonly warehouseId?: string;
+  /** 所属库区（module.zone）。缺省 = 未分区 */
+  readonly zoneId?: string;
   /** 库容。缺省 = 不限。上架是否拦截由 settings.putawayCapacity 决定 */
   readonly capacity?: number;
 }
@@ -133,8 +143,32 @@ export interface LocationUpdatedPayload {
    * 只有 module.warehouse 启用时工具才会写这个字段。
    */
   readonly warehouseId?: string | null;
+  /**
+   * 所属库区。缺省 = 不改。null = 划出库区。
+   * 只有 module.zone 启用时工具才会写这个字段。
+   */
+  readonly zoneId?: string | null;
   /** 库容。缺省 = 不改。null = 改回不限 */
   readonly capacity?: number | null;
+}
+
+export interface ZoneCreatedPayload {
+  readonly zoneId: string;
+  readonly zoneCode: string;
+  readonly name: string;
+  readonly kind: ZoneKind;
+  /** 所属仓库。缺省 = 未分仓 */
+  readonly warehouseId?: string;
+}
+
+/** 库区更名、改分类或改所属仓库。zoneCode 是业务键，不可改。 */
+export interface ZoneUpdatedPayload {
+  readonly zoneId: string;
+  readonly zoneCode: string;
+  readonly name?: string;
+  readonly kind?: ZoneKind;
+  /** 缺省 = 不改。null = 划出仓库。 */
+  readonly warehouseId?: string | null;
 }
 
 export interface WarehouseCreatedPayload {
@@ -605,4 +639,34 @@ export interface ScrapStateChangedPayload {
   readonly scrapNo: string;
   readonly from: string;
   readonly to: string;
+}
+
+/** 报表整份保存。再存一次是整份替换，重放按顺序覆盖。 */
+export interface ReportSavedPayload {
+  readonly reportId: string;
+  readonly title: string;
+  readonly note?: string;
+  readonly parameters: readonly ReportParameter[];
+  readonly sections: readonly ReportSection[];
+}
+
+export interface ReportDeletedPayload {
+  readonly reportId: string;
+}
+
+/** 一条外部编码对照。同一连接器、同一实体下，对方编码和内部编码都只能出现一次。 */
+export interface IntegrationCodeBoundPayload {
+  readonly codeId: string;
+  readonly connectorId: string;
+  readonly entity: 'sku' | 'partner' | 'warehouse';
+  readonly externalCode: string;
+  readonly internalCode: string;
+}
+
+export interface IntegrationCodeUnboundPayload {
+  readonly codeId: string;
+  readonly connectorId: string;
+  readonly entity: 'sku' | 'partner' | 'warehouse';
+  readonly externalCode: string;
+  readonly internalCode: string;
 }

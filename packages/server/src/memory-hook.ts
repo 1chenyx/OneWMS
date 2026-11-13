@@ -16,7 +16,8 @@ import { runMemoryConsolidation } from './memory-consolidate.js';
  *  - 自动路径只有 append（低摩擦、天然可交换、无需并发令牌）：整节覆盖/删除
  *    是高风险动作，只发生在有人在场的路径（对话中 AI 自己调 memory.rewrite，
  *    或管理页「整理」）；
- *  - autoMemory 设置关闭时零成本跳过（不发起 LLM 调用）。
+ *  - autoMemory 设置关闭时零成本跳过（不发起 LLM 调用）；
+ *  - 常驻段哪一层超预算就归并哪一层。项目目录变长不再反复压个人层。
  */
 
 /** 一轮提取的可观测结果（单条失败不中断其余条目，rejections 留痕便于排查） */
@@ -41,7 +42,7 @@ function lastText(messages: readonly AgentMessage[], role: 'user' | 'assistant')
 /**
  * 执行一轮提取（核心逻辑，测试直调）：
  * 设置开关 → 取本轮对话 → 提取追加计划 → 逐条经工具总线落账 →
- * 用户画像超预算则顺手归并压缩一次。
+ * 哪一层超预算就归并哪一层。
  */
 export async function runMemoryExtraction(
   ctx: AppContext,
@@ -80,17 +81,31 @@ export async function runMemoryExtraction(
     }
   }
 
-  // T0 常驻段超预算 → 自动压缩一次。只在「本轮确实追加过」时触发：
-  // 溢出状态在归并前不会自己消失，每轮都触发等于每轮白烧一次 LLM。
-  if (stats.appended > 0 && ctx.memory.sections.resident().overflow) {
-    console.warn('[memory] 用户画像超预算，已自动归并压缩（personal）');
-    try {
-      await runMemoryConsolidation(ctx, provider, { scope: 'personal', actor });
-    } catch (err) {
-      console.error(
-        '[memory] 自动归并失败（不影响聊天）:',
-        err instanceof Error ? err.message : err,
-      );
+  // 只在「本轮确实追加过」时看预算：溢出在归并前不会自己消失，
+  // 没追加也归并等于每轮白烧一次 LLM。哪一层超了就压哪一层。
+  if (stats.appended > 0) {
+    const resident = ctx.memory.sections.resident();
+    if (resident.personalOverflow) {
+      console.warn('[memory] 用户画像超预算，已自动归并压缩（personal）');
+      try {
+        await runMemoryConsolidation(ctx, provider, { scope: 'personal', actor });
+      } catch (err) {
+        console.error(
+          '[memory] 个人层自动归并失败（不影响聊天）:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    if (resident.projectOverflow) {
+      console.warn('[memory] 业务约定目录超预算，已自动归并压缩（project）');
+      try {
+        await runMemoryConsolidation(ctx, provider, { scope: 'project', actor });
+      } catch (err) {
+        console.error(
+          '[memory] 业务约定自动归并失败（不影响聊天）:',
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
   }
   return stats;

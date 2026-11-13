@@ -213,6 +213,81 @@ export interface AlertSummary {
   negativeBuckets: { skuCode: string; locationCode: string; batchNo: string; quantity: number }[];
 }
 
+/** 未结束作业的张数。调拨在途是 transferOpen 的子集。 */
+export interface DashboardWorkload {
+  inboundOpen: number;
+  outboundOpen: number;
+  pickingOpen: number;
+  waveOpen: number;
+  stocktakeOpen: number;
+  transferOpen: number;
+  transferInTransit: number;
+  scrapOpen: number;
+}
+
+export interface DashboardSkuRank {
+  skuCode: string;
+  name: string;
+  unit: string | null;
+  quantity: number;
+  available: number;
+  held: number;
+  reserved: number;
+}
+
+export interface DashboardLowStock {
+  skuCode: string;
+  name: string;
+  unit: string | null;
+  total: number;
+  available: number;
+  reorderPoint: number;
+  shortage: number;
+}
+
+export interface DashboardHoldBrief {
+  id: string;
+  skuCode: string;
+  name: string;
+  quantity: number;
+  reason: string;
+  createdAt: string;
+}
+
+export interface DashboardStockFocus {
+  onHand: number;
+  held: number;
+  reserved: number;
+  available: number;
+  lowStockCount: number;
+  lowStock: DashboardLowStock[];
+  topSkus: DashboardSkuRank[];
+  holds: DashboardHoldBrief[];
+}
+
+export interface DashboardActivityRow {
+  eventId: string;
+  skuCode: string;
+  name: string;
+  locationCode: string;
+  batchNo: string;
+  delta: number;
+  reason: string;
+  orderNo: string | null;
+  createdAt: string;
+}
+
+export interface DashboardUrgentRow {
+  skuCode: string;
+  name: string;
+  batchNo: string;
+  batchExpiryDate: string;
+  daysLeft: number;
+  level: 'expired' | 'critical' | 'warning';
+  quantity: number;
+  unit: string | null;
+}
+
 export interface InventoryRow {
   skuId: string;
   skuCode: string;
@@ -306,6 +381,11 @@ export interface Location {
   warehouseId?: string | null;
   warehouseCode?: string | null;
   warehouseName?: string | null;
+  zoneId?: string | null;
+  zoneCode?: string | null;
+  zoneName?: string | null;
+  zoneKind?: string | null;
+  zoneKindLabel?: string | null;
   /** 库位最多放多少。不填表示不限 */
   capacity?: number | null;
   createdAt: string;
@@ -317,6 +397,20 @@ export interface Warehouse {
   id: string;
   warehouseCode: string;
   name: string;
+  locationCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 库区（GET /api/zones）。库位的分类，不是库存桶。 */
+export interface Zone {
+  id: string;
+  zoneCode: string;
+  name: string;
+  kind: string;
+  kindLabel: string;
+  warehouseCode: string | null;
+  warehouseName: string | null;
   locationCount: number;
   createdAt: string;
   updatedAt: string;
@@ -600,6 +694,10 @@ type LocationListQuery = {
   warehouseCode?: string;
   /** 只返回还没划进仓库的库位。 */
   unassigned?: boolean;
+  /** 只返回这个库区里的库位。与 unzoned 互斥。 */
+  zoneCode?: string;
+  /** 只返回还没划进库区的库位。 */
+  unzoned?: boolean;
 };
 
 /** 库位清单。不传 limit 时是全量数组；q 在服务端过滤。仓库范围也在服务端过滤。 */
@@ -610,6 +708,8 @@ function locations(query?: LocationListQuery & { limit?: number; offset?: number
   if (query?.q) params.set('q', query.q);
   if (query?.unassigned) params.set('unassigned', '1');
   else if (query?.warehouseCode) params.set('warehouseCode', query.warehouseCode);
+  if (query?.unzoned) params.set('unzoned', '1');
+  else if (query?.zoneCode) params.set('zoneCode', query.zoneCode);
   writePage(params, query);
   const qs = params.toString();
   return request<Location[] | ListPage<Location>>(qs ? `/api/locations?${qs}` : '/api/locations');
@@ -634,6 +734,87 @@ export interface NumberingView {
   path: string;
   numbering: Record<string, string>;
   places: NumberingPlaceView[];
+}
+
+export type ReportValueType = 'text' | 'number' | 'date';
+
+export type ReportFilterOp = 'eq' | 'neq' | 'contains' | 'in' | 'gt' | 'gte' | 'lt' | 'lte';
+
+export interface ReportParameter {
+  key: string;
+  label: string;
+  type: ReportValueType;
+}
+
+export type ReportFilterValue = string | number | { param: string } | Array<string | number>;
+
+export interface ReportFilter {
+  field: string;
+  op: ReportFilterOp;
+  value: ReportFilterValue;
+}
+
+export interface ReportSection {
+  id: string;
+  title: string;
+  grain: string;
+  columns: string[];
+  filters: ReportFilter[];
+  sort?: { field: string; dir: 'asc' | 'desc' };
+}
+
+export interface ReportDraft {
+  reportId?: string;
+  title: string;
+  note?: string;
+  parameters: ReportParameter[];
+  sections: ReportSection[];
+}
+
+export interface StoredReport {
+  reportId: string;
+  title: string;
+  note: string | null;
+  parameters: ReportParameter[];
+  sections: ReportSection[];
+  updatedAt: string;
+}
+
+export interface ReportFieldInfo {
+  id: string;
+  label: string;
+  type: ReportValueType;
+  selective?: boolean;
+}
+
+export interface ReportGrainInfo {
+  id: string;
+  label: string;
+  row: string;
+  requireSelective: boolean;
+  fields: ReportFieldInfo[];
+}
+
+export interface ReportCatalog {
+  grains: ReportGrainInfo[];
+  filterOps: Record<ReportValueType, ReportFilterOp[]>;
+  notes: string[];
+}
+
+export interface ReportRunRequest {
+  reportId: string;
+  sectionId: string;
+  params?: Record<string, string | number>;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ReportRunPage {
+  columns: { field: string; label: string; type: ReportValueType }[];
+  rows: Array<Record<string, string | number | null>>;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 }
 
 export const wmsApi = {
@@ -801,6 +982,24 @@ export const wmsApi = {
   dashboardLocations: () => request<LocationDistribution[]>('/api/dashboard/locations'),
   dashboardOrders: () => request<OrderStateCount[]>('/api/dashboard/orders'),
   dashboardAlerts: () => request<AlertSummary>('/api/dashboard/alerts'),
+  dashboardWorkload: () => request<DashboardWorkload>('/api/dashboard/workload'),
+  dashboardStock: () => request<DashboardStockFocus>('/api/dashboard/stock'),
+  dashboardActivity: (limit = 12) =>
+    request<DashboardActivityRow[]>(`/api/dashboard/activity?limit=${limit}`),
+  dashboardUrgent: () => request<DashboardUrgentRow[]>('/api/dashboard/urgent'),
+  reportCatalog: () => request<ReportCatalog>('/api/reports/catalog'),
+  reports: () => request<StoredReport[]>('/api/reports'),
+  runReport: (body: ReportRunRequest) =>
+    request<ReportRunPage>('/api/reports/run', { method: 'POST', body: JSON.stringify(body) }),
+  saveReport: (body: ReportDraft) =>
+    request<{ reportId: string; title: string; sectionCount: number }>('/api/reports', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteReport: (reportId: string) =>
+    request<{ reportId: string; deleted: boolean }>(`/api/reports/${encodeURIComponent(reportId)}`, {
+      method: 'DELETE',
+    }),
   /** 补货建议。模块关闭时 400。空数组表示现在没有缺口。 */
   replenishment: () => request<ReplenishmentSuggestion[]>('/api/replenishment'),
   createReplenishment: (body: { skuCodes?: string[]; partnerCode?: string; note?: string; orderNo?: string }) =>
@@ -947,13 +1146,22 @@ export const wmsApi = {
       { method: 'POST' },
     ),
   locations,
-  createLocation: (body: { locationCode?: string; name?: string; warehouseCode?: string; capacity?: number }) =>
+  createLocation: (body: {
+    locationCode?: string;
+    name?: string;
+    warehouseCode?: string;
+    zoneCode?: string;
+    capacity?: number;
+  }) =>
     request<{ locationId: string; locationCode: string; name: string; capacity?: number }>('/api/locations', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
   /** 编辑库位：改名；多仓开启时还可以用 warehouseCode 划仓（空字符串表示划出）。capacity 传 null 清空 */
-  updateLocation: (locationCode: string, body: { name?: string; warehouseCode?: string; capacity?: number | null }) =>
+  updateLocation: (
+    locationCode: string,
+    body: { name?: string; warehouseCode?: string; zoneCode?: string; capacity?: number | null },
+  ) =>
     request<{ locationId: string; locationCode: string; name: string }>(
       `/api/locations/${encodeURIComponent(locationCode)}`,
       { method: 'PUT', body: JSON.stringify(body) },
@@ -971,6 +1179,17 @@ export const wmsApi = {
     ),
   warehouseStock: (warehouseCode: string) =>
     request<WarehouseStock>(`/api/warehouses/${encodeURIComponent(warehouseCode)}/stock`),
+  zones: () => request<Zone[]>('/api/zones'),
+  createZone: (body: { zoneCode?: string; name?: string; kind: string; warehouseCode?: string }) =>
+    request<{ zoneId: string; zoneCode: string; name: string; kind: string }>('/api/zones', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateZone: (zoneCode: string, body: { name?: string; kind?: string; warehouseCode?: string }) =>
+    request<{ zoneId: string; zoneCode: string; name: string; kind: string }>(
+      `/api/zones/${encodeURIComponent(zoneCode)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
   serials: (query?: { skuCode?: string; locationCode?: string; status?: string }) => {
     const params = new URLSearchParams();
     if (query?.skuCode) params.set('skuCode', query.skuCode);

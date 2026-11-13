@@ -141,10 +141,12 @@ export default function WorkbenchPage() {
 /**
  * 由配置拼一条车道。
  *
- * 计数里出现、配置里却没有的状态（旧版本遗留、或配置被改窄）不会被丢掉：
- * 追加到末尾并标注「配置外」——账本上的单不能因为配置改了就在界面上凭空消失。
+ * 贡献模块已关闭的状态**整节点不出现**：那一步已不在当前流程里，摆出来只会
+ * 让用户点向一条走不通的路。但计数里出现、配置里却没有的状态（旧版本遗留、
+ * 或配置被改窄）仍追加到末尾并标注「配置外」——账本上的单不能因为配置改了
+ * 就在界面上凭空消失。
  */
-function buildBoard(
+export function buildBoard(
   lane: Lane,
   workflows: ProfileSnapshot['workflows'],
   modules: ModuleFlags,
@@ -166,14 +168,18 @@ function buildBoard(
   const seen = new Set<string>();
   for (const state of stated) {
     if (isTerminalState(state.id)) continue;
+    // 模块关了 = 这一步已不属于当前流程，节点整个下架。
+    // 但要记进 seen：否则下面「配置外」兜底循环会把它从计数里捞回来重新上架
+    if (state.providedBy && modules[state.providedBy]?.enabled === false) {
+      seen.add(state.id);
+      continue;
+    }
     seen.add(state.id);
-    const provider = state.providedBy;
     nodes.push({
       state: state.id,
       label: state.label || state.id,
       count: countOf.get(state.id) ?? 0,
       page: stagePage(lane, state.id, modules),
-      note: provider && modules[provider]?.enabled === false ? `贡献模块 ${provider} 已关闭` : undefined,
     });
   }
   for (const [state, count] of countOf) {

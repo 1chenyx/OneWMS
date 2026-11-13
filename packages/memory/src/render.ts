@@ -9,9 +9,10 @@ import type { MemorySection } from './views/memory-view.js';
  *  - T1 按需：模型调 memory.read(sectionKey) 取某节全文；
  *  - T2 预取：用户消息命中关键词 → server 直接注入 0–2 节全文（零 LLM 成本）。
  *
- * 预算纪律：personal 是「AI 认识用户」的底料，**超预算不截断**——只置
- * overflow 标记，由调用方触发归并压缩（截断会让用户偏好随机失效，比多花
- * token 更糟）。project 目录每节恒一行，天然有界（章节数上限即行数上限）。
+ * 预算纪律：两层都**超预算不截断**——只置标记，由调用方按层归并
+ * （截断会让用户偏好随机失效，比多花 token 更糟）。
+ * personalOverflow 只看用户画像；projectOverflow 只看业务约定目录。
+ * 目录变长不再把个人层判成超预算。
  *
  * 预算是字符数而非 token：core.ai 的 provider 配置目前没有上下文窗口/num_ctx
  * 一项（packages/ai/src/provider/config.ts 只有 kind/baseUrl/apiKey/model），
@@ -28,8 +29,12 @@ export const RESIDENT_PERSONAL_LINE_BUDGET = 40;
 /** 渲染结果：text 为空串 = 无记忆（调用方整段跳过，不留空标记） */
 export interface ResidentMemory {
   readonly text: string;
-  /** personal 超预算：调用方应触发归并压缩（而不是截断） */
+  /** 任一层超预算。界面上的「超预算」标记用这个 */
   readonly overflow: boolean;
+  /** 用户画像全文超预算：归并 personal，不要去压项目目录 */
+  readonly personalOverflow: boolean;
+  /** 业务约定目录超预算：归并 project。目录再长也不截断 */
+  readonly projectOverflow: boolean;
 }
 
 /** ISO 时间 → 相对时间（目录行的「更新于」，比绝对时间省 token 且更好读） */
@@ -73,7 +78,8 @@ export function renderResidentMemory(
 ): ResidentMemory {
   const personal = sections.filter((s) => s.scope === 'personal');
   const project = sections.filter((s) => s.scope === 'project');
-  if (personal.length === 0 && project.length === 0) return { text: '', overflow: false };
+  const clear = { text: '', overflow: false, personalOverflow: false, projectOverflow: false };
+  if (personal.length === 0 && project.length === 0) return clear;
 
   const lines: string[] = [];
   if (personal.length > 0) {
@@ -84,9 +90,10 @@ export function renderResidentMemory(
 
   const personalText = lines.join('\n');
   const personalLines = personalText === '' ? 0 : personalText.split('\n').length;
-  const overflow =
+  const personalOverflow =
     personalLines > RESIDENT_PERSONAL_LINE_BUDGET || personalText.length > RESIDENT_CHAR_BUDGET;
 
+  const projectStart = lines.length;
   if (project.length > 0) {
     if (lines.length > 0) lines.push('');
     lines.push(
@@ -94,9 +101,11 @@ export function renderResidentMemory(
     );
     for (const s of project) lines.push(renderDirectoryLine(s, now));
   }
+  const projectText = lines.slice(projectStart).join('\n');
+  const projectOverflow = projectText.length > RESIDENT_CHAR_BUDGET;
 
   const text = lines.join('\n');
-  return { text, overflow: overflow || text.length > RESIDENT_CHAR_BUDGET * 1.5 };
+  return { text, overflow: personalOverflow || projectOverflow, personalOverflow, projectOverflow };
 }
 
 /** 正文字数（append 上限护栏与目录行「N 行」共用） */

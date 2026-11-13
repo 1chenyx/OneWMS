@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { buildBoard } from '../src/pages/WorkbenchPage';
 import { isTerminalState, stagePage } from '../src/lib/workbench';
 
 /** 作业台排布规则的纯逻辑测试：落点推导 + 模块关闭时的链路降级 */
@@ -63,5 +64,37 @@ describe('stagePage 出库链路', () => {
   it('复核和打包都关时 picked 跨到装车', () => {
     const none = off(off(ALL_ON, 'module.review'), 'module.pack');
     expect(stagePage('out', 'picked', none)).toBe('load');
+  });
+});
+
+describe('buildBoard 流水线装配', () => {
+  const workflows = {
+    inbound: {
+      states: [
+        { id: 'created', label: '已创建' },
+        { id: 'received', label: '已收货' },
+        { id: 'inspected', label: '已质检', providedBy: 'module.qc' },
+        { id: 'done', label: '已完成' },
+      ],
+      transitions: [],
+    },
+  };
+
+  it('贡献模块关闭时该状态节点整个下架，即使账本里还有计数也不回来', () => {
+    const rows = [
+      { direction: 'in', state: 'created', count: 2 },
+      { direction: 'in', state: 'inspected', count: 5 },
+    ] as const;
+    const board = buildBoard('in', workflows, off(ALL_ON, 'module.qc'), rows);
+    expect(board.nodes.map((node) => node.state)).toEqual(['created', 'received']);
+    // 关闭模块压着的 5 张单不计入待办：那一步已不在流程里
+    expect(board.waiting).toBe(2);
+  });
+
+  it('配置里没有、账本里有的状态保留在末尾并标注', () => {
+    const rows = [{ direction: 'in', state: 'legacy', count: 3 }] as const;
+    const board = buildBoard('in', workflows, ALL_ON, rows);
+    const legacy = board.nodes.find((node) => node.state === 'legacy');
+    expect(legacy?.note).toContain('流程配置里没有这个状态');
   });
 });

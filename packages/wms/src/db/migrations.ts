@@ -107,6 +107,7 @@ export function migrateWms(db: SqliteDatabase): void {
         location_code TEXT NOT NULL,
         name          TEXT NOT NULL,
         warehouse_id  TEXT,
+        zone_id       TEXT,
         capacity      REAL,
         created_at    TEXT NOT NULL,
         updated_at    TEXT NOT NULL,
@@ -121,9 +122,13 @@ export function migrateWms(db: SqliteDatabase): void {
     if (locationCols.length > 0 && !locationCols.some((c) => c.name === 'capacity')) {
       db.exec(`ALTER TABLE wms_location ADD COLUMN capacity REAL`);
     }
+    if (locationCols.length > 0 && !locationCols.some((c) => c.name === 'zone_id')) {
+      db.exec(`ALTER TABLE wms_location ADD COLUMN zone_id TEXT`);
+    }
     db.exec(
       `CREATE INDEX IF NOT EXISTS idx_wms_location_warehouse ON wms_location (workspace_id, warehouse_id)`,
     );
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_wms_location_zone ON wms_location (workspace_id, zone_id)`);
 
     // ── 仓库（module.warehouse）：库位的上一层。不进库存主键。
     //    老库加表即可，库位仍以编码为身份；未划仓的库位 warehouse_id 保持 NULL。──
@@ -138,6 +143,24 @@ export function migrateWms(db: SqliteDatabase): void {
         UNIQUE (workspace_id, warehouse_code)
       );
       CREATE INDEX IF NOT EXISTS idx_wms_warehouse_ws ON wms_warehouse (workspace_id);
+    `);
+
+    // ── 库区（module.zone）：库位上的分类。不进库存主键。
+    //    老库加表即可。未划区的库位 zone_id 保持 NULL。──
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_zone (
+        id            TEXT NOT NULL PRIMARY KEY,
+        workspace_id  TEXT NOT NULL,
+        zone_code     TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        kind          TEXT NOT NULL,
+        warehouse_id  TEXT,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        UNIQUE (workspace_id, zone_code)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_zone_ws ON wms_zone (workspace_id);
+      CREATE INDEX IF NOT EXISTS idx_wms_zone_warehouse ON wms_zone (workspace_id, warehouse_id);
     `);
 
     // ── 序列号（module.serial）：一件一个号。不是库存主键。
@@ -233,6 +256,7 @@ export function migrateWms(db: SqliteDatabase): void {
       );
       CREATE INDEX IF NOT EXISTS idx_wms_order_ws ON wms_order (workspace_id, direction);
       CREATE INDEX IF NOT EXISTS idx_wms_order_time ON wms_order (workspace_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_wms_order_partner ON wms_order (workspace_id, partner_id, created_at);
     `);
     // 退货：原单 id。老库加列，不重建（旧单据都不是退货，保持 NULL）
     const orderColsNow = db.pragma('table_info(wms_order)') as { name: string }[];
@@ -294,6 +318,7 @@ export function migrateWms(db: SqliteDatabase): void {
         UNIQUE (workspace_id, order_id, sku_id, location_id, batch_no)
       );
       CREATE INDEX IF NOT EXISTS idx_wms_order_line_order ON wms_order_line (workspace_id, order_id);
+      CREATE INDEX IF NOT EXISTS idx_wms_order_line_sku ON wms_order_line (workspace_id, sku_id);
     `);
     copyOrderLineQtyLegacy(db);
     // 短收短发：已入账净量。老库加列，不重建（旧事件保持 NULL = 按订单数量）
@@ -484,6 +509,10 @@ export function migrateWms(db: SqliteDatabase): void {
       );
       CREATE INDEX IF NOT EXISTS idx_wms_picking_line_pk
         ON wms_picking_line (workspace_id, picking_id);
+      CREATE INDEX IF NOT EXISTS idx_wms_picking_line_order
+        ON wms_picking_line (workspace_id, order_id);
+      CREATE INDEX IF NOT EXISTS idx_wms_picking_line_sku
+        ON wms_picking_line (workspace_id, sku_id);
     `);
     const pickingLineCols = db.pragma('table_info(wms_picking_line)') as { name: string }[];
     if (pickingLineCols.length > 0 && !pickingLineCols.some((c) => c.name === 'confirmed')) {
@@ -584,6 +613,30 @@ export function migrateWms(db: SqliteDatabase): void {
       );
       CREATE INDEX IF NOT EXISTS idx_wms_scrap_line_sc
         ON wms_scrap_line (workspace_id, scrap_id);
+
+      CREATE TABLE IF NOT EXISTS wms_report (
+        id           TEXT NOT NULL PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        title        TEXT NOT NULL,
+        note         TEXT,
+        definition   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_report_ws ON wms_report (workspace_id, updated_at);
+
+      CREATE TABLE IF NOT EXISTS wms_integration_code (
+        id             TEXT NOT NULL PRIMARY KEY,
+        workspace_id   TEXT NOT NULL,
+        connector_id   TEXT NOT NULL,
+        entity         TEXT NOT NULL,
+        external_code  TEXT NOT NULL,
+        internal_code  TEXT NOT NULL,
+        updated_at     TEXT NOT NULL,
+        UNIQUE (workspace_id, connector_id, entity, external_code),
+        UNIQUE (workspace_id, connector_id, entity, internal_code)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_integration_code_ws
+        ON wms_integration_code (workspace_id, connector_id, entity);
     `);
 
     // 外部对接的本机状态，不是投影。
@@ -631,6 +684,21 @@ export function migrateWms(db: SqliteDatabase): void {
       );
       CREATE INDEX IF NOT EXISTS idx_integration_outbox_due
         ON integration_outbox (workspace_id, status, next_attempt_at);
+      CREATE TABLE IF NOT EXISTS integration_cursor (
+        workspace_id  TEXT NOT NULL,
+        connector_id  TEXT NOT NULL,
+        lamport       INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, connector_id)
+      );
+      -- 入站拉取的水位。和 integration_cursor 分开：那张表是账本 lamport，不是对方的更新时间。
+      CREATE TABLE IF NOT EXISTS integration_poll (
+        workspace_id    TEXT NOT NULL,
+        connector_id    TEXT NOT NULL,
+        route_id        TEXT NOT NULL,
+        watermark       TEXT,
+        last_attempt_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, connector_id, route_id)
+      );
     `);
   })();
 }

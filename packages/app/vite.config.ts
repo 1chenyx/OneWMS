@@ -17,6 +17,10 @@ export default defineConfig({
         replacement: fileURLToPath(new URL('../wms/src/numbering/pattern.ts', import.meta.url)),
       },
       {
+        find: '@one/wms/zone-kinds',
+        replacement: fileURLToPath(new URL('../wms/src/zone-kinds.ts', import.meta.url)),
+      },
+      {
         find: '@one/wms/order-edit-policy',
         replacement: fileURLToPath(new URL('../wms/src/state/order-edit-policy.ts', import.meta.url)),
       },

@@ -51,8 +51,8 @@ import {
  *  记忆（章节账本的三层注入）：
  *  - T0 常驻：装配时把 personal 全文 + project 章节目录渲染进 System Prompt
  *    （ctx.memory.sections.resident()，快照以消息为粒度）；
- *  - T2 预取：本轮用户消息命中章节关键词/标题 → 直接注入 0–2 节全文
- *    （matchSections 是确定性字符串匹配，零 LLM 成本）；
+ *  - T2 预取：本轮用户消息命中专名 → 注入 0–2 节正文
+ *    （matchSections 是确定性字符串匹配，零 LLM 成本；过长由 system-prompt 截断）；
  *  - T1 按需：细节由模型自己调 memory.read(sectionKey) 取，不在装配期塞；
  *  - turn-done 提交历史后 fire-and-forget 触发提取（scheduleMemoryExtraction
  *    ——不阻塞 SSE、失败静默、模块级串行；落账走工具总线 actor
@@ -351,7 +351,7 @@ export function chatRoutes(ctx: AppContext): Hono {
       // T2 预取：本轮用户消息命中的 project 章节直接带全文（确定性匹配，零 LLM 成本）
       const prefetched = ctx.memory.sections
         .matchSections(userText, 2)
-        .map((s) => ({ title: s.title, bodyMd: s.bodyMd }));
+        .map((s) => ({ title: s.title, sectionKey: s.sectionKey, bodyMd: s.bodyMd }));
       const catalog = ctx.ws.tools.list();
       const allowApply = def.tools.some((id) => {
         const tool = catalog.find((item) => item.id === id);

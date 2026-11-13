@@ -3,6 +3,7 @@ import type { ToolDefinition } from '@one/core';
 import { DEFAULT_LOCATION_ID, WMS_EVENT_TYPES } from '../events/catalog.js';
 import { LocationAlreadyExistsError, LocationNotFoundError, WarehouseNotFoundError } from '../errors.js';
 import { allocateCode } from '../numbering/allocate.js';
+import { alignLocationParents, resolveZoneId } from '../queries/zone-queries.js';
 import { assertWarehouseEnabled } from '../queries/warehouse-queries.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
@@ -41,12 +42,13 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
     locationCode?: string;
     name?: string;
     warehouseCode?: string;
+    zoneCode?: string;
     capacity?: number | null;
   }> = {
     id: 'wms.location.create',
     label: '创建库位',
     description:
-      '创建一个新的库位（仓库内的物理存储位）。locationCode 是全库唯一的库位编码，不传或空着则按编号规则（location）生成，传了就用传入的；name 是显示名称（可选，缺省同编码）。库存可分库位存放与移库；保留字 DEFAULT 不可用于创建（它是未指定库位时库存的默认归宿，虚拟存在）。可选 warehouseCode 把库位划进已有仓库（module.warehouse）；不传或空字符串则未分仓。停用多仓后只要带了 warehouseCode 就拒绝。容量是库位最多放多少。不填表示不限。上架是否拦截由 putawayCapacity 决定。',
+      '创建一个新的库位（仓库内的物理存储位）。locationCode 是全库唯一的库位编码，不传或空着则按编号规则（location）生成，传了就用传入的；name 是显示名称（可选，缺省同编码）。库存可分库位存放与移库；保留字 DEFAULT 不可用于创建（它是未指定库位时库存的默认归宿，虚拟存在）。可选 warehouseCode 把库位划进已有仓库（module.warehouse）；不传或空字符串则未分仓。停用多仓后只要带了 warehouseCode 就拒绝。可选 zoneCode 把库位划进已有库区（module.zone）；不传则未分区。库区有所属仓库时，库位跟着进那个仓库；两边仓库不一致会拒绝。停用库区后只要带了 zoneCode 就拒绝。容量是库位最多放多少。不填表示不限。上架是否拦截由 putawayCapacity 决定。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -54,6 +56,7 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
         locationCode: { type: 'string', description: '库位唯一编码（可选。不传或空着按编号规则生成，如 LOC-0001）' },
         name: { type: 'string', description: '库位显示名称（可选，缺省同编码）' },
         warehouseCode: { type: 'string', description: '所属仓库编码（可选；module.warehouse 启用时有效，不传则未分仓）' },
+        zoneCode: { type: 'string', description: '所属库区编码（可选；module.zone 启用时有效，不传则未分区）' },
         capacity: { type: 'number', description: '容量（可选，正数）。不填表示不限。上架是否拦截由 putawayCapacity 决定' },
       },
       required: [],
@@ -63,7 +66,15 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
       ws.sync();
       const locationCode = allocateCode(ws, 'location', params.locationCode);
       const capacity = readCapacity(params.capacity, Object.hasOwn(params, 'capacity'), 'create');
-      const warehouseId = resolveWarehouseId(ws, params, 'create');
+      const aligned = alignLocationParents(ws, {
+        mode: 'create',
+        warehouseId: resolveWarehouseId(ws, params, 'create'),
+        zoneId: resolveZoneId(ws, params, 'create'),
+        currentWarehouseId: null,
+        currentZoneId: null,
+      });
+      const warehouseId = aligned.warehouseId;
+      const zoneId = aligned.zoneId;
       if (locationCode === DEFAULT_LOCATION_ID) {
         throw new Error('TOOL_REJECTED: DEFAULT 是保留字（默认库位，虚拟存在），不可创建同名库位');
       }
@@ -77,6 +88,7 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
         locationCode,
         name,
         ...(warehouseId ? { warehouseId } : {}),
+        ...(zoneId ? { zoneId } : {}),
         ...(typeof capacity === 'number' ? { capacity } : {}),
       });
       ws.sync();
@@ -93,12 +105,13 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
     locationCode: string;
     name?: string;
     warehouseCode?: string;
+    zoneCode?: string;
     capacity?: number | null;
   }> = {
     id: 'wms.location.update',
     label: '更新库位',
     description:
-      '更新库位的显示名称，也可在 module.warehouse 启用时改所属仓库。只传需要修改的字段，未传字段保持不变。warehouseCode 传空字符串表示划出仓库。locationCode 是业务键不可改（历史单据/流水按它引用）——要换编码请新建库位再移库。虚拟库位 DEFAULT 不可更新（它不落库，也不能划进仓库）。停用多仓后只要带了 warehouseCode 就拒绝；只改名称不受影响。容量是库位最多放多少。不填表示不限。传 null 清空容量。上架是否拦截由 putawayCapacity 决定。',
+      '更新库位的显示名称，也可在 module.warehouse 启用时改所属仓库，在 module.zone 启用时改所属库区。只传需要修改的字段，未传字段保持不变。warehouseCode 传空字符串表示划出仓库。zoneCode 传空字符串表示划出库区。库位的仓库要和库区的仓库一致；已经在另一个仓库时不会悄悄换仓。locationCode 是业务键不可改（历史单据/流水按它引用）——要换编码请新建库位再移库。虚拟库位 DEFAULT 不可更新（它不落库，也不能划进仓库或库区）。停用多仓后只要带了 warehouseCode 就拒绝；停用库区后只要带了 zoneCode 就拒绝；只改名称不受影响。容量是库位最多放多少。不填表示不限。传 null 清空容量。上架是否拦截由 putawayCapacity 决定。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -108,6 +121,10 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
         warehouseCode: {
           type: 'string',
           description: '所属仓库编码（可选）。空字符串表示划出仓库。不传则不改归属。停用 module.warehouse 后拒绝。',
+        },
+        zoneCode: {
+          type: 'string',
+          description: '所属库区编码（可选）。空字符串表示划出库区。不传则不改归属。停用 module.zone 后拒绝。',
         },
         capacity: {
           type: 'number',
@@ -121,9 +138,17 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
       const ws = resolveWorkspace(ctx.workspaceId);
       ws.sync();
       const capacity = readCapacity(params.capacity, Object.hasOwn(params, 'capacity'), 'update');
-      const warehouseId = resolveWarehouseId(ws, params, 'update');
       const location = ws.locations.byCode(params.locationCode);
       if (!location) throw new LocationNotFoundError(params.locationCode);
+      const aligned = alignLocationParents(ws, {
+        mode: 'update',
+        warehouseId: resolveWarehouseId(ws, params, 'update'),
+        zoneId: resolveZoneId(ws, params, 'update'),
+        currentWarehouseId: location.warehouseId,
+        currentZoneId: location.zoneId,
+      });
+      const warehouseId = aligned.warehouseId;
+      const zoneId = aligned.zoneId;
       const name = params.name === undefined ? undefined : String(params.name).trim();
       if (name === '') throw new Error('TOOL_REJECTED: name 不能为空字符串（不改就别传）');
       ctx.appendEvent(WMS_EVENT_TYPES.locationUpdated, {
@@ -131,6 +156,7 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
         locationCode: location.locationCode,
         name,
         ...(warehouseId !== undefined ? { warehouseId } : {}),
+        ...(zoneId !== undefined ? { zoneId } : {}),
         ...(capacity !== undefined ? { capacity } : {}),
       });
       ws.sync();
@@ -162,6 +188,8 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
           name: string;
           createdAt: string;
           warehouseCode?: string;
+          zoneCode?: string;
+          zoneKind?: string;
           capacity?: number;
         } = {
           locationCode: l.locationCode,
@@ -172,6 +200,13 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
         if (l.warehouseId) {
           const warehouse = ws.warehouses.byId(l.warehouseId);
           if (warehouse) row.warehouseCode = warehouse.warehouseCode;
+        }
+        if (l.zoneId) {
+          const zone = ws.zones.byId(l.zoneId);
+          if (zone) {
+            row.zoneCode = zone.zoneCode;
+            row.zoneKind = zone.kind;
+          }
         }
         return row;
       });

@@ -4,7 +4,10 @@ import {
   expandedGroupsFromHistory,
   presentCatalog,
   TOOLS_LOAD_ID,
+  toolGroup,
+  touchLoadedGroup,
 } from './tool-catalog.js';
+import { messagesForModel } from './model-history.js';
 import type {
   AgentMessage,
   AgentToolMeta,
@@ -22,6 +25,8 @@ import type {
  *  - 工具执行全部穿过注入的 invoke 闭包（→ ToolsView.invoke，规则即护栏）；
  *  - 工具被拒（ToolRejectedError 族等任何异常）不中断循环——错误信息回传模型，
  *    由它向用户解释（§9.3 审计免费：拒绝的操作本来就不落事件）。
+ *  - 同一工具、同一参数已经失败过，本次运行里不再执行，把上次的错误交回模型。
+ *  - 同一步里相邻的读工具一起执行；写、ui.ask、目录结算仍按出现顺序。
  */
 export class AgentStepLimitError extends Error {
   constructor(readonly maxSteps: number) {
@@ -83,13 +88,18 @@ export async function runAgent(userText: string, deps: RunAgentDeps): Promise<Ag
 
   const messages: AgentMessage[] = [{ role: 'user', text: userText }];
   const invocations: AgentInvocation[] = [];
+  const failures = new Map<string, string>();
   let steps = 0;
   const catalog = startCatalog(tools, messages, deps.catalog === true, deps.sessionToolIds);
 
   for (;;) {
     if (++steps > maxSteps) throw new AgentStepLimitError(maxSteps);
 
-    const res = await provider.completeTurn({ system, messages, tools: toolsForTurn(catalog, tools) });
+    const res = await provider.completeTurn({
+      system,
+      messages: messagesForModel(messages),
+      tools: toolsForTurn(catalog, tools),
+    });
 
     // 终态：模型不再调用工具 → 本轮文本即最终回复
     if (res.toolCalls.length === 0) {
@@ -99,25 +109,14 @@ export async function runAgent(userText: string, deps: RunAgentDeps): Promise<Ag
     // 记录模型的工具调用（保留旁白文本，翻给下一轮请求时模型能看见自己说过什么）
     messages.push({ role: 'tool-calls', text: res.text || undefined, calls: res.toolCalls });
 
-    // 逐个执行：任何异常都转为 ok=false 的结果回传——循环不中断（§4.2 快通道护栏语义）
-    const results: ToolCallResult[] = [];
-    for (const call of res.toolCalls) {
-      const settled = catalog ? settleCatalog(call, catalog) : undefined;
-      if (settled) {
-        results.push(settled);
-        invocations.push({ toolId: call.toolId, args: call.args, ok: settled.ok, payload: settled.payload });
-        continue;
+    const exec = executeCalls(res.toolCalls, { tools, invoke, catalog, failures, invocations, emit: false });
+    let results: ToolCallResult[] = [];
+    for (;;) {
+      const step = await exec.next();
+      if (step.done) {
+        results = step.value;
+        break;
       }
-      let result: ToolCallResult;
-      try {
-        const payload = await invoke(call.toolId, call.args, call.callId);
-        result = { callId: call.callId, toolId: call.toolId, ok: true, payload };
-      } catch (err) {
-        const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-        result = { callId: call.callId, toolId: call.toolId, ok: false, payload: { error: message } };
-      }
-      results.push(result);
-      invocations.push({ toolId: call.toolId, args: call.args, ok: result.ok, payload: result.payload });
     }
     messages.push({ role: 'tool-results', results });
   }
@@ -170,6 +169,7 @@ export async function* streamAgent(
   const maxSteps = deps.maxSteps ?? 20;
 
   const messages: AgentMessage[] = [...(deps.history ?? []), { role: 'user', text: userText }];
+  const failures = new Map<string, string>();
   let steps = 0;
   const catalog = startCatalog(tools, messages, deps.catalog === true, deps.sessionToolIds);
 
@@ -177,7 +177,11 @@ export async function* streamAgent(
     if (++steps > maxSteps) throw new AgentStepLimitError(maxSteps);
 
     // 单轮模型调用：yield 增量文本（直译为 text-delta 事件），return 完整响应
-    const turn = streamOneTurn(provider, { system, messages, tools: toolsForTurn(catalog, tools) });
+    const turn = streamOneTurn(provider, {
+      system,
+      messages: messagesForModel(messages),
+      tools: toolsForTurn(catalog, tools),
+    });
     let res: LlmTurnResponse;
     for (;;) {
       const { value, done } = await turn.next();
@@ -197,60 +201,18 @@ export async function* streamAgent(
 
     messages.push({ role: 'tool-calls', text: res.text || undefined, calls: res.toolCalls });
 
-    // 逐个执行：任何异常都转为 ok=false 的结果回传——循环不中断（与 runAgent 一致）
-    const results: ToolCallResult[] = [];
-    for (const call of res.toolCalls) {
-      // ui.ask 分流（M12 步骤3）：挂起等待用户回答（经 next(reply) 注入），
-      // 回答原样作为 payload 回传模型；不进 invoke——提问不是业务操作，
-      // 不穿工具总线、不落 oplog（审计豁免）
-      if (call.toolId === 'ui.ask') {
-        const question = typeof call.args.question === 'string' ? call.args.question : '';
-        const reply = yield { type: 'ask', callId: call.callId, question };
-        const payload = isAskReply(reply) ? reply : { declined: true };
-        const result: ToolCallResult = { callId: call.callId, toolId: call.toolId, ok: true, payload };
-        results.push(result);
-        yield {
-          type: 'tool-result',
-          callId: call.callId,
-          toolId: call.toolId,
-          ok: true,
-          payload,
-        };
-        continue;
+    const exec = executeCalls(res.toolCalls, { tools, invoke, catalog, failures, emit: true });
+    let reply: AskReply | undefined;
+    let results: ToolCallResult[] = [];
+    for (;;) {
+      const step = await exec.next(reply);
+      reply = undefined;
+      if (step.done) {
+        results = step.value;
+        break;
       }
-      // tools.load 与未授权 / 未加载的调用都在编排层结算，不进 invoke
-      if (catalog) {
-        const settled = settleCatalog(call, catalog);
-        if (settled) {
-          yield { type: 'tool-call', callId: call.callId, toolId: call.toolId, args: call.args };
-          results.push(settled);
-          yield {
-            type: 'tool-result',
-            callId: call.callId,
-            toolId: call.toolId,
-            ok: settled.ok,
-            payload: settled.payload,
-          };
-          continue;
-        }
-      }
-      yield { type: 'tool-call', callId: call.callId, toolId: call.toolId, args: call.args };
-      let result: ToolCallResult;
-      try {
-        const payload = await invoke(call.toolId, call.args, call.callId);
-        result = { callId: call.callId, toolId: call.toolId, ok: true, payload };
-      } catch (err) {
-        const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-        result = { callId: call.callId, toolId: call.toolId, ok: false, payload: { error: message } };
-      }
-      results.push(result);
-      yield {
-        type: 'tool-result',
-        callId: call.callId,
-        toolId: call.toolId,
-        ok: result.ok,
-        payload: result.payload,
-      };
+      if (step.value.type === 'ask') reply = yield step.value;
+      else yield step.value;
     }
     messages.push({ role: 'tool-results', results });
   }
@@ -292,12 +254,168 @@ function toolsForTurn(catalog: CatalogRuntime | undefined, fallback: AgentToolMe
 function settleCatalog(call: ToolCallRequest, catalog: CatalogRuntime): ToolCallResult | undefined {
   if (call.toolId === TOOLS_LOAD_ID) {
     const outcome = applyLoad(catalog.domain, call.args);
-    if (outcome.ok && outcome.group) catalog.expanded.add(outcome.group);
+    if (outcome.ok && outcome.group) touchLoadedGroup(catalog.expanded, outcome.group);
     return { callId: call.callId, toolId: call.toolId, ok: outcome.ok, payload: outcome.payload };
   }
   const blocked = catalogBlock(call.toolId, catalog.domain, catalog.expanded, catalog.sessionIds);
   if (!blocked) return undefined;
   return { callId: call.callId, toolId: call.toolId, ok: false, payload: blocked };
+}
+
+const REPEATED_FAILURE_NOTE =
+  '同一工具、同一参数已经失败过，本次没有再次执行。请把这个错误告诉用户，不要再用相同参数重试。';
+
+type ExecEvent = Exclude<AgentStreamEvent, { type: 'text-delta' } | { type: 'turn-done' }>;
+
+interface ExecCtx {
+  tools: readonly AgentToolMeta[];
+  invoke: RunAgentDeps['invoke'];
+  catalog?: CatalogRuntime;
+  /** 本轮运行内，工具 + 参数 → 已经出现过的错误原文 */
+  failures: Map<string, string>;
+  invocations?: AgentInvocation[];
+  /** 流式路径才向调用方 yield 事件，并挂起 ui.ask */
+  emit: boolean;
+}
+
+/**
+ * 执行模型在同一步里给出的工具调用。
+ * 相邻的读一起开始；写、ui.ask 和目录结算按顺序，后一个等前一个结束。
+ * runAgent 不 emit，生成器不 yield，一次 next() 就跑完。
+ */
+async function* executeCalls(
+  calls: readonly ToolCallRequest[],
+  ctx: ExecCtx,
+): AsyncGenerator<ExecEvent, ToolCallResult[], AskReply | undefined> {
+  const results: ToolCallResult[] = [];
+  let index = 0;
+  while (index < calls.length) {
+    const call = calls[index]!;
+    if (ctx.emit && call.toolId === 'ui.ask') {
+      const question = typeof call.args.question === 'string' ? call.args.question : '';
+      const reply = yield { type: 'ask', callId: call.callId, question };
+      const payload = isAskReply(reply) ? reply : { declined: true };
+      results.push({ callId: call.callId, toolId: call.toolId, ok: true, payload });
+      yield { type: 'tool-result', callId: call.callId, toolId: call.toolId, ok: true, payload };
+      index += 1;
+      continue;
+    }
+    if (ctx.catalog) {
+      const settled = settleCatalog(call, ctx.catalog);
+      if (settled) {
+        ctx.invocations?.push({ toolId: call.toolId, args: call.args, ok: settled.ok, payload: settled.payload });
+        results.push(settled);
+        if (ctx.emit) {
+          yield { type: 'tool-call', callId: call.callId, toolId: call.toolId, args: call.args };
+          yield {
+            type: 'tool-result',
+            callId: call.callId,
+            toolId: call.toolId,
+            ok: settled.ok,
+            payload: settled.payload,
+          };
+        }
+        index += 1;
+        continue;
+      }
+    }
+    if (isParallelRead(call, ctx)) {
+      const batch: ToolCallRequest[] = [];
+      while (index < calls.length && isParallelRead(calls[index]!, ctx)) {
+        batch.push(calls[index]!);
+        index += 1;
+      }
+      if (ctx.emit) {
+        for (const item of batch) {
+          yield { type: 'tool-call', callId: item.callId, toolId: item.toolId, args: item.args };
+        }
+      }
+      const settled = await Promise.all(batch.map((item) => invokeOne(item, ctx)));
+      for (let i = 0; i < settled.length; i += 1) {
+        const result = settled[i]!;
+        const item = batch[i]!;
+        ctx.invocations?.push({ toolId: item.toolId, args: item.args, ok: result.ok, payload: result.payload });
+        results.push(result);
+        if (ctx.emit) {
+          yield {
+            type: 'tool-result',
+            callId: result.callId,
+            toolId: result.toolId,
+            ok: result.ok,
+            payload: result.payload,
+          };
+        }
+      }
+      continue;
+    }
+    if (ctx.emit) {
+      yield { type: 'tool-call', callId: call.callId, toolId: call.toolId, args: call.args };
+    }
+    const result = await invokeOne(call, ctx);
+    ctx.invocations?.push({ toolId: call.toolId, args: call.args, ok: result.ok, payload: result.payload });
+    results.push(result);
+    if (ctx.emit) {
+      yield {
+        type: 'tool-result',
+        callId: result.callId,
+        toolId: result.toolId,
+        ok: result.ok,
+        payload: result.payload,
+      };
+    }
+    index += 1;
+  }
+  return results;
+}
+
+/** 会进工具总线的读。ui.ask、tools.load、写，以及目录直接拦下的调用都不并进这一批。 */
+function isParallelRead(call: ToolCallRequest, ctx: ExecCtx): boolean {
+  if (call.toolId === 'ui.ask' || call.toolId === TOOLS_LOAD_ID) return false;
+  if (ctx.catalog && catalogBlock(call.toolId, ctx.catalog.domain, ctx.catalog.expanded, ctx.catalog.sessionIds)) {
+    return false;
+  }
+  return ctx.tools.some((tool) => tool.id === call.toolId && tool.permission === 'read');
+}
+
+async function invokeOne(call: ToolCallRequest, ctx: ExecCtx): Promise<ToolCallResult> {
+  const key = failureKey(call.toolId, call.args);
+  const prior = ctx.failures.get(key);
+  if (prior !== undefined) {
+    const payload = { error: prior, repeated: true, note: REPEATED_FAILURE_NOTE };
+    noteUse(ctx, call.toolId);
+    return { callId: call.callId, toolId: call.toolId, ok: false, payload };
+  }
+  try {
+    const payload = await ctx.invoke(call.toolId, call.args, call.callId);
+    noteUse(ctx, call.toolId);
+    return { callId: call.callId, toolId: call.toolId, ok: true, payload };
+  } catch (err) {
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    ctx.failures.set(key, message);
+    noteUse(ctx, call.toolId);
+    return { callId: call.callId, toolId: call.toolId, ok: false, payload: { error: message } };
+  }
+}
+
+/** 已经加载过的组，被实际调用时记为最近使用，避免下一轮加载把还在用的组挤掉。 */
+function noteUse(ctx: ExecCtx, toolId: string): void {
+  if (!ctx.catalog) return;
+  const group = toolGroup(toolId);
+  if (ctx.catalog.expanded.has(group)) touchLoadedGroup(ctx.catalog.expanded, group);
+}
+
+function failureKey(toolId: string, args: Record<string, unknown>): string {
+  return `${toolId}\0${stableStringify(args)}`;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(',')}}`;
 }
 
 /** next() 注入值的运行时校验：缺省（普通 next() 恢复）或形状非法一律按 declined 处理 */

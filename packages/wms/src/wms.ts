@@ -41,7 +41,10 @@ import { replenishManifest } from './replenish-manifest.js';
 import { createReplenishTools } from './tools/replenish-tools.js';
 import { warehouseManifest } from './warehouse-manifest.js';
 import { createWarehouseTools } from './tools/warehouse-tools.js';
+import { zoneManifest } from './zone-manifest.js';
+import { createZoneTools } from './tools/zone-tools.js';
 import { WarehouseView } from './views/warehouse-view.js';
+import { ZoneView } from './views/zone-view.js';
 import { serialManifest } from './serial-manifest.js';
 import { createSerialTools } from './tools/serial-tools.js';
 import { SerialView } from './views/serial-view.js';
@@ -52,6 +55,10 @@ import { createScrapTools } from './tools/scrap-tools.js';
 import { LpnView } from './views/lpn-view.js';
 import { TransferView } from './views/transfer-view.js';
 import { ScrapView } from './views/scrap-view.js';
+import { ReportView } from './views/report-view.js';
+import { IntegrationCodeView } from './views/integration-code-view.js';
+import { reportManifest } from './report-manifest.js';
+import { createReportTools } from './tools/report-tools.js';
 
 /**
  * WmsDomain —— 领域装配器：把仓储领域「挂载」到一个内核实例上。
@@ -74,6 +81,7 @@ export class WmsDomain {
   readonly #asnManifest: ModuleManifest;
   readonly #replenishManifest: ModuleManifest;
   readonly #warehouseManifest: ModuleManifest;
+  readonly #zoneManifest: ModuleManifest;
   readonly #serialManifest: ModuleManifest;
   readonly #lpnManifest: ModuleManifest;
   readonly #pickingManifest: ModuleManifest;
@@ -82,6 +90,7 @@ export class WmsDomain {
   readonly #packManifest: ModuleManifest;
   readonly #loadManifest: ModuleManifest;
   readonly #reviewManifest: ModuleManifest;
+  readonly #reportManifest: ModuleManifest;
   readonly #cache = new Map<string, WmsWorkspace>();
 
   private constructor(core: OneCore) {
@@ -95,19 +104,23 @@ export class WmsDomain {
     const putawayToolDefs = createPutawayTools((id) => this.workspace(id));
     const replenishToolDefs = createReplenishTools((id) => this.workspace(id));
     const warehouseToolDefs = createWarehouseTools((id) => this.workspace(id));
+    const zoneToolDefs = createZoneTools((id) => this.workspace(id));
     const serialToolDefs = createSerialTools((id) => this.workspace(id));
     const lpnToolDefs = createLpnTools((id) => this.workspace(id));
     const transferToolDefs = createTransferTools((id) => this.workspace(id));
     const scrapToolDefs = createScrapTools((id) => this.workspace(id));
+    const reportToolDefs = createReportTools((id) => this.workspace(id));
     for (const tool of [
       ...toolDefs,
       ...putawayToolDefs,
       ...replenishToolDefs,
       ...warehouseToolDefs,
+      ...zoneToolDefs,
       ...serialToolDefs,
       ...lpnToolDefs,
       ...transferToolDefs,
       ...scrapToolDefs,
+      ...reportToolDefs,
     ]) {
       bus.register(tool);
     }
@@ -120,6 +133,7 @@ export class WmsDomain {
     this.#asnManifest = asnManifest();
     this.#replenishManifest = replenishManifest(replenishToolDefs);
     this.#warehouseManifest = warehouseManifest(warehouseToolDefs);
+    this.#zoneManifest = zoneManifest(zoneToolDefs);
     this.#serialManifest = serialManifest(serialToolDefs);
     this.#lpnManifest = lpnManifest(lpnToolDefs);
     this.#pickingManifest = pickingManifest();
@@ -128,6 +142,7 @@ export class WmsDomain {
     this.#packManifest = packManifest();
     this.#loadManifest = loadManifest();
     this.#reviewManifest = reviewManifest();
+    this.#reportManifest = reportManifest(reportToolDefs);
     core.exposeModuleRegistry().registerManifest(this.#manifest);
     core.exposeModuleRegistry().registerManifest(this.#putawayManifest);
     core.exposeModuleRegistry().registerManifest(this.#reversalManifest);
@@ -137,6 +152,7 @@ export class WmsDomain {
     core.exposeModuleRegistry().registerManifest(this.#asnManifest);
     core.exposeModuleRegistry().registerManifest(this.#replenishManifest);
     core.exposeModuleRegistry().registerManifest(this.#warehouseManifest);
+    core.exposeModuleRegistry().registerManifest(this.#zoneManifest);
     core.exposeModuleRegistry().registerManifest(this.#serialManifest);
     core.exposeModuleRegistry().registerManifest(this.#lpnManifest);
     core.exposeModuleRegistry().registerManifest(this.#pickingManifest);
@@ -145,6 +161,7 @@ export class WmsDomain {
     core.exposeModuleRegistry().registerManifest(this.#packManifest);
     core.exposeModuleRegistry().registerManifest(this.#loadManifest);
     core.exposeModuleRegistry().registerManifest(this.#reviewManifest);
+    core.exposeModuleRegistry().registerManifest(this.#reportManifest);
   }
 
   /** 把领域挂到内核上（幂等心智：attach 两次 = 工具覆盖注册 + 表 IF NOT EXISTS + 目录覆盖登记） */
@@ -169,6 +186,7 @@ export class WmsDomain {
         this.#asnManifest,
         this.#replenishManifest,
         this.#warehouseManifest,
+        this.#zoneManifest,
         this.#serialManifest,
         this.#lpnManifest,
         this.#pickingManifest,
@@ -177,6 +195,7 @@ export class WmsDomain {
         this.#packManifest,
         this.#loadManifest,
         this.#reviewManifest,
+        this.#reportManifest,
       );
       this.#cache.set(workspaceId, ws);
     }
@@ -217,8 +236,11 @@ export class WmsWorkspace {
   readonly pickings: PickingView;
   readonly waves: WaveView;
   readonly warehouses: WarehouseView;
+  readonly zones: ZoneView;
   readonly serials: SerialView;
   readonly lpns: LpnView;
+  readonly reports: ReportView;
+  readonly codes: IntegrationCodeView;
 
   readonly #facade: WorkspaceFacade;
   readonly #db: Database.Database;
@@ -232,6 +254,7 @@ export class WmsWorkspace {
   readonly #asnManifest: ModuleManifest;
   readonly #replenishManifest: ModuleManifest;
   readonly #warehouseManifest: ModuleManifest;
+  readonly #zoneManifest: ModuleManifest;
   readonly #serialManifest: ModuleManifest;
   readonly #lpnManifest: ModuleManifest;
   readonly #pickingManifest: ModuleManifest;
@@ -240,6 +263,7 @@ export class WmsWorkspace {
   readonly #packManifest: ModuleManifest;
   readonly #loadManifest: ModuleManifest;
   readonly #reviewManifest: ModuleManifest;
+  readonly #reportManifest: ModuleManifest;
   #cursor = -1;
 
   constructor(
@@ -255,6 +279,7 @@ export class WmsWorkspace {
     asnManifest: ModuleManifest,
     replenishManifest: ModuleManifest,
     warehouseManifest: ModuleManifest,
+    zoneManifest: ModuleManifest,
     serialManifest: ModuleManifest,
     lpnManifest: ModuleManifest,
     pickingManifest: ModuleManifest,
@@ -263,6 +288,7 @@ export class WmsWorkspace {
     packManifest: ModuleManifest,
     loadManifest: ModuleManifest,
     reviewManifest: ModuleManifest,
+    reportManifest: ModuleManifest,
   ) {
     this.#facade = core.workspace(workspaceId);
     this.#db = db;
@@ -276,6 +302,7 @@ export class WmsWorkspace {
     this.#asnManifest = asnManifest;
     this.#replenishManifest = replenishManifest;
     this.#warehouseManifest = warehouseManifest;
+    this.#zoneManifest = zoneManifest;
     this.#serialManifest = serialManifest;
     this.#lpnManifest = lpnManifest;
     this.#pickingManifest = pickingManifest;
@@ -284,6 +311,7 @@ export class WmsWorkspace {
     this.#packManifest = packManifest;
     this.#loadManifest = loadManifest;
     this.#reviewManifest = reviewManifest;
+    this.#reportManifest = reportManifest;
     this.events = this.#facade.events;
     this.fields = this.#facade.fields;
     this.tools = this.#facade.tools;
@@ -301,8 +329,11 @@ export class WmsWorkspace {
     this.pickings = this.#projections.pickings;
     this.waves = this.#projections.waves;
     this.warehouses = this.#projections.warehouses;
+    this.zones = this.#projections.zones;
     this.serials = this.#projections.serials;
     this.lpns = this.#projections.lpns;
+    this.reports = this.#projections.reports;
+    this.codes = this.#projections.codes;
     // 投影版本戳（层 1）：代码里的派生规则比库里记的新 → 整组重建十张表。
     // 放在 sync() 之前：replay() 自带清空 + 游标复位 + 全量重放，跑完游标已推到
     // 末尾，随后的 sync() 自然是空转——不会重放两遍。
@@ -324,6 +355,7 @@ export class WmsWorkspace {
     this.#installOptional(this.#asnManifest);
     this.#installOptional(this.#replenishManifest);
     this.#installOptional(this.#warehouseManifest);
+    this.#installOptional(this.#zoneManifest);
     this.#installOptional(this.#serialManifest);
     this.#installOptional(this.#lpnManifest);
     this.#installOptional(this.#pickingManifest);
@@ -332,6 +364,7 @@ export class WmsWorkspace {
     this.#installOptional(this.#packManifest);
     this.#installOptional(this.#loadManifest);
     this.#installOptional(this.#reviewManifest);
+    this.#installOptional(this.#reportManifest);
     this.#alignPickingGate();
     this.#alignPickedState();
     this.#alignPutawayGate();

@@ -46,8 +46,12 @@ export interface MemorySettings {
 /** AI 每轮对话常驻看到的记忆段（T0）：personal 全文 + project 目录 */
 export interface ResidentMemory {
   text: string;
-  /** true = 用户画像超预算，需要整理压缩（不截断，截断会让偏好随机失效） */
+  /** 任一层超预算 */
   overflow: boolean;
+  /** 用户画像全文超预算（不截断，截断会让偏好随机失效） */
+  personalOverflow: boolean;
+  /** 业务约定目录超预算（同样不截断） */
+  projectOverflow: boolean;
 }
 
 /** GET /api/memory 响应：章节清单（scope 过滤后）+ 生效设置 + 常驻段 */
@@ -77,6 +81,8 @@ export interface MemoryConsolidateScopeResult {
   created: number;
   removed: number;
   failed: { sectionKey: string; message: string }[];
+  /** 超过单次上限、留到下次整理的章节数 */
+  deferred: number;
 }
 
 export interface MemoryConsolidateResult {

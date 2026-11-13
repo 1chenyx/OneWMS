@@ -1,4 +1,4 @@
-import { planConsolidation, type LlmProvider } from '@one/ai';
+import { MAX_CONSOLIDATE_INPUT_SECTIONS, planConsolidation, type LlmProvider } from '@one/ai';
 import type { AppContext } from './context.js';
 
 /**
@@ -24,10 +24,18 @@ export interface ConsolidationStats {
   removed: number;
   /** 单条失败不中断其余条目，这里留痕（sectionKey + 错误消息） */
   failed: { sectionKey: string; message: string }[];
+  /** 超过单次上限、留到下次整理的章节数 */
+  deferred: number;
 }
 
 /** 串行链尾（并发整理排队：后到者等先到者完成） */
 let consolidationQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * 每个 scope 下一次窗口的起点。一次最多整理 16 节，多出来的留到下次，
+ * 从上次停下的位置继续，避免永远只压最老的那 16 节。
+ */
+const consolidationCursor = new Map<string, number>();
 
 /**
  * 执行一次归并（同步等待结果——管理页要立刻看到统计；自动压缩走同一入口）。
@@ -57,8 +65,9 @@ async function consolidate(
   for (const scope of scopes) {
     const sections = ctx.memory.sections.list(scope);
     if (sections.length === 0) continue; // 空 scope 没有可整理的内容，不烧 token
-    const stats: ConsolidationStats = { scope, rewritten: 0, created: 0, removed: 0, failed: [] };
-    const plan = await planConsolidation(provider, sections);
+    const { window, deferred } = takeConsolidationWindow(scope, sections);
+    const stats: ConsolidationStats = { scope, rewritten: 0, created: 0, removed: 0, failed: [], deferred };
+    const plan = await planConsolidation(provider, window);
     for (const op of plan?.rewrite ?? []) {
       try {
         const result = (await ctx.ws.tools.invoke('memory.rewrite', op, opts.actor)) as
@@ -76,4 +85,18 @@ async function consolidate(
     out.push(stats);
   }
   return out;
+}
+
+/**
+ * 一次最多送 MAX_CONSOLIDATE_INPUT_SECTIONS 节。多出来的从上次停下的位置
+ * 继续，下一轮整理才轮到它们。不超过上限时不推进游标。
+ */
+function takeConsolidationWindow<T>(scope: string, sections: readonly T[]): { window: T[]; deferred: number } {
+  const limit = MAX_CONSOLIDATE_INPUT_SECTIONS;
+  if (sections.length <= limit) return { window: [...sections], deferred: 0 };
+  const start = (consolidationCursor.get(scope) ?? 0) % sections.length;
+  const window: T[] = [];
+  for (let i = 0; i < limit; i++) window.push(sections[(start + i) % sections.length]);
+  consolidationCursor.set(scope, (start + limit) % sections.length);
+  return { window, deferred: sections.length - limit };
 }

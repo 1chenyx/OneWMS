@@ -1,6 +1,7 @@
 import type { WmsWorkspace } from '../wms.js';
 import { WarehouseDisabledError, WarehouseNotFoundError } from '../errors.js';
 import type { LocationRecord } from '../views/location-view.js';
+import { zoneKindLabel } from '../zone-kinds.js';
 
 export interface WarehouseListRow {
   readonly id: string;
@@ -26,15 +27,20 @@ export interface WarehouseStock {
   readonly rows: WarehouseStockRow[];
 }
 
-/** 库位清单附上仓库编码。未分仓两边都是 null。没填容量时不带这个键。 */
+/** 库位清单附上仓库和库区。未分仓、未分区都是 null。没填容量时不带这个键。 */
 export function presentLocation(ws: WmsWorkspace, location: LocationRecord) {
   const warehouse = location.warehouseId ? ws.warehouses.byId(location.warehouseId) : undefined;
+  const zone = location.zoneId ? ws.zones.byId(location.zoneId) : undefined;
   const { capacity, ...rest } = location;
   return {
     ...rest,
     ...(capacity != null ? { capacity } : {}),
     warehouseCode: warehouse?.warehouseCode ?? null,
     warehouseName: warehouse?.name ?? null,
+    zoneCode: zone?.zoneCode ?? null,
+    zoneName: zone?.name ?? null,
+    zoneKind: zone?.kind ?? null,
+    zoneKindLabel: zone ? zoneKindLabel(zone.kind) : null,
   };
 }
 

@@ -1,5 +1,6 @@
 import type { ComponentType, CSSProperties } from 'react';
 import {
+  ApiOutlined,
   ApartmentOutlined,
   ClusterOutlined,
   AppstoreOutlined,
@@ -17,6 +18,7 @@ import {
   CarOutlined,
   EnvironmentOutlined,
   FieldTimeOutlined,
+  TableOutlined,
   PartitionOutlined,
   FileDoneOutlined,
   InboxOutlined,
@@ -68,7 +70,7 @@ export interface NavCategory {
  * 分组原则：看板 = 只读分析视图（运营/效期，后续报表往这里挂）；作业 = 高频
  * 日常运营（出入库/库存/盘点）；档案 = 基础主数据（SKU，后续供应商/客户/库位
  * 等往这里挂）；智能助手 = AI 的使用与配置（对话/助手/记忆/模型）；系统 = 流程、规则、模块、
- * 应用设置。
+ * 对接、应用设置。
  * 新增功能：页面 key 加进 Page 联合类型 → 往对应大类 items 里加一项 →
  * App.tsx 的 PAGE_COMPONENTS 登记组件。
  */
@@ -76,11 +78,12 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
   {
     key: 'dash',
     label: '看板',
-    description: '运营分析与效期预警',
+    description: '运营分析、效期与自定义报表',
     icon: PieChartOutlined,
     items: [
       { page: 'dashboard', label: '运营看板', icon: DashboardOutlined },
       { page: 'expiry', label: '效期看板', icon: FieldTimeOutlined },
+      { page: 'reports', label: '报表', icon: TableOutlined, moduleId: 'module.report' },
     ],
   },
   {
@@ -135,12 +138,13 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
   {
     key: 'sys',
     label: '系统',
-    description: '收发流程、出库与编号规则、仓库能力与应用设置',
+    description: '收发流程、出库与编号规则、外部对接、仓库能力与应用设置',
     icon: ControlOutlined,
     items: [
       { page: 'flows', label: '流程', icon: ApartmentOutlined },
       { page: 'rules', label: '规则', icon: SlidersOutlined },
       { page: 'modules', label: '模块', icon: ClusterOutlined },
+      { page: 'integrations', label: '对接', icon: ApiOutlined },
       { page: 'settings', label: '设置', icon: SettingOutlined },
     ],
   },
@@ -185,6 +189,7 @@ export function navCategoryFor(raw?: string): CategoryKey {
  * 白名单是唯一能静态打包的做法。
  */
 const NAV_ICONS: Record<string, NavIcon> = {
+  ApiOutlined,
   ApartmentOutlined,
   AppstoreOutlined,
   AuditOutlined,
@@ -204,6 +209,7 @@ const NAV_ICONS: Record<string, NavIcon> = {
   ExportOutlined,
   FieldTimeOutlined,
   FileDoneOutlined,
+  TableOutlined,
   ImportOutlined,
   InboxOutlined,
   MessageOutlined,

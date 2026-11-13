@@ -196,6 +196,142 @@ describe('runAgent：错误回传（§4.2 规则即护栏）', () => {
     const results = requests[1].messages[2] as { results: Array<{ payload: { error: string } }> };
     expect(results.results[0].payload.error).toBe('原始字符串错误');
   });
+
+  it('同一工具同一参数失败过就不再执行，键序不同也算同一参数', async () => {
+    let calls = 0;
+    const { provider, requests } = scriptedProvider([
+      { text: '', toolCalls: [{ callId: 'c1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: -1 } }] },
+      { text: '', toolCalls: [{ callId: 'c2', toolId: 'wms.inventory.adjust', args: { delta: -1, skuCode: 'A-1' } }] },
+      { text: '库存不足', toolCalls: [] },
+    ]);
+
+    const result = await runAgent('出库', {
+      provider,
+      system: 'SYS',
+      tools: demoTools,
+      invoke: async () => {
+        calls += 1;
+        throw new Error('库存不足');
+      },
+    });
+
+    expect(calls).toBe(1);
+    expect(result.text).toBe('库存不足');
+    expect(result.invocations).toHaveLength(2);
+    expect(result.invocations[1].ok).toBe(false);
+    const second = requests[2].messages[4];
+    expect(second.role).toBe('tool-results');
+    if (second.role !== 'tool-results') return;
+    expect(second.results[0].payload).toMatchObject({ repeated: true });
+    expect(JSON.stringify(second.results[0].payload)).toContain('库存不足');
+  });
+
+  it('参数不同，或上次已经成功，都会再执行', async () => {
+    let calls = 0;
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [{ callId: 'c1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: -1 } }] },
+      { text: '', toolCalls: [{ callId: 'c2', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: -2 } }] },
+      { text: '', toolCalls: [{ callId: 'c3', toolId: 'wms.inventory.query', args: {} }] },
+      { text: '', toolCalls: [{ callId: 'c4', toolId: 'wms.inventory.query', args: {} }] },
+      { text: '好', toolCalls: [] },
+    ]);
+
+    await runAgent('再试', {
+      provider,
+      system: 'SYS',
+      tools: demoTools,
+      invoke: async (toolId) => {
+        calls += 1;
+        if (toolId === 'wms.inventory.adjust') throw new Error('库存不足');
+        return { quantity: 5 };
+      },
+    });
+
+    expect(calls).toBe(4);
+  });
+});
+
+describe('runAgent：同一步的读并行、写按顺序', () => {
+  const locationTool: AgentToolMeta = {
+    id: 'wms.location.list',
+    label: '库位',
+    description: '列出库位',
+    parameters: { type: 'object', properties: {} },
+    permission: 'read',
+  };
+
+  it('相邻的读一起开始，写等它们都结束', async () => {
+    const trace: string[] = [];
+    const { provider } = scriptedProvider([
+      {
+        text: '',
+        toolCalls: [
+          { callId: 'r1', toolId: 'wms.inventory.query', args: { skuCode: 'A' } },
+          { callId: 'r2', toolId: 'wms.location.list', args: {} },
+          { callId: 'w1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A', delta: 1 } },
+        ],
+      },
+      { text: '好', toolCalls: [] },
+    ]);
+
+    const result = await runAgent('查完再改', {
+      provider,
+      system: 'SYS',
+      tools: [...demoTools, locationTool],
+      invoke: async (toolId) => {
+        trace.push(`start:${toolId}`);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        trace.push(`end:${toolId}`);
+        return {};
+      },
+    });
+
+    const startQuery = trace.indexOf('start:wms.inventory.query');
+    const startList = trace.indexOf('start:wms.location.list');
+    const endQuery = trace.indexOf('end:wms.inventory.query');
+    const endList = trace.indexOf('end:wms.location.list');
+    const startAdjust = trace.indexOf('start:wms.inventory.adjust');
+    expect(startList).toBeGreaterThanOrEqual(0);
+    expect(startList).toBeLessThan(endQuery);
+    expect(startQuery).toBeLessThan(endList);
+    expect(startAdjust).toBeGreaterThan(endQuery);
+    expect(startAdjust).toBeGreaterThan(endList);
+    expect(result.invocations.map((item) => item.toolId)).toEqual([
+      'wms.inventory.query',
+      'wms.location.list',
+      'wms.inventory.adjust',
+    ]);
+  });
+
+  it('同一步的两笔写按顺序做完', async () => {
+    let active = 0;
+    let max = 0;
+    const { provider } = scriptedProvider([
+      {
+        text: '',
+        toolCalls: [
+          { callId: 'w1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A', delta: 1 } },
+          { callId: 'w2', toolId: 'wms.inventory.adjust', args: { skuCode: 'B', delta: 1 } },
+        ],
+      },
+      { text: '好', toolCalls: [] },
+    ]);
+
+    await runAgent('两笔调整', {
+      provider,
+      system: 'SYS',
+      tools: demoTools,
+      invoke: async () => {
+        active += 1;
+        max = Math.max(max, active);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        active -= 1;
+        return {};
+      },
+    });
+
+    expect(max).toBe(1);
+  });
 });
 
 describe('runAgent：maxSteps 保护', () => {
@@ -381,6 +517,41 @@ describe('streamAgent：事件序与终态', () => {
       maxSteps: 2,
     });
     await expect(collect(gen)).rejects.toBeInstanceOf(AgentStepLimitError);
+  });
+
+  it('更早轮次的工具结果进模型时收成一句，返回的历史仍是全文', async () => {
+    const full = { skuCode: 'OLD', quantity: 9, rows: [{ skuCode: 'OLD' }], total: 1 };
+    const { provider, requests } = scriptedProvider([{ text: '第三答', toolCalls: [] }]);
+    const { result } = await collect(
+      streamAgent('第三问', {
+        provider,
+        system: 'SYS',
+        tools: demoTools,
+        invoke: noopInvoke,
+        history: [
+          { role: 'user', text: '第一问' },
+          { role: 'tool-calls', calls: [{ callId: 'c0', toolId: 'wms.inventory.query', args: {} }] },
+          {
+            role: 'tool-results',
+            results: [{ callId: 'c0', toolId: 'wms.inventory.query', ok: true, payload: full }],
+          },
+          { role: 'assistant', text: '第一答' },
+          { role: 'user', text: '第二问' },
+          { role: 'assistant', text: '第二答' },
+        ],
+      }),
+    );
+    const sent = requests[0].messages[2];
+    expect(sent.role).toBe('tool-results');
+    if (sent.role !== 'tool-results') return;
+    expect(sent.results[0].payload).toEqual({
+      summary: 'wms.inventory.query 成功。共 1 条，本页 1 条',
+    });
+    expect(JSON.stringify(sent)).not.toContain('OLD');
+    const stored = result.messages[2];
+    expect(stored.role).toBe('tool-results');
+    if (stored.role !== 'tool-results') return;
+    expect(stored.results[0].payload).toEqual(full);
   });
 });
 
@@ -574,5 +745,47 @@ describe('工具目录：瘦 schema 与 tools.load', () => {
     await gen.next();
     expect(requests[0].tools.find((t) => t.id === 'wms.order.create')?.description).toContain('分配策略');
     expect(requests[0].tools.map((t) => t.id)).toContain('ui.ask');
+  });
+
+  it('连续加载超过三组时，最久没用的组回到摘要', async () => {
+    const spec = (id: string, name: string): AgentToolMeta => ({
+      id,
+      label: name,
+      description: `${name}。完整规则 ${id}。`,
+      parameters: { type: 'object', properties: {} },
+      permission: 'write',
+    });
+    const tools = [
+      spec('wms.order.create', '开单'),
+      spec('wms.sku.create', '建档'),
+      spec('wms.partner.create', '建往来'),
+      spec('wms.location.create', '建库位'),
+    ];
+    const load = (callId: string, group: string): LlmTurnResponse => ({
+      text: '',
+      toolCalls: [{ callId, toolId: 'tools.load', args: { group } }],
+    });
+    const { provider, requests } = scriptedProvider([
+      load('c1', 'order'),
+      load('c2', 'sku'),
+      load('c3', 'partner'),
+      load('c4', 'location'),
+      { text: '好', toolCalls: [] },
+    ]);
+    await runAgent('加载说明', {
+      provider,
+      system: 'SYS',
+      tools,
+      catalog: true,
+      invoke: async () => ({}),
+    });
+
+    const full = (id: string) => requests[4].tools.find((tool) => tool.id === id)?.description ?? '';
+    expect(full('wms.order.create')).toBe('开单');
+    expect(full('wms.sku.create')).toContain('完整规则');
+    expect(full('wms.partner.create')).toContain('完整规则');
+    expect(full('wms.location.create')).toContain('完整规则');
+    expect(requests[4].tools.find((tool) => tool.id === 'tools.load')?.description).toContain('order（1）');
+    expect(requests[4].tools.find((tool) => tool.id === 'tools.load')?.description).not.toContain('开单');
   });
 });

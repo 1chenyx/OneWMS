@@ -11,8 +11,11 @@ import { StocktakeView } from './stocktake-view.js';
 import { TransferView } from './transfer-view.js';
 import { ScrapView } from './scrap-view.js';
 import { WarehouseView } from './warehouse-view.js';
+import { ZoneView } from './zone-view.js';
 import { SerialView } from './serial-view.js';
 import { LpnView } from './lpn-view.js';
+import { ReportView } from './report-view.js';
+import { IntegrationCodeView } from './integration-code-view.js';
 
 /**
  * WMS 投影组的版本号（sku / location / partner / order / inventory /
@@ -41,6 +44,7 @@ export const WMS_PROJECTION_GROUP: ProjectionGroupSpec = {
   tables: [
     { table: 'wms_sku' },
     { table: 'wms_location' },
+    { table: 'wms_zone' },
     { table: 'wms_warehouse' },
     { table: 'wms_serial' },
     { table: 'wms_lpn_line' },
@@ -65,6 +69,8 @@ export const WMS_PROJECTION_GROUP: ProjectionGroupSpec = {
     { table: 'wms_scrap' },
     { table: 'wms_transfer_line' },
     { table: 'wms_transfer' },
+    { table: 'wms_report' },
+    { table: 'wms_integration_code' },
   ],
 };
 
@@ -81,8 +87,11 @@ export class WmsProjections {
   readonly pickings: PickingView;
   readonly waves: WaveView;
   readonly warehouses: WarehouseView;
+  readonly zones: ZoneView;
   readonly serials: SerialView;
   readonly lpns: LpnView;
+  readonly reports: ReportView;
+  readonly codes: IntegrationCodeView;
 
   constructor(
     private readonly db: Database.Database,
@@ -101,14 +110,18 @@ export class WmsProjections {
     this.pickings = new PickingView(db, workspaceId);
     this.waves = new WaveView(db, workspaceId);
     this.warehouses = new WarehouseView(db, workspaceId);
+    this.zones = new ZoneView(db, workspaceId);
     this.serials = new SerialView(db, workspaceId);
     this.lpns = new LpnView(db, workspaceId);
+    this.reports = new ReportView(db, workspaceId);
+    this.codes = new IntegrationCodeView(db, workspaceId);
   }
 
   applyEvent(envelope: EventEnvelope): void {
     this.skus.applyEvent(envelope);
     this.locations.applyEvent(envelope);
     this.warehouses.applyEvent(envelope);
+    this.zones.applyEvent(envelope);
     this.serials.applyEvent(envelope);
     this.lpns.applyEvent(envelope);
     this.partners.applyEvent(envelope);
@@ -119,6 +132,8 @@ export class WmsProjections {
     this.scraps.applyEvent(envelope);
     this.pickings.applyEvent(envelope);
     this.waves.applyEvent(envelope);
+    this.reports.applyEvent(envelope);
+    this.codes.applyEvent(envelope);
   }
 
   /**

@@ -52,6 +52,7 @@ export const MODULE_PRESENT: Record<string, ModulePresentation> = {
   'module.reversal': { name: '单据冲销', line: '已收货、已发货仍可取消并回冲' },
   'module.return': { name: '退货', line: '按原单做客退或退供' },
   'module.warehouse': { name: '多仓', line: '库位可以划进不同仓库' },
+  'module.zone': { name: '库区', line: '库位可以划进拣货区、存货区这类分区' },
   'module.serial': { name: '序列号', line: '需要一物一码的商品按号收发' },
   'module.lpn': { name: '托盘', line: '把库位上的货装托，整托移走' },
   'module.replenish': { name: '补货', line: '按安全库存缺口开入库单' },
@@ -145,6 +146,14 @@ export const CAPABILITY_CARDS: readonly CapabilityCardCopy[] = [
     detail: '',
     onResult: '打开后，库位页可以新建仓库，把库位划进去',
     offResult: '关掉后，不能再新建仓库或把库位划进仓库',
+  },
+  {
+    moduleId: 'module.zone',
+    group: 'action',
+    place: '库位页可以新建库区，把库位按分类划进去',
+    detail: '分类有拣货区、存货区、收货区、发货区等',
+    onResult: '打开后，库位页可以新建库区，把库位划进拣货区、存货区这类分区',
+    offResult: '关掉后，不能再新建库区或把库位划进库区',
   },
   {
     moduleId: 'module.return',

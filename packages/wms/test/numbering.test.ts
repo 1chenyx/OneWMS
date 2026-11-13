@@ -151,8 +151,12 @@ describe('发号', () => {
     await expect(ws.tools.invoke('wms.numbering.preview', { place: 'sku', pattern: 'bad' })).rejects.toThrow(/必须有且只有一个/);
 
     const listed = describeNumbering(ws);
-    expect(listed.places).toHaveLength(16);
+    expect(listed.places).toHaveLength(17);
     expect(listed.places.find((row) => row.place === 'wave')?.label).toBe('波次');
+    expect(listed.places.find((row) => row.place === 'zone')).toMatchObject({
+      label: '库区',
+      pattern: 'ZN-{seq:2}',
+    });
     expect(listed.places.find((row) => row.place === 'order.in')?.invalid).toBeTruthy();
   });
 });

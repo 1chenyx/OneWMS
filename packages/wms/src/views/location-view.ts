@@ -22,6 +22,8 @@ export interface LocationRecord {
   readonly name: string;
   /** 所属仓库。null = 未分仓（模块关闭时的老库位都是这样） */
   readonly warehouseId: string | null;
+  /** 所属库区。null = 未分区 */
+  readonly zoneId: string | null;
   /** 库容。null = 不限 */
   readonly capacity: number | null;
   readonly createdAt: string;
@@ -33,6 +35,7 @@ interface LocationRow {
   location_code: string;
   name: string;
   warehouse_id: string | null;
+  zone_id: string | null;
   capacity: number | null;
   created_at: string;
   updated_at: string;
@@ -44,6 +47,7 @@ function rowToRecord(row: LocationRow): LocationRecord {
     locationCode: row.location_code,
     name: row.name,
     warehouseId: row.warehouse_id,
+    zoneId: row.zone_id,
     capacity: row.capacity,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -64,8 +68,8 @@ export class LocationView {
         if (this.#byIdRaw(p.locationId)) return; // 已应用过（幂等）
         this.db
           .prepare(
-            `INSERT INTO wms_location (id, workspace_id, location_code, name, warehouse_id, capacity, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_location (id, workspace_id, location_code, name, warehouse_id, zone_id, capacity, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             p.locationId,
@@ -73,6 +77,7 @@ export class LocationView {
             p.locationCode,
             p.name,
             p.warehouseId ?? null,
+            p.zoneId ?? null,
             p.capacity ?? null,
             env.createdAt,
             env.createdAt,
@@ -82,12 +87,14 @@ export class LocationView {
       case WMS_EVENT_TYPES.locationUpdated: {
         const p = env.payload as LocationUpdatedPayload;
         const touchWarehouse = p.warehouseId !== undefined;
+        const touchZone = p.zoneId !== undefined;
         const touchCapacity = p.capacity !== undefined;
         this.db
           .prepare(
             `UPDATE wms_location
              SET name = COALESCE(?, name),
                  warehouse_id = CASE WHEN ? = 1 THEN ? ELSE warehouse_id END,
+                 zone_id = CASE WHEN ? = 1 THEN ? ELSE zone_id END,
                  capacity = CASE WHEN ? = 1 THEN ? ELSE capacity END,
                  updated_at = ?
              WHERE workspace_id = ? AND id = ?`,
@@ -96,6 +103,8 @@ export class LocationView {
             p.name ?? null,
             touchWarehouse ? 1 : 0,
             touchWarehouse ? p.warehouseId : null,
+            touchZone ? 1 : 0,
+            touchZone ? p.zoneId : null,
             touchCapacity ? 1 : 0,
             touchCapacity ? p.capacity : null,
             env.createdAt,
@@ -126,9 +135,10 @@ export class LocationView {
   /**
    * 全部库位（按编码排序）。q 对编码和名称做包含匹配。
    * warehouseId 不传 = 不按仓库滤；null = 只要未分仓；字符串 = 该仓库。
+   * zoneId 同样：不传 = 不按库区滤；null = 只要未分区。
    */
-  list(q?: string, warehouseId?: string | null): LocationRecord[] {
-    const { where, args } = this.#match({ q, warehouseId });
+  list(q?: string, warehouseId?: string | null, zoneId?: string | null): LocationRecord[] {
+    const { where, args } = this.#match({ q, warehouseId, zoneId });
     const rows = this.db
       .prepare<unknown[], LocationRow>(`SELECT * FROM wms_location WHERE ${where} ORDER BY location_code`)
       .all(...args) as unknown as LocationRow[];
@@ -141,6 +151,7 @@ export class LocationView {
     limit: number;
     offset: number;
     warehouseId?: string | null;
+    zoneId?: string | null;
   }): { rows: LocationRecord[]; total: number } {
     const { where, args } = this.#match(opts);
     const total = (
@@ -156,7 +167,7 @@ export class LocationView {
     return { rows: rows.map(rowToRecord), total };
   }
 
-  #match(opts?: { q?: string; warehouseId?: string | null }): { where: string; args: unknown[] } {
+  #match(opts?: { q?: string; warehouseId?: string | null; zoneId?: string | null }): { where: string; args: unknown[] } {
     const where = ['workspace_id = ?'];
     const args: unknown[] = [this.workspaceId];
     const q = opts?.q;
@@ -169,6 +180,11 @@ export class LocationView {
     else if (opts?.warehouseId) {
       where.push('warehouse_id = ?');
       args.push(opts.warehouseId);
+    }
+    if (opts?.zoneId === null) where.push('zone_id IS NULL');
+    else if (opts?.zoneId) {
+      where.push('zone_id = ?');
+      args.push(opts.zoneId);
     }
     return { where: where.join(' AND '), args };
   }

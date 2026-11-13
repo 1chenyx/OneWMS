@@ -41,6 +41,8 @@ export function codesFor(ws: WmsWorkspace, place: NumberPlaceId): string[] {
       return ws.locations.list().map((row) => row.locationCode);
     case 'warehouse':
       return ws.warehouses.list().map((row) => row.warehouseCode);
+    case 'zone':
+      return ws.zones.list().map((row) => row.zoneCode);
     case 'lpn':
       return ws.lpns.list().map((row) => row.lpnCode);
     default:

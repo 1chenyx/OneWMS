@@ -119,7 +119,7 @@ function isLamportConflict(e: unknown): boolean {
 const EMPTY_LEDGER: MemoryLedgerResponse = {
   sections: [],
   settings: { autoMemory: true, maxSections: 24 },
-  resident: { text: '', overflow: false },
+  resident: { text: '', overflow: false, personalOverflow: false, projectOverflow: false },
 };
 
 export default function MemoryPage() {
@@ -182,7 +182,12 @@ export default function MemoryPage() {
   );
 
   const sections = ledger?.sections ?? [];
-  const resident = ledger?.resident ?? { text: '', overflow: false };
+  const resident = ledger?.resident ?? {
+    text: '',
+    overflow: false,
+    personalOverflow: false,
+    projectOverflow: false,
+  };
   const hasLegacy = sections.some((s) => LEGACY_KEYS.has(s.sectionKey));
 
   /** 追加一行要点（不需要令牌：追加天然可交换，护栏只管长度与章节数） */
@@ -318,12 +323,14 @@ export default function MemoryPage() {
           rewritten: acc.rewritten + s.rewritten,
           created: acc.created + s.created,
           removed: acc.removed + s.removed,
+          deferred: acc.deferred + s.deferred,
           failed: [...acc.failed, ...s.failed.map((f) => `${f.sectionKey}（${f.message}）`)],
         }),
-        { rewritten: 0, created: 0, removed: 0, failed: [] as string[] },
+        { rewritten: 0, created: 0, removed: 0, deferred: 0, failed: [] as string[] },
       );
+      const deferred = total.deferred > 0 ? `，另有 ${total.deferred} 节留到下次` : '';
       message.success(
-        `整理完成：改写 ${total.rewritten} 节 / 新建 ${total.created} 节 / 删除 ${total.removed} 节`,
+        `整理完成：改写 ${total.rewritten} 节 / 新建 ${total.created} 节 / 删除 ${total.removed} 节${deferred}`,
         6,
       );
       if (total.failed.length > 0) {
@@ -536,12 +543,11 @@ export default function MemoryPage() {
               ),
               children: (
                 <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                  {resident.overflow ? (
-                    <Alert
-                      type="warning"
-                      showIcon
-                      message="用户画像已超预算，建议点「整理」压缩"
-                    />
+                  {resident.personalOverflow ? (
+                    <Alert type="warning" showIcon message="用户画像已超预算，建议点「整理」压缩" />
+                  ) : null}
+                  {resident.projectOverflow ? (
+                    <Alert type="warning" showIcon message="业务约定目录已超预算，建议点「整理」压缩" />
                   ) : null}
                   <pre style={{ ...PRE_STYLE, maxHeight: 360 }}>
                     {resident.text.trim() || '（暂无常驻记忆——积累章节后这里会显示 AI 实际读到的文本）'}

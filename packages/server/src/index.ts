@@ -22,6 +22,7 @@ import { agentRoutes } from './routes/agents.js';
 import { aiConfigRoutes } from './routes/ai-config.js';
 import { memoryRoutes } from './routes/memory.js';
 import { wmsRoutes } from './routes/wms.js';
+import { integrationRoutes, runIntegrationRound } from './routes/integrations.js';
 import { dynRoutes } from './routes/dyn.js';
 import { toolRoutes } from './routes/tools.js';
 import { uiRoutes } from './routes/ui.js';
@@ -70,6 +71,7 @@ export function createApp(ctx: AppContext): Hono {
   app.route('/api/dyn', dynRoutes(ctx)); // 声明式实体记录端点（B.3）：先于 /api 挂，避免被兜底路由吃掉
   app.route('/api/tools', toolRoutes(ctx)); // 通用工具调用 + 写操作二次确认（B.5）
   app.route('/api/ui', uiRoutes(ctx)); // SDUI 页面清单（B.6）：同样先于 /api 兜底挂
+  app.route('/api/integrations', integrationRoutes(ctx)); // 外部系统 webhook，先于 /api 挂
   app.route('/api', wmsRoutes(ctx));
   mountStatic(app);
   return app;
@@ -144,9 +146,11 @@ export function start(): void {
     () => void syncAllPeers(ctx),
     Number(process.env.ONE_SYNC_INTERVAL_MS ?? 30_000),
   );
+  const integrationTimer = startIntegrationTimer(ctx);
 
   const shutdown = () => {
     clearInterval(syncTimer);
+    if (integrationTimer) clearInterval(integrationTimer);
     stopBackupTimer?.();
     server.close();
     ctx.close();
@@ -154,6 +158,17 @@ export function start(): void {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+}
+
+/** 入站拉取和出站推送。ONE_INTEGRATION_INTERVAL_MS=0 关掉。没装对接配置时这一轮是空的。 */
+function startIntegrationTimer(ctx: AppContext): ReturnType<typeof setInterval> | undefined {
+  const interval = Number(process.env.ONE_INTEGRATION_INTERVAL_MS ?? 15_000);
+  if (!Number.isFinite(interval) || interval <= 0) return undefined;
+  return setInterval(() => {
+    void runIntegrationRound(ctx).catch((err: unknown) => {
+      console.error(`[one-server] 对接这一轮失败：${err instanceof Error ? err.message : err}`);
+    });
+  }, interval);
 }
 
 /**

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App as AntApp, ConfigProvider } from 'antd';
 import LocationsPage from '../src/pages/LocationsPage';
-import type { Location, Warehouse } from '../src/api/client';
+import type { Location, Warehouse, Zone } from '../src/api/client';
 
 /**
  * 库位管理：多仓打开时，仓库是父、库位是子，不再上下两张表。
@@ -12,6 +12,7 @@ import type { Location, Warehouse } from '../src/api/client';
  */
 
 let warehouseOn = true;
+let zoneOn = false;
 
 const warehousesFixture: Warehouse[] = [
   {
@@ -52,16 +53,63 @@ function location(
 }
 
 const locationRows: Location[] = [
-  location('l1', 'A-01', '一号架', 'WH-1', '一号仓'),
-  location('l2', 'A-02', '一号高架', 'WH-1', '一号仓'),
+  {
+    ...location('l1', 'A-01', '一号架', 'WH-1', '一号仓'),
+    zoneCode: 'PK-1',
+    zoneName: '一层拣货',
+    zoneKind: 'picking',
+    zoneKindLabel: '拣货区',
+  },
+  {
+    ...location('l2', 'A-02', '一号高架', 'WH-1', '一号仓'),
+    zoneCode: 'ST-1',
+    zoneName: '高位存货',
+    zoneKind: 'storage',
+    zoneKindLabel: '存货区',
+  },
   location('l3', 'B-01', '二号架', 'WH-2', '二号仓'),
   location('l4', 'Z-01', '散货', null, null),
 ];
 
-function filterLocations(query?: { q?: string; warehouseCode?: string; unassigned?: boolean }): Location[] {
+const zoneFixture: Zone[] = [
+  {
+    id: 'z1',
+    zoneCode: 'PK-1',
+    name: '一层拣货',
+    kind: 'picking',
+    kindLabel: '拣货区',
+    warehouseCode: 'WH-1',
+    warehouseName: '一号仓',
+    locationCount: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'z2',
+    zoneCode: 'ST-1',
+    name: '高位存货',
+    kind: 'storage',
+    kindLabel: '存货区',
+    warehouseCode: 'WH-1',
+    warehouseName: '一号仓',
+    locationCount: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+];
+
+function filterLocations(query?: {
+  q?: string;
+  warehouseCode?: string;
+  unassigned?: boolean;
+  zoneCode?: string;
+  unzoned?: boolean;
+}): Location[] {
   let rows = locationRows;
   if (query?.unassigned) rows = rows.filter((row) => !row.warehouseCode);
   else if (query?.warehouseCode) rows = rows.filter((row) => row.warehouseCode === query.warehouseCode);
+  if (query?.unzoned) rows = rows.filter((row) => !row.zoneCode);
+  else if (query?.zoneCode) rows = rows.filter((row) => row.zoneCode === query.zoneCode);
   if (query?.q) {
     const q = query.q;
     rows = rows.filter((row) => row.locationCode.includes(q) || row.name.includes(q));
@@ -72,10 +120,22 @@ function filterLocations(query?: { q?: string; warehouseCode?: string; unassigne
 vi.mock('../src/api/client', () => ({
   api: {
     profileSnapshot: async () => ({
-      modules: warehouseOn ? { 'module.warehouse': { enabled: true, version: '0.1.0', settings: {} } } : {},
+      modules: {
+        ...(warehouseOn ? { 'module.warehouse': { enabled: true, version: '0.1.0', settings: {} } } : {}),
+        ...(zoneOn ? { 'module.zone': { enabled: true, version: '0.1.0', settings: {} } } : {}),
+      },
     }),
     warehouses: async () => warehousesFixture,
-    locations: async (query?: { q?: string; warehouseCode?: string; unassigned?: boolean; limit?: number; offset?: number }) => {
+    zones: async () => zoneFixture,
+    locations: async (query?: {
+      q?: string;
+      warehouseCode?: string;
+      unassigned?: boolean;
+      zoneCode?: string;
+      unzoned?: boolean;
+      limit?: number;
+      offset?: number;
+    }) => {
       const rows = filterLocations(query);
       if (query?.limit == null) return rows;
       return { total: rows.length, limit: query.limit, offset: query.offset ?? 0, hasMore: false, rows };
@@ -95,7 +155,7 @@ vi.mock('../src/api/client', () => ({
           invalid: null,
           reset: 'never',
           resetLabel: '一直累加',
-          next: place === 'warehouse' ? 'WH-01' : 'LOC-0001',
+          next: place === 'warehouse' ? 'WH-01' : place === 'zone' ? 'ZN-01' : 'LOC-0001',
         },
       ],
     }),
@@ -103,6 +163,8 @@ vi.mock('../src/api/client', () => ({
     updateLocation: vi.fn(),
     createWarehouse: vi.fn(),
     updateWarehouse: vi.fn(),
+    createZone: vi.fn(),
+    updateZone: vi.fn(),
   },
   ApiError: class ApiError extends Error {
     code = 'ERR';
@@ -121,6 +183,7 @@ afterEach(() => {
   cleanup();
   document.body.innerHTML = '';
   warehouseOn = true;
+  zoneOn = false;
 });
 
 async function renderPage() {
@@ -185,5 +248,27 @@ describe('库位管理父子结构', () => {
     expect(screen.queryByRole('navigation', { name: '仓库' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /新建仓库/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('columnheader', { name: '仓库' })).not.toBeInTheDocument();
+  });
+
+  it('库区打开时，当前仓库里先看未分区，点拣货区只留下那个区的库位', async () => {
+    zoneOn = true;
+    const user = userEvent.setup();
+    await renderPage();
+
+    const zones = await screen.findByRole('navigation', { name: '库区' });
+    expect(within(zones).getByRole('button', { name: /一层拣货/ })).toBeInTheDocument();
+    expect(within(zones).getByRole('button', { name: /高位存货/ })).toBeInTheDocument();
+    expect(within(zones).getByRole('button', { name: /未分区/ })).toHaveAttribute('aria-current', 'true');
+    expect(screen.queryByText('A-01')).not.toBeInTheDocument();
+    expect(screen.queryByText('A-02')).not.toBeInTheDocument();
+
+    await user.click(within(zones).getByRole('button', { name: /一层拣货/ }));
+    expect(await screen.findByText('A-01')).toBeInTheDocument();
+    expect(screen.queryByText('A-02')).not.toBeInTheDocument();
+    const locations = screen.getByRole('region', { name: '库位' });
+    expect(within(locations).getByText('拣货区 · PK-1')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /新建库位/ }));
+    expect(await screen.findByText('一层拣货（拣货区）')).toBeInTheDocument();
   });
 });

@@ -343,6 +343,37 @@ describe('runMemoryExtraction（自动提取只做追加）', () => {
     expect(stats.rejections[0]).toContain('TOOL_REJECTED');
     expect(ctx!.memory.sections.byKey('project', 'supplier-agreements')).toBeUndefined();
   });
+
+  it('项目目录超预算时归并 project，不归并还没超的 personal', async () => {
+    const { provider, requests } = scriptedProvider({
+      extract: () => ({
+        text: JSON.stringify({
+          append: [{ scope: 'project', sectionKey: 'proj-00', text: '再记一条' }],
+        }),
+        toolCalls: [],
+      }),
+      consolidate: () => ({ text: '{"sections":[]}', toolCalls: [] }),
+    });
+    setup(provider);
+    const text = '约'.repeat(120);
+    for (let i = 0; i < 12; i++) {
+      await appendSection('project', `proj-${String(i).padStart(2, '0')}`, `约定${i}`, text);
+    }
+    const before = ctx!.memory.sections.resident();
+    expect(before.personalOverflow).toBe(false);
+    expect(before.projectOverflow).toBe(true);
+
+    await runMemoryExtraction(ctx!, provider, [
+      { role: 'user', text: '再记一条关于这批约定的事' },
+      { role: 'assistant', text: '好的，记下了。' },
+    ]);
+
+    const consolidateReqs = requests.filter((req) => req.system.includes('记忆文档的编辑'));
+    expect(consolidateReqs).toHaveLength(1);
+    const prompt = consolidateReqs[0].messages[0].role === 'user' ? consolidateReqs[0].messages[0].text : '';
+    expect(prompt).toContain('scope=project');
+    expect(prompt).not.toContain('scope=personal');
+  });
 });
 
 describe('runMemoryConsolidation（执行归并计划）', () => {
@@ -424,6 +455,36 @@ describe('runMemoryConsolidation（执行归并计划）', () => {
     expect(stats.map((s) => s.scope)).toEqual(['personal']); // project 无章节 → 跳过
     expect(consolidateCalls).toBe(1);
   });
+
+  it('超过 16 节时，下一次整理从上次停下的位置继续', async () => {
+    const { provider, requests } = scriptedProvider({
+      consolidate: () => ({ text: '{"sections":[]}', toolCalls: [] }),
+    });
+    setup(provider);
+    const keys = Array.from({ length: 17 }, (_, i) => `sec-${String(i).padStart(2, '0')}`);
+    for (const key of keys) {
+      await appendSection('project', key, key, `正文 ${key}`);
+    }
+
+    const first = await runMemoryConsolidation(ctx!, provider, { scope: 'project', actor: humanActor() });
+    const second = await runMemoryConsolidation(ctx!, provider, { scope: 'project', actor: humanActor() });
+    expect(first[0].deferred).toBe(1);
+    expect(second[0].deferred).toBe(1);
+
+    const keysIn = (index: number) => {
+      const message = requests[index].messages[0];
+      const text = message.role === 'user' ? message.text : '';
+      return keys.filter((key) => text.includes(`sectionKey=${key}`));
+    };
+    const firstKeys = keysIn(0);
+    const secondKeys = keysIn(1);
+    expect(firstKeys).toHaveLength(16);
+    expect(secondKeys).toHaveLength(16);
+    const missed = keys.filter((key) => !firstKeys.includes(key));
+    expect(missed).toHaveLength(1);
+    expect(secondKeys).toContain(missed[0]);
+    expect(keys.filter((key) => !secondKeys.includes(key))).not.toEqual(missed);
+  });
 });
 
 describe('GET/POST /api/memory（路由契约）', () => {
@@ -432,7 +493,12 @@ describe('GET/POST /api/memory（路由契约）', () => {
     const data = await listSections(app);
     expect(data.sections).toEqual([]);
     expect(data.settings).toEqual({ autoMemory: true, maxSections: 24 });
-    expect(data.resident).toEqual({ text: '', overflow: false });
+    expect(data.resident).toEqual({
+      text: '',
+      overflow: false,
+      personalOverflow: false,
+      projectOverflow: false,
+    });
   });
 
   it('POST 追加 → 清单可见（含 lines/baseLamport）→ scope 过滤 → resident 恒为全量', async () => {
@@ -655,7 +721,8 @@ describe('chat 三层注入（T0 常驻 + T2 预取）', () => {
     expect(system).toContain('## 关于用户'); // T0：personal 全文
     expect(system).toContain('习惯周日盘点');
     expect(system).toContain('key=sku-characteristics'); // T0：project 只有目录行
-    expect(system).toContain('## 本轮相关章节（关键词命中，已附全文）'); // T2 预取
+    expect(system).toContain('## 本轮相关章节（关键词命中）'); // T2 预取
+    expect(system).toContain('sectionKey=sku-characteristics');
     expect(system).toContain('A001 是易碎品，轻拿轻放');
   });
 });

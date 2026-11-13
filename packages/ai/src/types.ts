@@ -52,8 +52,8 @@ export type AgentMessage =
  * 三层注入：
  *  - T0 常驻 `resident`：personal 全文 + project 章节目录（已渲染的 markdown）；
  *  - T1 按需：模型自己调 memory.read（走工具总线，不在这里）；
- *  - T2 预取 `prefetched`：本轮用户消息命中关键词的 0–2 节全文
- *    （server 侧确定性字符串匹配，零 LLM 成本）。
+ *  - T2 预取 `prefetched`：本轮用户消息命中关键词的 0–2 节正文
+ *    （server 侧确定性字符串匹配，零 LLM 成本；过长由 system-prompt 截断）。
  */
 export interface AgentMemoryContext {
   /** T0 常驻段；空串 = 无记忆（整段不注入） */
@@ -62,10 +62,11 @@ export interface AgentMemoryContext {
   prefetched?: readonly AgentMemorySectionText[];
 }
 
-/** 预取章节的注入形状（标题 + 全文） */
+/** 预取章节的注入形状（标题 + 正文；sectionKey 供截断后 memory.read） */
 export interface AgentMemorySectionText {
   title: string;
   bodyMd: string;
+  sectionKey?: string;
 }
 
 /**

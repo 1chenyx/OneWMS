@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { AgentToolMeta } from '../src/index.js';
 import {
+  LOADED_GROUP_KEEP,
   TOOL_CATALOG_DEFER_AT,
   applyLoad,
   catalogBlock,
@@ -46,8 +47,10 @@ describe('tool-catalog', () => {
     expect(presented[0].description).toBe('wms.order.create 的完整说明');
     expect(presented[0].parameters.properties?.name?.description).toBeUndefined();
     expect(presented[1].description).toContain('byLocation');
-    expect(presented[2].description).toContain('order');
-    expect(presented[2].description).toContain('inventory');
+    expect(presented[2].description).toContain('order（1）');
+    expect(presented[2].description).toContain('inventory（1）');
+    expect(presented[2].description).not.toContain(order.label);
+    expect(presented[2].description).not.toContain(query.label);
   });
 
   it('超过上限：未加载的组不进清单，加载后恢复全文', () => {
@@ -78,6 +81,39 @@ describe('tool-catalog', () => {
       { role: 'tool-results', results: [{ callId: 'd', toolId: 'tools.load', ok: false, payload: { error: 'x', group: 'sku' } }] },
     ]);
     expect([...groups]).toEqual(['order']);
+  });
+
+  it('已加载的组只留最近用过的三组', () => {
+    const load = (callId: string, group: string) =>
+      ({
+        role: 'tool-results' as const,
+        results: [{ callId, toolId: 'tools.load', ok: true, payload: { group, toolIds: [] } }],
+      });
+    expect(LOADED_GROUP_KEEP).toBe(3);
+    const kept = expandedGroupsFromHistory([
+      load('1', 'order'),
+      load('2', 'sku'),
+      load('3', 'inventory'),
+      load('4', 'memory'),
+    ]);
+    expect([...kept]).toEqual(['sku', 'inventory', 'memory']);
+
+    // 调用还在集合里的组，会把它挪到最近；没加载过的组不会因为调用而加进来
+    const refreshed = expandedGroupsFromHistory([
+      load('1', 'order'),
+      load('2', 'sku'),
+      load('3', 'inventory'),
+      {
+        role: 'tool-results',
+        results: [{ callId: 'u', toolId: 'wms.order.create', ok: true, payload: {} }],
+      },
+      {
+        role: 'tool-results',
+        results: [{ callId: 'q', toolId: 'wms.partner.list', ok: true, payload: {} }],
+      },
+      load('4', 'memory'),
+    ]);
+    expect([...refreshed]).toEqual(['inventory', 'order', 'memory']);
   });
 
   it('延迟模式下未加载的调用被拦住，会话工具除外', () => {

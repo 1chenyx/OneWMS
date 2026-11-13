@@ -209,19 +209,17 @@ export class MemorySectionView {
    * T2 预取：用户消息命中章节关键词/标题 → 返回该节全文（确定性字符串匹配，
    * 零 LLM 成本）。只匹配 project 章节——personal 已在 T0 全文常驻，重复注入
    * 只是浪费 token。命中数排序，同分取最近更新者，最多 limit 节。
+   *
+   * 过短（少于 3 字）或过泛（入库单、供应商、sku 这类几乎每句都会出现的词）
+   * 不计分。一节至少要有一个更长的专名才预取，避免整节正文灌进每一轮提示。
    */
   matchSections(userText: string, limit = 2): MemorySection[] {
     const hay = userText.toLowerCase();
     if (!hay.trim()) return [];
     const hits: { section: MemorySection; score: number }[] = [];
     for (const s of this.list('project')) {
-      let score = 0;
-      for (const kw of s.keywords) {
-        const needle = kw.trim().toLowerCase();
-        if (needle.length >= 2 && hay.includes(needle)) score += 2;
-      }
-      const title = s.title.trim().toLowerCase();
-      if (title.length >= 2 && hay.includes(title)) score += 3;
+      let score = needleScore(s.title, hay, 3);
+      for (const kw of s.keywords) score += needleScore(kw, hay, 2);
       if (score > 0) hits.push({ section: s, score });
     }
     hits.sort(
@@ -233,7 +231,7 @@ export class MemorySectionView {
     return hits.slice(0, Math.max(0, limit)).map((h) => h.section);
   }
 
-  /** T0 常驻段（personal 全文 + project 目录）；overflow=true 时应触发归并 */
+  /** T0 常驻段（personal 全文 + project 目录）。overflow 按层拆开，调用方归并对应层 */
   resident(now: number = Date.now()): ResidentMemory {
     return renderResidentMemory(this.list(), now);
   }
@@ -326,4 +324,29 @@ export class MemorySectionView {
   #all(sql: string, ...args: unknown[]): SectionRow[] {
     return this.db.prepare(sql).all(...args) as SectionRow[];
   }
+}
+
+/** 专名至少 3 字。两字词（入库、批次、库存）几乎句句都有，不拿来预取 */
+const DISTINCTIVE_MIN_LENGTH = 3;
+
+/**
+ * 长度够、但本身就是业务里的普通说法。整词相等才排除，
+ * 「易碎品」「先进先出」「A001」这种专名不受影响。
+ */
+const GENERIC_NEEDLES = new Set([
+  'sku',
+  '供应商',
+  '入库单',
+  '出库单',
+  '退货单',
+  '调拨单',
+  '盘点单',
+  '拣货单',
+  '到货预报',
+]);
+
+function needleScore(raw: string, hay: string, weight: number): number {
+  const needle = raw.trim().toLowerCase();
+  if (needle.length < DISTINCTIVE_MIN_LENGTH || GENERIC_NEEDLES.has(needle)) return 0;
+  return hay.includes(needle) ? weight : 0;
 }

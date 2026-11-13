@@ -2,7 +2,13 @@ import { Hono } from 'hono';
 import { resolveActor } from '../actor.js';
 import {
   getAlertSummary,
+  getDashboardActivity,
   getDashboardOverview,
+  getDashboardStock,
+  getDashboardUrgent,
+  getDashboardWorkload,
+  REPORT_HTTP_PAGE_MAX,
+  reportCatalog,
   getExpiryBoard,
   getFlowTrend,
   getLocationDistribution,
@@ -17,6 +23,7 @@ import {
   getReplenishment,
   listWarehouses,
   listWarehouseStock,
+  listZones,
   presentLocation,
   listSerials,
   querySerial,
@@ -84,6 +91,32 @@ function readLocationWarehouseId(
   const warehouse = ws.warehouses.byCode(code);
   if (!warehouse) throw new BadQueryError(`仓库不存在：${code}`);
   return warehouse.id;
+}
+
+/**
+ * 库位清单的库区范围。
+ * 不传 = 不按库区滤；unzoned=1 = 未分区；zoneCode = 该库区的库位。
+ * 同时按仓库筛时，库区必须属于那个仓库。
+ */
+function readLocationZoneId(
+  ws: AppContext['ws'],
+  unzoned: string | undefined,
+  zoneCode: string | undefined,
+  warehouseId: string | null | undefined,
+): string | null | undefined {
+  const flag = unzoned?.trim() ?? '';
+  const code = zoneCode?.trim() ?? '';
+  if (flag !== '' && flag !== '1') throw new BadQueryError('unzoned 只能是 1');
+  if (flag === '1' && code !== '') throw new BadQueryError('不能同时按库区和未分区筛选');
+  if (flag === '1') return null;
+  if (code === '') return undefined;
+  ws.sync();
+  const zone = ws.zones.byCode(code);
+  if (!zone) throw new BadQueryError(`库区不存在：${code}`);
+  if (warehouseId !== undefined && (zone.warehouseId ?? null) !== warehouseId) {
+    throw new BadQueryError(`库区 ${code} 不在这个仓库里`);
+  }
+  return zone.id;
 }
 
 export type { ExpiryBatchRow, ExpiryLevel, OrderWithLines } from '@one/wms';
@@ -253,7 +286,7 @@ export function wmsRoutes(ctx: AppContext): Hono {
         ),
       );
     })
-    // ── 运营看板（M21）：五维度各自独立端点（独立拉取/失效/扩展新维度）──
+    // ── 运营看板：各维度独立端点（独立拉取；写操作按 dashboard 前缀一起失效）──
     .get('/dashboard/overview', (c) => c.json(getDashboardOverview(ctx.ws)))
     .get('/dashboard/flow-trend', (c) => {
       const days = Number(c.req.query('days') ?? '14');
@@ -262,6 +295,55 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/dashboard/locations', (c) => c.json(getLocationDistribution(ctx.ws)))
     .get('/dashboard/orders', (c) => c.json(getOrderStats(ctx.ws)))
     .get('/dashboard/alerts', (c) => c.json(getAlertSummary(ctx.ws)))
+    .get('/dashboard/workload', (c) => c.json(getDashboardWorkload(ctx.ws)))
+    .get('/dashboard/stock', (c) => c.json(getDashboardStock(ctx.ws)))
+    .get('/dashboard/activity', (c) => {
+      const limit = Number(c.req.query('limit') ?? '12');
+      return c.json(getDashboardActivity(ctx.ws, Number.isInteger(limit) ? limit : 12));
+    })
+    .get('/dashboard/urgent', (c) => c.json(getDashboardUrgent(ctx.ws)))
+    // ── 自定义报表：读投影；保存和删除走工具总线 ──
+    .get('/reports/catalog', (c) => c.json(reportCatalog()))
+    .get('/reports', (c) => c.json(ctx.ws.reports.list()))
+    .post('/reports/run', async (c) => {
+      const body = (await c.req.json().catch(() => ({}))) as {
+        reportId?: string;
+        sectionId?: string;
+        params?: Record<string, unknown>;
+        limit?: number;
+        offset?: number;
+      };
+      if (!body.reportId || !body.sectionId) throw new BadQueryError('要指定报表和其中一张表');
+      return c.json(
+        ctx.ws.reports.run(
+          body.reportId,
+          body.sectionId,
+          body.params ?? {},
+          body.limit,
+          body.offset,
+          REPORT_HTTP_PAGE_MAX,
+        ),
+      );
+    })
+    .post('/reports/preview', async (c) => {
+      const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+      return c.json(
+        await ctx.ws.tools.invoke('wms.report.preview', body, resolveActor(ctx, c)),
+      );
+    })
+    .post('/reports', async (c) => {
+      const body = await c.req.json().catch(() => ({}));
+      return c.json(await ctx.ws.tools.invoke('wms.report.save', body, resolveActor(ctx, c)), 201);
+    })
+    .delete('/reports/:id', async (c) => {
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.report.delete',
+          { reportId: c.req.param('id') },
+          resolveActor(ctx, c),
+        ),
+      );
+    })
     // ── 补货建议（module.replenish）：读建议；写走 wms.replenish.create ──
     .get('/replenishment', (c) => c.json(getReplenishment(ctx.ws)))
     .post('/replenishment', async (c) => {
@@ -442,12 +524,13 @@ export function wmsRoutes(ctx: AppContext): Hono {
       const q = c.req.query('q') || undefined;
       const page = readListPage(c.req.query('limit'), c.req.query('offset'));
       const warehouseId = readLocationWarehouseId(ctx.ws, c.req.query('unassigned'), c.req.query('warehouseCode'));
+      const zoneId = readLocationZoneId(ctx.ws, c.req.query('unzoned'), c.req.query('zoneCode'), warehouseId);
       if (!page) {
         return c.json(
-          ctx.ws.locations.list(q, warehouseId).map((location) => presentLocation(ctx.ws, location)),
+          ctx.ws.locations.list(q, warehouseId, zoneId).map((location) => presentLocation(ctx.ws, location)),
         );
       }
-      const { rows, total } = ctx.ws.locations.listPage({ q, warehouseId, ...page });
+      const { rows, total } = ctx.ws.locations.listPage({ q, warehouseId, zoneId, ...page });
       return c.json({
         total,
         ...page,
@@ -473,6 +556,21 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/warehouses/:warehouseCode/stock', (c) =>
       c.json(listWarehouseStock(ctx.ws, c.req.param('warehouseCode'))),
     )
+    .get('/zones', (c) => c.json(listZones(ctx.ws)))
+    .post('/zones', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.zone.create', body, resolveActor(ctx, c)), 201);
+    })
+    .put('/zones/:zoneCode', async (c) => {
+      const body = await c.req.json();
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.zone.update',
+          { ...body, zoneCode: c.req.param('zoneCode') },
+          resolveActor(ctx, c),
+        ),
+      );
+    })
     .get('/serials', (c) =>
       c.json(
         listSerials(ctx.ws, {

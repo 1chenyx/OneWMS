@@ -6,7 +6,8 @@ import type { AgentMessage, AgentToolMeta } from './types.js';
  *
  * 常驻上下文只放一行摘要和参数骨架（名称、类型、枚举、数值范围）。
  * 完整说明留在工具定义里，模型调用 tools.load 之后，下一轮才把该组的
- * 全文和参数说明附上。授权范围始终是助手定义与总线的交集，加载不能越权。
+ * 全文和参数说明附上。已加载的组只保留最近用过的 LOADED_GROUP_KEEP 组。
+ * 授权范围始终是助手定义与总线的交集，加载不能越权。
  *
  * 工具数不超过 TOOL_CATALOG_DEFER_AT 时，授权内的工具仍然可以直接调用
  * （摘要够用就不用多一轮）。超过之后，未加载的组从 function calling 清单拿掉，
@@ -21,11 +22,15 @@ export const PINNED_TOOL_IDS = ['wms.inventory.query', 'wms.sku.resolve'] as con
 
 /**
  * 超过这个数量才延迟暴露未加载的组。
- * 取在「五十到八十」之间：再少会让小模型多付一轮，再多则整份 schema 重新变重。
- * 这是个悬崖值——总线工具数一越过它，所有未加载组立刻都要先 tools.load，
- * 每次加工具都得回头看一眼余量（当前 65 个）。
+ * 再低会让小模型多付一轮，再高则整份 schema 重新变重。
+ * 这是个悬崖值——授权工具数一越过它，所有未加载组立刻都要先 tools.load。
+ * 每次加工具都得回头看一眼余量。
+ * 当前 general 约 81 个：73 个 wms（含 6 个报表）+ 3 个 memory + 5 个 core 读工具（不含 profile.propose）。
  */
-export const TOOL_CATALOG_DEFER_AT = 80;
+export const TOOL_CATALOG_DEFER_AT = 96;
+
+/** 一个会话里同时带着完整说明的组数。再加载或再用时，丢掉最久没用的。 */
+export const LOADED_GROUP_KEEP = 3;
 
 const SUMMARY_MAX = 80;
 const STRUCT_DESC_MAX = 80;
@@ -100,14 +105,14 @@ function groupsOf(tools: readonly AgentToolMeta[]): Map<string, AgentToolMeta[]>
 function buildLoadTool(tools: readonly AgentToolMeta[], defer: boolean): AgentToolMeta {
   const lines = [...groupsOf(tools).entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([group, list]) => `- ${group}：${list.map((t) => t.label).join('、')}`);
+    .map(([group, list]) => `- ${group}（${list.length}）`);
   const head = defer
     ? '加载一组工具的完整说明。清单里还没有的工具必须先加载，下一轮才能调用。'
     : '加载一组工具的完整说明。清单里的工具现在就能调用，但只有一行摘要；加载后下一轮附上该组的完整参数规则。';
   return {
     id: TOOLS_LOAD_ID,
     label: '加载工具说明',
-    description: `${head}\n可选组：\n${lines.join('\n')}`,
+    description: `${head}\n可选组（组 id 与个数）：\n${lines.join('\n')}`,
     parameters: {
       type: 'object',
       properties: {
@@ -159,17 +164,41 @@ export function applyLoad(domain: readonly AgentToolMeta[], args: Record<string,
   return { ok: true, group, payload: { group, toolIds } };
 }
 
-/** 从会话历史恢复已加载的组，同一对话的下一句不用重新加载 */
+/**
+ * 把组记为最近使用。已在集合里则挪到末尾；超过 LOADED_GROUP_KEEP 时丢掉最久没用的。
+ * 集合迭代顺序是从最久到最近。
+ */
+export function touchLoadedGroup(groups: Set<string>, group: string): void {
+  if (!group) return;
+  groups.delete(group);
+  groups.add(group);
+  while (groups.size > LOADED_GROUP_KEEP) {
+    const oldest = groups.values().next().value;
+    if (oldest === undefined) break;
+    groups.delete(oldest);
+  }
+}
+
+/**
+ * 从会话历史恢复已加载的组。tools.load 成功才加入；
+ * 之后调用该组里的工具会把它算作最近使用。只留最近 LOADED_GROUP_KEEP 组。
+ */
 export function expandedGroupsFromHistory(messages: readonly AgentMessage[]): Set<string> {
   const groups = new Set<string>();
   for (const message of messages) {
     if (message.role !== 'tool-results') continue;
     for (const result of message.results) {
-      if (result.toolId !== TOOLS_LOAD_ID || !result.ok) continue;
-      const payload = result.payload;
-      if (!payload || typeof payload !== 'object') continue;
-      const group = (payload as { group?: unknown }).group;
-      if (typeof group === 'string' && group) groups.add(group);
+      if (result.toolId === TOOLS_LOAD_ID) {
+        if (!result.ok) continue;
+        const payload = result.payload;
+        if (!payload || typeof payload !== 'object') continue;
+        const group = (payload as { group?: unknown }).group;
+        if (typeof group === 'string' && group) touchLoadedGroup(groups, group);
+        continue;
+      }
+      if (result.toolId === 'ui.ask') continue;
+      const group = toolGroup(result.toolId);
+      if (groups.has(group)) touchLoadedGroup(groups, group);
     }
   }
   return groups;

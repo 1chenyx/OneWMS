@@ -565,6 +565,11 @@ describe('盘点端点（M17：清单进度 / 明细联查 / 录实盘 / 关单�
       warehouseId: null,
       warehouseCode: null,
       warehouseName: null,
+      zoneId: null,
+      zoneCode: null,
+      zoneName: null,
+      zoneKind: null,
+      zoneKindLabel: null,
       createdAt: expect.any(String),
       updatedAt: expect.any(String),
     }]);
@@ -1109,6 +1114,48 @@ describe('多仓端点（module.warehouse）', () => {
     const both = await app.request('/api/locations?warehouseCode=WH-1&unassigned=1&limit=50');
     expect(both.status).toBe(400);
     expect(((await both.json()) as { code: string }).code).toBe('BAD_QUERY');
+  });
+});
+
+describe('库区端点（module.zone）', () => {
+  it('建库区、把库位划进去，并按库区或未分区筛选', async () => {
+    const app = setup();
+    await post(app, '/api/warehouses', { warehouseCode: 'WH-1', name: '一号仓' });
+    const created = await post(app, '/api/zones', {
+      zoneCode: 'PK-1',
+      name: '一层拣货',
+      kind: 'picking',
+      warehouseCode: 'WH-1',
+    });
+    expect(created.status).toBe(201);
+
+    const loc = await post(app, '/api/locations', { locationCode: 'A-01', name: '一号架', zoneCode: 'PK-1' });
+    expect(loc.status).toBe(201);
+    await post(app, '/api/locations', { locationCode: 'Z-01', name: '散货', warehouseCode: 'WH-1' });
+
+    const zones = (await (await app.request('/api/zones')).json()) as {
+      zoneCode: string;
+      kindLabel: string;
+      locationCount: number;
+    }[];
+    expect(zones).toEqual([
+      expect.objectContaining({ zoneCode: 'PK-1', kindLabel: '拣货区', warehouseCode: 'WH-1', locationCount: 1 }),
+    ]);
+
+    const inZone = await app.request('/api/locations?zoneCode=PK-1&limit=50');
+    expect(inZone.status).toBe(200);
+    const inZoneBody = (await inZone.json()) as { total: number; rows: { locationCode: string; zoneKind: string }[] };
+    expect(inZoneBody.total).toBe(1);
+    expect(inZoneBody.rows[0]).toMatchObject({ locationCode: 'A-01', zoneKind: 'picking', zoneKindLabel: '拣货区' });
+
+    const loose = await app.request('/api/locations?warehouseCode=WH-1&unzoned=1');
+    expect(loose.status).toBe(200);
+    const looseBody = (await loose.json()) as { locationCode: string }[];
+    expect(looseBody.map((row) => row.locationCode)).toEqual(['Z-01']);
+
+    const missing = await app.request('/api/locations?zoneCode=NOPE&limit=50');
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { code: string }).code).toBe('BAD_QUERY');
   });
 });
 

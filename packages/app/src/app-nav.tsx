@@ -15,6 +15,7 @@ export const DEFAULT_PAGE: Page = 'skus';
 
 export type BuiltinPage =
   | 'dashboard'
+  | 'reports'
   | 'workbench'
   | 'skus'
   | 'partners'
@@ -43,6 +44,7 @@ export type BuiltinPage =
   | 'flows'
   | 'rules'
   | 'modules'
+  | 'integrations'
   | 'settings';
 
 /**

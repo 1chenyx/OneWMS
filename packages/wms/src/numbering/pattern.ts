@@ -31,6 +31,7 @@ export const NUMBERING_PLACES = [
   { id: 'partner.customer', label: '客户', group: '档案', fallback: 'CUS-{seq:4}' },
   { id: 'location', label: '库位', group: '档案', fallback: 'LOC-{seq:4}' },
   { id: 'warehouse', label: '仓库', group: '档案', fallback: 'WH-{seq:2}' },
+  { id: 'zone', label: '库区', group: '档案', fallback: 'ZN-{seq:2}' },
   { id: 'lpn', label: '托盘', group: '档案', fallback: 'LPN-{seq:4}' },
 ] as const;
 

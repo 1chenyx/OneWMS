@@ -2,6 +2,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { api } from './client';
 import type { DynListQuery, InventoryListPage, InventoryRow, InventorySlicePage, Location, Order, Partner, Sku, UiPageRecord } from './client';
 import type { ListPage } from './page';
+import { isConnectorId } from '../lib/integration-draft';
 
 /** Profile 快照：动态列 / 流转按钮的数据源（切页挂载即刷新，提议确认后自然可见） */
 export function useProfileSnapshot() {
@@ -312,6 +313,78 @@ export function useDashboardAlerts() {
   return useQuery({ queryKey: ['dashboard', 'alerts'], queryFn: api.dashboardAlerts });
 }
 
+export function useDashboardWorkload() {
+  return useQuery({ queryKey: ['dashboard', 'workload'], queryFn: api.dashboardWorkload });
+}
+
+export function useDashboardStock() {
+  return useQuery({ queryKey: ['dashboard', 'stock'], queryFn: api.dashboardStock });
+}
+
+export function useDashboardActivity(limit = 12) {
+  return useQuery({
+    queryKey: ['dashboard', 'activity', limit],
+    queryFn: () => api.dashboardActivity(limit),
+  });
+}
+
+export function useDashboardUrgent() {
+  return useQuery({ queryKey: ['dashboard', 'urgent'], queryFn: api.dashboardUrgent });
+}
+
+export function useReportCatalog() {
+  return useQuery({
+    queryKey: ['reports', 'catalog'],
+    queryFn: api.reportCatalog,
+    staleTime: 60_000,
+  });
+}
+
+export function useReports() {
+  return useQuery({ queryKey: ['reports'], queryFn: api.reports });
+}
+
+export function useRunReport(
+  reportId: string | null,
+  sectionId: string | null,
+  params: Record<string, string>,
+  offset: number,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ['reports', 'run', reportId, sectionId, params, offset],
+    queryFn: () =>
+      api.runReport({
+        reportId: reportId!,
+        sectionId: sectionId!,
+        params,
+        limit: 50,
+        offset,
+      }),
+    enabled: Boolean(reportId && sectionId && enabled),
+  });
+}
+
+export function useSaveReport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.saveReport,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['reports'] });
+    },
+  });
+}
+
+export function useDeleteReport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.deleteReport,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['reports'] });
+    },
+  });
+}
+
 // ── 单据 ─────────────────────────────────────────────
 
 export function useOrderConflicts() {
@@ -545,6 +618,8 @@ export function useLocations(page: {
   offset: number;
   warehouseCode?: string;
   unassigned?: boolean;
+  zoneCode?: string;
+  unzoned?: boolean;
 }): ReturnType<typeof useQuery<ListPage<Location>>>;
 export function useLocations(page?: {
   q?: string;
@@ -552,6 +627,8 @@ export function useLocations(page?: {
   offset: number;
   warehouseCode?: string;
   unassigned?: boolean;
+  zoneCode?: string;
+  unzoned?: boolean;
 }): ReturnType<typeof useQuery<Location[]>> | ReturnType<typeof useQuery<ListPage<Location>>> {
   const paged = page?.limit != null;
   const q = page?.q;
@@ -559,7 +636,9 @@ export function useLocations(page?: {
   const offset = page?.offset ?? 0;
   const warehouseCode = page?.warehouseCode ?? '';
   const unassigned = page?.unassigned === true;
-  const scopeKey = unassigned ? 'unassigned' : warehouseCode;
+  const zoneCode = page?.zoneCode ?? '';
+  const unzoned = page?.unzoned === true;
+  const scopeKey = `${unassigned ? 'unassigned' : warehouseCode}|${unzoned ? 'unzoned' : zoneCode}`;
   return useQuery({
     queryKey: paged ? ['locations', q ?? '', limit, offset, scopeKey] : ['locations'],
     queryFn: async (): Promise<Location[] | ListPage<Location>> =>
@@ -569,6 +648,7 @@ export function useLocations(page?: {
             limit,
             offset,
             ...(unassigned ? { unassigned: true } : warehouseCode ? { warehouseCode } : {}),
+            ...(unzoned ? { unzoned: true } : zoneCode ? { zoneCode } : {}),
           })
         : api.locations(),
     // 翻页时留着上一页，避免表格闪空。换了仓库或搜索词就丢掉，免得把别的仓库的库位闪在当前仓库下面。
@@ -588,6 +668,7 @@ function useInvalidateLocations() {
   return () => {
     void qc.invalidateQueries({ queryKey: ['locations'] });
     void qc.invalidateQueries({ queryKey: ['warehouses'] });
+    void qc.invalidateQueries({ queryKey: ['zones'] });
     void qc.invalidateQueries({ queryKey: ['dashboard'] });
   };
 }
@@ -609,7 +690,7 @@ export function useUpdateLocation() {
   return useMutation({
     mutationFn: (params: {
       locationCode: string;
-      body: { name?: string; warehouseCode?: string; capacity?: number | null };
+      body: { name?: string; warehouseCode?: string; zoneCode?: string; capacity?: number | null };
     }) => api.updateLocation(params.locationCode, params.body),
     onSuccess: invalidate,
   });
@@ -845,6 +926,43 @@ export function useRejectProposal() {
   });
 }
 
+/** 保存对接配置前先让服务端跑同一套校验。不通过就不提议。 */
+export function useCheckIntegrationSettings() {
+  return useMutation({
+    mutationFn: (settings: unknown) => api.checkIntegrationSettings(settings),
+  });
+}
+
+/** 本机已有的密钥引用名。没有值。连接器 id 不合法时不请求。 */
+export function useIntegrationSecrets(connectorId: string | null) {
+  const enabled = !!connectorId && isConnectorId(connectorId);
+  return useQuery({
+    queryKey: ['integration-secrets', connectorId],
+    enabled,
+    queryFn: () => api.integrationSecretNames(connectorId!),
+  });
+}
+
+export function usePutIntegrationSecret() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.putIntegrationSecret,
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ['integration-secrets', vars.connectorId] });
+    },
+  });
+}
+
+export function useDeleteIntegrationSecret() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.deleteIntegrationSecret,
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ['integration-secrets', vars.connectorId] });
+    },
+  });
+}
+
 // ── 设置页（M8）──────────────────────────────────────
 
 /** 节点名片（切页挂载即刷新——同步回合后计数会变）。
@@ -1008,11 +1126,38 @@ export function useToolInvoke() {
   });
 }
 
-/** 带令牌落地。成功后失效所有通用记录清单（不知道具体是哪张表，全失效比漏失效便宜） */
+/** 带令牌落地。成功后失效通用记录和编码对照（不知道具体是哪张表，全失效比漏失效便宜） */
 export function useToolConfirm() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { toolId: string; token: string }) => api.confirmTool(input.toolId, input.token),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['dyn-records'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['dyn-records'] });
+      void qc.invalidateQueries({ queryKey: ['integration-codes'] });
+    },
+  });
+}
+
+export interface IntegrationCodeRow {
+  entity: 'sku' | 'partner' | 'warehouse';
+  externalCode: string;
+  internalCode: string;
+}
+
+/** 某个连接器的编码对照。id 不合法时不请求。 */
+export function useIntegrationCodes(connectorId: string | null) {
+  const enabled = !!connectorId && isConnectorId(connectorId);
+  return useQuery({
+    queryKey: ['integration-codes', connectorId],
+    enabled,
+    queryFn: async () => {
+      const done = await api.invokeTool('integration.code.list', { connectorId });
+      if (done.pending || typeof done.result !== 'object' || done.result === null || !('rows' in done.result)) {
+        throw new Error('编码清单没有返回');
+      }
+      const rows = (done.result as { rows: unknown }).rows;
+      if (!Array.isArray(rows)) throw new Error('编码清单没有返回');
+      return { rows: rows as IntegrationCodeRow[] };
+    },
   });
 }

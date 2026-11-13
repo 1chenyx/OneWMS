@@ -5,6 +5,7 @@ import {
   LEGACY_SECTION_KEY,
   MEMORY_EVENT_TYPES,
   MemoryDomain,
+  RESIDENT_CHAR_BUDGET,
   RESIDENT_PERSONAL_LINE_BUDGET,
   bodyLineCount,
   memoryManifest,
@@ -849,7 +850,7 @@ describe('matchSections（T2 关键词预取）', () => {
       );
     seed('sku-characteristics', 'SKU 特性', ['SKU', 'A001', '易碎'], '- A001 易碎');
     await tick();
-    seed('supplier-agreements', '供应商约定', ['供应商', '对账'], '- 每月底对账');
+    seed('supplier-agreements', '供应商约定', ['供应商', '月结对账'], '- 每月底对账');
     await tick();
     seed('fifo-policy', '先进先出策略', ['FIFO', '先进先出'], '- 出库按 FIFO');
     await tick();
@@ -865,9 +866,10 @@ describe('matchSections（T2 关键词预取）', () => {
     );
   });
 
-  it('关键词命中（大小写不敏感），返回该节全文', () => {
-    const hits = ws.sections.matchSections('帮我看看 sku 的特性');
-    expect(hits.map((s) => s.sectionKey)).toContain('sku-characteristics');
+  it('专名命中（大小写不敏感）返回该节全文；过泛的 sku 单独出现不预取', () => {
+    expect(ws.sections.matchSections('帮我看看 sku 的特性')).toEqual([]);
+    const hits = ws.sections.matchSections('帮我看看 A001 的特性');
+    expect(hits.map((s) => s.sectionKey)).toEqual(['sku-characteristics']);
     expect(hits[0].bodyMd).toBe('- A001 易碎'); // 预取直接给全文，省一次工具往返
   });
 
@@ -888,7 +890,7 @@ describe('matchSections（T2 关键词预取）', () => {
         scope: 'project',
         sectionKey: 'kw-hit',
         title: 'yyy',
-        keywords: ['防潮'],
+        keywords: ['防潮要求'],
         bodyMd: '- 关键词命中我',
       }),
     );
@@ -919,11 +921,23 @@ describe('matchSections（T2 关键词预取）', () => {
         bodyMd: '- 单字符关键词',
       }),
     );
-    expect(ws.sections.matchSections('A')).toEqual([]); // needle 长度 < 2 直接跳过（否则处处误命中）
+    expect(ws.sections.matchSections('A')).toEqual([]); // 短于 3 字不参与（否则「入库」处处误命中）
+
+    appendEvent(
+      MEMORY_EVENT_TYPES.sectionUpdated,
+      updatedPayload({
+        scope: 'project',
+        sectionKey: 'generic-only',
+        title: '普通说法',
+        keywords: ['入库单', '供应商'],
+        bodyMd: '- 不该因为一句入库就被预取',
+      }),
+    );
+    expect(ws.sections.matchSections('今天给供应商做一张入库单')).toEqual([]);
   });
 
   it('limit 生效（默认 2），命中分相同按最近更新时间倒序', () => {
-    const text = '关于 SKU、供应商 与 先进先出 的约定';
+    const text = '关于 A001、月结对账 与 先进先出 的约定';
     const all = ws.sections.matchSections(text, 10);
     expect(all).toHaveLength(3);
     expect(ws.sections.matchSections(text).map((s) => s.sectionKey)).toHaveLength(2); // 默认 limit=2
@@ -983,7 +997,12 @@ describe('resident()（T0 常驻渲染：personal 全文 + project 目录）', (
   });
 
   it('无记忆：text 为空串且 overflow=false（调用方整段跳过）', () => {
-    expect(ws.sections.resident()).toEqual({ text: '', overflow: false });
+    expect(ws.sections.resident()).toEqual({
+      text: '',
+      overflow: false,
+      personalOverflow: false,
+      projectOverflow: false,
+    });
   });
 
   it('personal 超行数预算：overflow=true 且正文一字未截断', () => {
@@ -1020,6 +1039,43 @@ describe('resident()（T0 常驻渲染：personal 全文 + project 目录）', (
     // 关键词为空时目录行省略该段（不输出「关键词 」空壳）
     expect(text).not.toContain('关键词');
     expect(text).toContain('- 存放要求（key=storage-rules · 1 行 · 更新于 刚刚）：易碎品轻拿轻放');
+  });
+
+  it('项目目录超预算只标记 project，不把个人层判成溢出，正文不截断', () => {
+    appendEvent(
+      MEMORY_EVENT_TYPES.sectionUpdated,
+      updatedPayload({
+        scope: 'personal',
+        sectionKey: 'user-prefs',
+        title: '用户偏好',
+        bodyMd: '- 偏好简短回复',
+        summary: '一句',
+        keywords: [],
+      }),
+    );
+    const summary = '约'.repeat(80);
+    for (let i = 0; i < 24; i++) {
+      appendEvent(
+        MEMORY_EVENT_TYPES.sectionUpdated,
+        updatedPayload({
+          scope: 'project',
+          sectionKey: `rule-${String(i).padStart(2, '0')}`,
+          title: `约定 ${i}`,
+          bodyMd: `- 正文 ${i} 仍然完整`,
+          summary,
+          keywords: ['专名'],
+        }),
+      );
+    }
+    const { text, overflow, personalOverflow, projectOverflow } = ws.sections.resident();
+    expect(personalOverflow).toBe(false);
+    expect(projectOverflow).toBe(true);
+    expect(overflow).toBe(true);
+    expect(text).toContain('- 偏好简短回复');
+    expect(text).toContain('key=rule-23');
+    // 目录超预算只做标记。章节正文仍在投影里，不截断
+    expect(ws.sections.byKey('project', 'rule-23')!.bodyMd).toContain('正文 23 仍然完整');
+    expect(text.length).toBeGreaterThan(RESIDENT_CHAR_BUDGET);
   });
 });
 

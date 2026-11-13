@@ -34,6 +34,12 @@ export type InboxDisposition =
   | { disposition: 'rejected'; id: string }
   | { disposition: 'duplicate'; id: string; internalRef: string };
 
+/** 一条入站拉取路由的水位。没有行表示还没拉过。 */
+export interface PollWatermark {
+  watermark: string | null;
+  lastAttemptAt: string;
+}
+
 export interface OutboxRow {
   id: string;
   connectorId: string;
@@ -154,6 +160,16 @@ export class IntegrationQueue {
     return this.externalIdFor(connectorId, internalRef) !== undefined;
   }
 
+  /** 这条路由已经接受过的内部单号。没有则还没入过账。 */
+  acceptedRef(connectorId: string, routeId: string, externalId: string): string | undefined {
+    const row = this.acceptedRow(
+      assertConnector(connectorId),
+      assertSlug(routeId, '路由 id'),
+      assertToken(externalId, '外部主键'),
+    );
+    return row?.internal_ref ?? undefined;
+  }
+
   externalIdFor(connectorId: string, internalRef: string): string | undefined {
     assertConnector(connectorId);
     const ref = typeof internalRef === 'string' ? internalRef.trim() : '';
@@ -233,6 +249,76 @@ export class IntegrationQueue {
         .run(at, row.id, this.workspaceId);
       return true;
     });
+  }
+
+  /** 这个连接器的出站账本水位。没有扫过是 -1。停用的连接器不要往前推。 */
+  cursor(connectorId: string): number {
+    assertConnector(connectorId);
+    const row = this.db
+      .prepare(`SELECT lamport FROM integration_cursor WHERE workspace_id = ? AND connector_id = ?`)
+      .get(this.workspaceId, connectorId) as { lamport: number } | undefined;
+    return row?.lamport ?? -1;
+  }
+
+  /** 这条拉取路由上次拉到哪。没有行就是还没拉过。 */
+  pollWatermark(connectorId: string, routeId: string): PollWatermark | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT watermark, last_attempt_at FROM integration_poll
+         WHERE workspace_id = ? AND connector_id = ? AND route_id = ?`,
+      )
+      .get(this.workspaceId, assertConnector(connectorId), assertSlug(routeId, '路由 id')) as
+      | { watermark: string | null; last_attempt_at: string }
+      | undefined;
+    if (!row) return undefined;
+    return { watermark: row.watermark, lastAttemptAt: row.last_attempt_at };
+  }
+
+  /**
+   * 记下这次拉取。watermark 不传就保留原来的水位，只更新尝试时间。
+   * 失败也要记尝试时间，间隔未到就不再打对方。
+   */
+  recordPoll(connectorId: string, routeId: string, at: string, watermark?: string): void {
+    const connector = assertConnector(connectorId);
+    const route = assertSlug(routeId, '路由 id');
+    const stamp = clock(at);
+    if (watermark === undefined) {
+      this.db
+        .prepare(
+          `INSERT INTO integration_poll (workspace_id, connector_id, route_id, watermark, last_attempt_at)
+           VALUES (?, ?, ?, NULL, ?)
+           ON CONFLICT (workspace_id, connector_id, route_id) DO UPDATE SET
+             last_attempt_at = excluded.last_attempt_at`,
+        )
+        .run(this.workspaceId, connector, route, stamp);
+      return;
+    }
+    const mark = assertToken(watermark, '拉取水位');
+    this.db
+      .prepare(
+        `INSERT INTO integration_poll (workspace_id, connector_id, route_id, watermark, last_attempt_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (workspace_id, connector_id, route_id) DO UPDATE SET
+           watermark = excluded.watermark,
+           last_attempt_at = excluded.last_attempt_at`,
+      )
+      .run(this.workspaceId, connector, route, mark, stamp);
+  }
+
+  /** 只往前走。映射失败时调用方停在失败事件之前，下一轮还能再试。 */
+  advanceCursor(connectorId: string, lamport: number): void {
+    assertConnector(connectorId);
+    if (!Number.isInteger(lamport) || lamport < 0) {
+      throw new IntegrationStoreError('INTEGRATION_QUEUE', '账本水位不合法');
+    }
+    this.db
+      .prepare(
+        `INSERT INTO integration_cursor (workspace_id, connector_id, lamport)
+         VALUES (?, ?, ?)
+         ON CONFLICT (workspace_id, connector_id) DO UPDATE SET
+           lamport = MAX(integration_cursor.lamport, excluded.lamport)`,
+      )
+      .run(this.workspaceId, connectorId, lamport);
   }
 
   /** 失败次数到 maxAttempts 就进死信，否则按次数往后推。已发送和死信不再改。 */

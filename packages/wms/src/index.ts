@@ -13,6 +13,7 @@ export { WmsDomain, WmsWorkspace } from './wms.js';
 export { SkuView, type SkuRecord } from './views/sku-view.js';
 export { LocationView, type LocationRecord } from './views/location-view.js';
 export { WarehouseView, type WarehouseRecord } from './views/warehouse-view.js';
+export { ZoneView, type ZoneRecord } from './views/zone-view.js';
 export { SerialView, type SerialRecord } from './views/serial-view.js';
 export { LpnView, type LpnRecord, type LpnLineRecord } from './views/lpn-view.js';
 export {
@@ -76,6 +77,8 @@ export type {
   LocationUpdatedPayload,
   WarehouseCreatedPayload,
   WarehouseUpdatedPayload,
+  ZoneCreatedPayload,
+  ZoneUpdatedPayload,
   SerialReceivedPayload,
   SerialMovedPayload,
   SerialIssuedPayload,
@@ -121,6 +124,29 @@ export {
 export type { NumberPlaceId, NumberingRules } from './numbering/pattern.js';
 
 export { applyMapping, outboundMatches } from './integration/map.js';
+export {
+  INTEGRATION_MODULE_ID,
+  catchUpOutbound,
+  emptyCodeLookup,
+  type CodeLookupSource,
+  httpFetch,
+  loadIntegrationSettings,
+  pollInbound,
+  pushDue,
+  receiveWebhook,
+} from './integration/deliver.js';
+export type {
+  CatchUpResult,
+  DeliverySkip,
+  IntegrationFetch,
+  IntegrationRequest,
+  IntegrationResponse,
+  PollResult,
+  PushResult,
+  ReceiveBody,
+  ReceiveResult,
+  SettingsLoad,
+} from './integration/deliver.js';
 export { IntegrationQueue, nextAttemptAt } from './integration/queue.js';
 export type { InboxDisposition, InboxRow, OutboxMark, OutboxRow, OutboxStatus } from './integration/queue.js';
 export { IntegrationSecretStore } from './integration/secrets.js';
@@ -146,6 +172,10 @@ export { getReturnable } from './queries/return-queries.js';
 export { getReplenishment } from './queries/replenish-queries.js';
 export type { ReplenishmentSuggestion } from './queries/replenish-queries.js';
 export { listWarehouses, listWarehouseStock, presentLocation } from './queries/warehouse-queries.js';
+export { listZones } from './queries/zone-queries.js';
+export type { ZoneListRow } from './queries/zone-queries.js';
+export { ZONE_KINDS, isZoneKind, zoneKindLabel } from './zone-kinds.js';
+export type { ZoneKind } from './zone-kinds.js';
 export { listSerials, querySerial } from './queries/serial-queries.js';
 export type { SerialRowView } from './queries/serial-queries.js';
 export { listLpns, lpnStock } from './queries/lpn-queries.js';
@@ -160,18 +190,29 @@ export { getWave, listWaves } from './queries/wave-queries.js';
 export type { WaveDetail, WaveOrderView, WaveSummary, WaveWalkLine } from './queries/wave-queries.js';
 export type { PickingWithLines, PickingLineWithMeta } from './queries/picking-queries.js';
 export {
+  getAlertSummary,
+  getDashboardActivity,
   getDashboardOverview,
+  getDashboardStock,
+  getDashboardUrgent,
+  getDashboardWorkload,
   getFlowTrend,
   getLocationDistribution,
   getOrderStats,
-  getAlertSummary,
 } from './queries/dashboard-queries.js';
 export type {
+  AlertSummary,
+  DashboardActivityRow,
+  DashboardHoldBrief,
+  DashboardLowStock,
   DashboardOverview,
+  DashboardSkuRank,
+  DashboardStockFocus,
+  DashboardUrgentRow,
+  DashboardWorkload,
   FlowTrendPoint,
   LocationDistribution,
   OrderStateCount,
-  AlertSummary,
 } from './queries/dashboard-queries.js';
 export {
   auditInventory,
@@ -212,6 +253,9 @@ export type {
 export { getTransferDetail, listTransfers, transferLineStates, withTransferCount } from './queries/transfer-queries.js';
 export type { TransferDetail, TransferDetailLine, TransferWithCount } from './queries/transfer-queries.js';
 export { getScrapDetail, listScraps, withScrapCount } from './queries/scrap-queries.js';
+export { reportCatalog } from './reports/catalog.js';
+export { REPORT_HTTP_PAGE_MAX } from './reports/catalog.js';
+export type { ReportCatalog, ReportDefinition, ReportSection } from './reports/types.js';
 export type { ScrapDetail, ScrapDetailLine, ScrapWithCount } from './queries/scrap-queries.js';
 
 export {
@@ -265,11 +309,20 @@ export {
   AsnWithReturnError,
   AsnExpectedAtError,
   ReplenishDisabledError,
+  ReportInvalidError,
+  ReportNotFoundError,
+  ReportDisabledError,
   ReplenishEmptyError,
   ReplenishNotShortError,
   WarehouseDisabledError,
   WarehouseAlreadyExistsError,
   WarehouseNotFoundError,
+  ZoneDisabledError,
+  ZoneAlreadyExistsError,
+  ZoneNotFoundError,
+  ZoneKindError,
+  ZoneWarehouseMismatchError,
+  ZoneOccupiedError,
   SerialDisabledError,
   SerialRequiredError,
   SerialNotTrackedError,

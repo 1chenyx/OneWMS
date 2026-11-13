@@ -179,6 +179,29 @@ export const LOCATION_WAREHOUSE_FIELD: ManifestRecordField = {
   description: '多仓启用后，库位可以划进某个仓库。不划则未分仓。库存仍记在库位上',
 };
 
+export const LOCATION_ZONE_FIELD: ManifestRecordField = {
+  key: 'zoneCode',
+  label: '所属库区',
+  description: '库区启用后，库位可以划进某个库区。不划则未分区。库存仍记在库位上',
+};
+
+export const ZONE_RECORD: ManifestRecord = {
+  id: 'zone',
+  label: '库区',
+  aliases: ['库区分类', '拣货区', '存货区'],
+  note: '库区给库位分类，本身不记库存。分类有收货区、质检区、存货区、拣货区、暂存区、发货区、退货区、不良品区。' + FIXED,
+  fields: [
+    { key: 'zoneCode', label: '编码' },
+    { key: 'name', label: '名称' },
+    {
+      key: 'kind',
+      label: '分类',
+      description: 'receiving 收货区、qc 质检区、storage 存货区、picking 拣货区、staging 暂存区、shipping 发货区、return 退货区、defective 不良品区',
+    },
+    { key: 'warehouseCode', label: '所属仓库', description: '多仓启用时，库区可以划进某个仓库。不划则未分仓' },
+  ],
+};
+
 export const SKU_SERIAL_FIELD: ManifestRecordField = {
   key: 'serialTracked',
   label: '按序列号管理',

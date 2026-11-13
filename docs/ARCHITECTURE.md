@@ -644,11 +644,12 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 ## 关键机制
 
 - **循环主权在编排层**：`generateText` 以 `stopWhen: isStepCount(1)` 做单轮补全，工具不挂 execute——步间循环（结果回传后再调模型）在 `agent.ts`，是纯逻辑、可单测；SDK 只负责一次网络往返与格式互译。
-- **错误回传不中断**（§4.2 快通道护栏语义）：invoke 的任何异常（ToolRejectedError 族、领域错误）转为 `ok: false` 的工具结果回传模型，由它向用户解释；被拒操作本来就不落事件（审计免费）。
+- **错误回传不中断**（§4.2 快通道护栏语义）：invoke 的任何异常（ToolRejectedError 族、领域错误）转为 `ok: false` 的工具结果回传模型，由它向用户解释；被拒操作本来就不落事件（审计免费）。同一次运行里，同一工具、同一参数已经失败过，就不再执行，把上次的错误交回模型。
+- **同一步的读并行**：相邻且 `permission='read'` 的总线调用一起开始；写、`ui.ask`、`tools.load` 和被目录拦下的调用仍按出现顺序，后一个等前一个结束。
 - **审计绑定**：`createAgentFromDef` 把 actor 固定为 `ai:{助手id}`（M16 起——助手 id 替代模型名，「谁干的」以助手为单位可审计）——AI 经工具总线的每次操作都落 oplog（`oplog.actor` 即审计日志）。
 - **多实例助手（M16，「使用 AI」与「配置 AI」分离）**：`AgentDefinition = { id, name, description, systemPrompt, tools, model?, allowedRoles? }` 存 core.ai 模块 settings.agents（Profile 配置层，改动走慢通道 propose → confirm），`readAgentDefs` 读配置面 + 脏面窄化，未配置/清空/全非法回退内置三件套（general=全量−profile.propose / readonly=仅 read / config=read+propose——工具矩阵按总线现状展开，新工具自动进内置）。`createAgentFromDef` 按定义现场装配：tools 过滤总线在场项、system=人设前缀+全局纪律后缀（人设可定制、纪律不删减）。`tools` 元素预留 `agent:<id>` 委托形态（多 AI 协作 v2 生长点，v1 装配抛错）；`allowedRoles`（按角色分配助手）v1 仅透传。
-- **System Prompt v2（M4）**：行为规则 + 库存快照（SKU 跨库位求和——M10 修正多桶静默丢失；超 20 条截断引导用查询工具）+ 库位清单上下文（M10：实体库位编码 + DEFAULT 提示，分桶余量引导用查询工具）+ 批次引导（M11：SKU×库位×批次分桶、DEFAULT 虚拟批次、入库声明批次与效期、临期用 wms.inventory.expiring）+ **Profile 摘要**（§6.4 闭环 ②：可见扩展字段清单、流程概要、模块开关）+ **慢通道规则**（改配置必须走 profile.propose 工具提交 JSON Patch，把影响报告转述用户等待确认，禁止声称已应用）。工具清单走 function calling 的 tools 参数（原生通道，不在 prompt 文本重复）。
-- **maxSteps 保护**：默认 8 步，超限抛 `AgentStepLimitError`（防模型无限循环）。
+- **System Prompt v2（M4）**：行为规则（编号只留「没给就留空、改规则先 preview 再 propose」）+ 库存快照（只留 SKU 总数、有库存个数、库存总量；不列单条数量）+ 库位编码最多 20 个 + 批次一句（分桶 / DEFAULT，策略是 core.wms 设置，不要写在出库单上）+ **Profile 摘要**（扩展字段、流程、模块只计数，明细走 profile.* 查询）+ **慢通道规则**（改配置必须走 profile.propose，把影响报告转述用户等待确认，禁止声称已应用）。工具清单走 function calling 的 tools 参数（原生通道，不在 prompt 文本重复）。
+- **maxSteps 保护**：默认 20 步，超限抛 `AgentStepLimitError`（防模型无限循环）。
 - **streamAgent 流式生成器（M12）**：`AsyncGenerator<AgentStreamEvent, AgentTurnResult, AskReply>`——事件流（text-delta / tool-call / ask / tool-result / turn-done）由驱动方逐个消费（server 直译为 SSE）；ui.ask 在编排层拦截（不进 invoke、不落 oplog = 审计豁免），`yield ask 事件` 后挂起，驱动方经 `next(reply)` 注入回答续流（`{answer}` 或 `{declined:true}` 跳过/超时）。
 - **run() 单轮任务式；多轮会话在 server 会话层**（M12）：`run()` 无跨次记忆，多轮历史由 server 内存会话持有（见 @one/server「AI 会话与 ui.ask」），stream() 是会话通道的形态（ui.ask 只在 stream 的工具清单里附加）。
 
@@ -656,9 +657,9 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 
 | 文件 | 职责 | 不做什么 |
 |---|---|---|
-| `agent.ts` | 编排循环：`runAgent`（run 一次性返回）+ `streamAgent`（M12 流式生成器：事件流逐个 yield、ui.ask 挂起经 next() 唤醒）；maxSteps 保护 | 不做任何 IO（provider 注入）、不认识 SDK 类型、不持有会话状态（驱动方的事） |
+| `agent.ts` | 编排循环：`runAgent`（run 一次性返回）+ `streamAgent`（M12 流式生成器：事件流逐个 yield、ui.ask 挂起经 next() 唤醒）；maxSteps 保护。同参同错不再执行。同一步的读并行、写按顺序。送给模型的历史只保留最近两轮用户消息之内的工具结果全文，更早的收成一句，单次结果超过 8000 字符则截断；返回的 messages 仍是全文 | 不做任何 IO（provider 注入）、不认识 SDK 类型、不持有会话状态（驱动方的事） |
 | `types.ts` | LlmProvider / AgentMessage / ToolCallRequest/Result / AgentStreamEvent / AskReply 等接缝类型 | 无运行时 |
-| `system-prompt.ts` | 快照（SKU 总数/总量/明细前 20，跨库位求和）+ 库位清单（M10）+ 批次引导（M11：分桶/DEFAULT/效期/临期工具；M12：出库单 allocation 策略；M13：全局缺省策略与过期拦截是模块设置，改值走慢通道）+ Profile 摘要（可见扩展字段/流程概要/模块开关）+ 慢通道行为规则 + **ui.ask 提问规则**（M12：缺必要信息时一次问一个具体问题；用户未回答不重复追问）+ 当前时间 | 不注入工具清单（走 tools 参数） |
+| `system-prompt.ts` | 快照（SKU 总数 / 有库存个数 / 总量，不列单条数量）+ 库位编码最多 20 个 + 批次一句（分桶与 DEFAULT；怎么扣是设置，不要写在出库单上）+ Profile 只计数 + 慢通道行为规则 + **ui.ask 提问规则** + 当前时间。T2 预取正文超过 800 字截断 | 不注入工具清单（走 tools 参数） |
 | `wms-agent.ts` | 便利工厂 `createAgentFromDef`（M16）：按 AgentDefinition 装配——工具授权过滤总线在场项、actor=`ai:{助手id}`、system=人设前缀+buildSystemPrompt 后缀、每次 run/stream 重组；stream() 附加 ui.ask 工具（M12）；`agent:<id>` 委托形态抛错（v2 预留） | 不做编排逻辑（委托 runAgent/streamAgent）、不读配置（定义由调用方给） |
 | `agent-defs.ts` | Agent 定义契约（M16）：`AgentDefinition` + 内置三件套（general/readonly/config，工具矩阵按总线现状展开）+ `readAgentDefs`（settings.agents 配置面读取 + 脏面窄化 + 内置兜底）+ `aiModuleManifest`（core.ai 模块 manifest，settings.agents 声明 default:[] 使慢通道 replace 路径可用） | 不装配 agent（wms-agent 的事）、不做 HTTP |
 | `provider/vercel.ts` | 单轮 generateText + 消息/工具双向翻译（含 `error-json` 错误输出、不可序列化返回值降级） | 不做多步循环、不执行工具（无 execute） |

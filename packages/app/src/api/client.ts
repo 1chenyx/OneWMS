@@ -1,4 +1,5 @@
 import { agentApi } from './agent-api';
+import { integrationApi } from './integrations-api';
 import { memoryApi } from './memory-api';
 import { profileApi } from './profile-api';
 import { settingsApi } from './settings-api';
@@ -16,6 +17,7 @@ export const api = {
   ...agentApi,
   ...memoryApi,
   ...uiApi,
+  ...integrationApi,
 };
 
 export { ApiError } from './request';
@@ -84,7 +86,14 @@ export type {
 } from './memory-api';
 export type {
   AlertSummary,
+  DashboardActivityRow,
+  DashboardHoldBrief,
+  DashboardLowStock,
   DashboardOverview,
+  DashboardSkuRank,
+  DashboardStockFocus,
+  DashboardUrgentRow,
+  DashboardWorkload,
   ExpiryBatchRow,
   ExpiryBoard,
   ExpiryLevel,
@@ -101,6 +110,7 @@ export type {
   Location,
   LocationDistribution,
   Warehouse,
+  Zone,
   SerialRow,
   LpnRow,
   LpnStock,
@@ -110,6 +120,12 @@ export type {
   Order,
   OrderLine,
   ReplenishmentSuggestion,
+  ReportCatalog,
+  ReportDraft,
+  ReportGrainInfo,
+  ReportRunPage,
+  ReportSection,
+  StoredReport,
   ReturnableLine,
   ReturnableView,
   OrderStateCount,
