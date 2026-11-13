@@ -3,36 +3,11 @@ import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import ImpactReportView from '../src/components/ImpactReportView';
 import ToolInvocationCard from '../src/components/ToolInvocationCard';
-import type { ImpactReport } from '@one/core';
 
 // vitest 未开 globals：RTL 自动清理不生效——手动清场（否则前用例的 Tag 跨测试残留，
 // 「执行中」用例会被上个「被拒」用例的 DOM 误伤）
 afterEach(cleanup);
-
-/** 报告条目由后端生成中文 description——前端只排版，直出即所见 */
-const report: ImpactReport = {
-  summary: '共 2 项变更：字段 1，流程 1。',
-  items: [
-    { severity: 'info', kind: 'field', target: 'sku.spec', description: '字段「规格」将从界面隐藏（数据保留）' },
-    { severity: 'warning', kind: 'workflow', target: 'inbound', description: '转移 created→received 的 when 条件全部为条件式，存在死锁风险' },
-  ],
-} as ImpactReport;
-
-describe('ImpactReportView', () => {
-  it('summary + 条目 description 直出，warning/info 分级渲染', () => {
-    render(<ImpactReportView report={report} />);
-    expect(screen.getByText('共 2 项变更：字段 1，流程 1。')).toBeInTheDocument();
-    expect(screen.getByText(/字段「规格」将从界面隐藏/)).toBeInTheDocument();
-    expect(screen.getByText(/死锁风险/)).toBeInTheDocument();
-    // warning/info 分级渲染（两条 Alert，其一为 warning 语义色）
-    const alerts = screen.getAllByRole('alert');
-    expect(alerts).toHaveLength(2);
-    expect(alerts.some((a) => a.className.includes('ant-alert-warning'))).toBe(true);
-    expect(alerts.some((a) => a.className.includes('ant-alert-info'))).toBe(true);
-  });
-});
 
 describe('ToolInvocationCard', () => {
   it('成功调用：用人话说明结果，不展示工具名和 JSON', () => {

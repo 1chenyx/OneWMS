@@ -15,6 +15,7 @@ export const DEFAULT_PAGE: Page = 'skus';
 
 export type BuiltinPage =
   | 'dashboard'
+  | 'workbench'
   | 'skus'
   | 'partners'
   | 'locations'
@@ -32,6 +33,8 @@ export type BuiltinPage =
   | 'serials'
   | 'pallets'
   | 'stocktakes'
+  | 'transfers'
+  | 'scraps'
   | 'expiry'
   | 'chat'
   | 'agents'

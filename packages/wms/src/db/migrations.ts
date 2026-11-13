@@ -525,6 +525,113 @@ export function migrateWms(db: SqliteDatabase): void {
       CREATE INDEX IF NOT EXISTS idx_wms_wave_order_order
         ON wms_wave_order (workspace_id, order_id);
     `);
+
+    // ── 调拨单（跨仓/跨库位两阶段转移）。state 固定生命周期
+    //    created/inTransit/completed/canceled——M17 盘点先例，不进 Profile workflows。
+    //    库存影响走普通 inventory.adjusted（reason: transfer:{单号}）。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_transfer (
+        id               TEXT NOT NULL PRIMARY KEY,
+        workspace_id     TEXT NOT NULL,
+        transfer_no      TEXT NOT NULL,
+        state            TEXT NOT NULL,
+        from_warehouse_id TEXT,
+        to_warehouse_id  TEXT,
+        note             TEXT,
+        created_at       TEXT NOT NULL,
+        updated_at       TEXT NOT NULL,
+        UNIQUE (workspace_id, transfer_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_transfer_ws ON wms_transfer (workspace_id);
+      CREATE TABLE IF NOT EXISTS wms_transfer_line (
+        id                TEXT NOT NULL PRIMARY KEY,
+        workspace_id      TEXT NOT NULL,
+        transfer_id       TEXT NOT NULL,
+        sku_id            TEXT NOT NULL,
+        from_location_id  TEXT NOT NULL,
+        to_location_id    TEXT NOT NULL,
+        batch_no          TEXT NOT NULL,
+        quantity          REAL NOT NULL,
+        UNIQUE (workspace_id, transfer_id, sku_id, from_location_id, to_location_id, batch_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_transfer_line_tr
+        ON wms_transfer_line (workspace_id, transfer_id);
+    `);
+
+    // ── 报损单（报废/损坏出库的单据化记录）。state 固定生命周期
+    //    created/confirmed/canceled。扣减走普通 inventory.adjusted（reason: scrap:{单号}）。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_scrap (
+        id            TEXT NOT NULL PRIMARY KEY,
+        workspace_id  TEXT NOT NULL,
+        scrap_no      TEXT NOT NULL,
+        state         TEXT NOT NULL,
+        note          TEXT,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        UNIQUE (workspace_id, scrap_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_scrap_ws ON wms_scrap (workspace_id);
+      CREATE TABLE IF NOT EXISTS wms_scrap_line (
+        id            TEXT NOT NULL PRIMARY KEY,
+        workspace_id  TEXT NOT NULL,
+        scrap_id      TEXT NOT NULL,
+        sku_id        TEXT NOT NULL,
+        location_id   TEXT NOT NULL,
+        batch_no      TEXT NOT NULL,
+        quantity      REAL NOT NULL,
+        UNIQUE (workspace_id, scrap_id, sku_id, location_id, batch_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_scrap_line_sc
+        ON wms_scrap_line (workspace_id, scrap_id);
+    `);
+
+    // 外部对接的本机状态，不是投影。
+    // 不用 wms_ 前缀：wms_* 会被投影组清空再重放。密钥和投递记录不进 oplog。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS integration_secret (
+        workspace_id  TEXT NOT NULL,
+        connector_id  TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        value         TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, connector_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS integration_inbox (
+        id            TEXT NOT NULL PRIMARY KEY,
+        workspace_id  TEXT NOT NULL,
+        connector_id  TEXT NOT NULL,
+        route_id      TEXT NOT NULL,
+        external_id   TEXT NOT NULL,
+        status        TEXT NOT NULL,
+        internal_ref  TEXT,
+        error         TEXT,
+        raw_json      TEXT NOT NULL,
+        created_at    TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_inbox_accepted
+        ON integration_inbox (workspace_id, connector_id, route_id, external_id)
+        WHERE status = 'accepted';
+      CREATE INDEX IF NOT EXISTS idx_integration_inbox_recent
+        ON integration_inbox (workspace_id, connector_id, created_at);
+      CREATE TABLE IF NOT EXISTS integration_outbox (
+        id              TEXT NOT NULL PRIMARY KEY,
+        workspace_id    TEXT NOT NULL,
+        connector_id    TEXT NOT NULL,
+        route_id        TEXT NOT NULL,
+        event_id        TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        attempts        INTEGER NOT NULL,
+        next_attempt_at TEXT NOT NULL,
+        last_error      TEXT,
+        body_json       TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        UNIQUE (workspace_id, connector_id, route_id, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_integration_outbox_due
+        ON integration_outbox (workspace_id, status, next_attempt_at);
+    `);
   })();
 }
 

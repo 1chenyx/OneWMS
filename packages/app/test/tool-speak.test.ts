@@ -29,6 +29,17 @@ describe('工具调用人话', () => {
     );
     expect(order.title).toBe('开了出库单 OUT-1');
     expect(order.details).toEqual(['共 1 行']);
+
+    const canceled = speakInvocation(
+      inv({
+        toolId: 'wms.order.cancel',
+        args: { orderNo: 'IN-1' },
+        ok: true,
+        payload: { orderNo: 'IN-1', from: 'created', to: 'canceled' },
+      }),
+    );
+    expect(canceled.title).toBe('取消了单据 IN-1');
+    expect(canceled.title).not.toContain('wms.');
   });
 
   it('失败只留原因，去掉错误类名', () => {

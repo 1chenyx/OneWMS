@@ -28,6 +28,10 @@ export function codesFor(ws: WmsWorkspace, place: NumberPlaceId): string[] {
       return ws.waves.list().map((row) => row.waveNo);
     case 'stocktake':
       return ws.stocktakes.list().map((row) => row.stocktakeNo);
+    case 'transfer':
+      return ws.transfers.list().map((row) => row.transferNo);
+    case 'scrap':
+      return ws.scraps.list().map((row) => row.scrapNo);
     case 'sku':
       return ws.skus.list().map((row) => row.skuCode);
     case 'partner.supplier':

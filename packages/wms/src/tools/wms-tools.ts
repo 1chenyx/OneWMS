@@ -9,6 +9,8 @@ import { createPickingTools } from './picking-tools.js';
 import { createWaveTools } from './wave-tools.js';
 import { createSkuTools } from './sku-tools.js';
 import { createStocktakeTools } from './stocktake-tools.js';
+import { createTransferTools } from './transfer-tools.js';
+import { createScrapTools } from './scrap-tools.js';
 import type { WorkspaceResolver } from './tool-def.js';
 
 /**
@@ -33,6 +35,8 @@ export function createWmsTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     ...createWaveTools(resolveWorkspace),
     ...createInventoryTools(resolveWorkspace),
     ...createStocktakeTools(resolveWorkspace),
+    ...createTransferTools(resolveWorkspace),
+    ...createScrapTools(resolveWorkspace),
     ...createNumberingTools(resolveWorkspace),
   ];
 }

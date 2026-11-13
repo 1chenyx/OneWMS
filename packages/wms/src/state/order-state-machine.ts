@@ -83,8 +83,3 @@ export function assertTransition(
     throw new InvalidTransitionError(direction, from, to, transitionsFrom(transitions, from));
   }
 }
-
-/** 是否终态（终态无任何出边——从转移表推导，不再硬编码状态词汇） */
-export function isTerminalState(transitions: readonly TransitionEdge[], state: string): boolean {
-  return transitionsFrom(transitions, state).length === 0;
-}

@@ -160,7 +160,7 @@ export function wmsManifest(toolDefs: ToolDefinition[]): ModuleManifest {
           numbering: {
             type: 'object',
             description:
-              '各处自动编号的模板。键是位置，值是模板字符串。位置：order.in 入库单、order.out 出库单、order.asn 到货预报、order.return.in 客退、order.return.out 退供、picking 拣货单、wave 波次、stocktake 盘点单、sku 商品、partner.supplier 供应商、partner.customer 客户、location 库位、warehouse 仓库、lpn 托盘。模板由字面量和记号组成，必须有且只有一个序号。记号：{yyyy} 四位年、{yy} 两位年、{MM} 月、{dd} 日、{yyyyMMdd} 年月日、{seq} 或 {seq:4} 补零序号（位数 1 到 8）。写了日就每天从 1 重新计，只写到月就每月重计，只写年就每年重计，都不写就一直累加。没写的位置用内置模板。改这一项走 profile.propose。先用 wms.numbering.preview，op 用返回的 patchOp，path 用返回的 path，value 用返回的 numbering 整对象并只改用户点名的位置。确认后，新建时不填编号才按新规则生成，已经存在的编号不变。',
+              '各处自动编号的模板。键是位置，值是模板字符串。位置：order.in 入库单、order.out 出库单、order.asn 到货预报、order.return.in 客退、order.return.out 退供、picking 拣货单、wave 波次、stocktake 盘点单、transfer 调拨单、scrap 报损单、sku 商品、partner.supplier 供应商、partner.customer 客户、location 库位、warehouse 仓库、lpn 托盘。模板由字面量和记号组成，必须有且只有一个序号。记号：{yyyy} 四位年、{yy} 两位年、{MM} 月、{dd} 日、{yyyyMMdd} 年月日、{seq} 或 {seq:4} 补零序号（位数 1 到 8）。写了日就每天从 1 重新计，只写到月就每月重计，只写年就每年重计，都不写就一直累加。没写的位置用内置模板。改这一项走 profile.propose。先用 wms.numbering.preview，op 用返回的 patchOp，path 用返回的 path，value 用返回的 numbering 整对象并只改用户点名的位置。确认后，新建时不填编号才按新规则生成，已经存在的编号不变。',
             default: {},
           },
         },

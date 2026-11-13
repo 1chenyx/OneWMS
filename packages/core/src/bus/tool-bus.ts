@@ -34,14 +34,6 @@ export interface ToolDefinition<P = unknown> {
   handler: (params: P, ctx: ToolContext) => unknown | Promise<unknown>;
 }
 
-export interface ToolInvocation {
-  toolId: string;
-  params: unknown;
-  result: unknown;
-  actor: string;
-  workspaceId: string;
-}
-
 export class ToolBus {
   #tools = new Map<string, ToolDefinition>();
 

@@ -30,8 +30,14 @@ import {
   listWaves,
   getWave,
   listStocktakes,
+  getTransferDetail,
+  listTransfers,
+  getScrapDetail,
+  listScraps,
   PickingNotFoundError,
   StocktakeNotFoundError,
+  TransferNotFoundError,
+  ScrapNotFoundError,
   WaveNotFoundError,
   withPickingLines,
 } from '@one/wms';
@@ -554,5 +560,50 @@ export function wmsRoutes(ctx: AppContext): Hono {
           resolveActor(ctx, c),
         ),
       ),
+    )
+    // ── 调拨（清单 / 创建 / 明细 / 发货 / 收货 / 取消；写操作走工具总线确认流）──
+    .get('/transfers', (c) => c.json(listTransfers(ctx.ws)))
+    .post('/transfers', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.transfer.create', body, resolveActor(ctx, c)), 201);
+    })
+    .get('/transfers/:no', (c) => {
+      const transferNo = c.req.param('no');
+      const transfer = ctx.ws.transfers.byNo(transferNo);
+      if (!transfer) throw new TransferNotFoundError(transferNo);
+      return c.json(getTransferDetail(ctx.ws, transfer));
+    })
+    .post('/transfers/:no/ship', async (c) =>
+      c.json(
+        await ctx.ws.tools.invoke('wms.transfer.ship', { transferNo: c.req.param('no') }, resolveActor(ctx, c)),
+      ),
+    )
+    .post('/transfers/:no/receive', async (c) =>
+      c.json(
+        await ctx.ws.tools.invoke('wms.transfer.receive', { transferNo: c.req.param('no') }, resolveActor(ctx, c)),
+      ),
+    )
+    .post('/transfers/:no/cancel', async (c) =>
+      c.json(
+        await ctx.ws.tools.invoke('wms.transfer.cancel', { transferNo: c.req.param('no') }, resolveActor(ctx, c)),
+      ),
+    )
+    // ── 报损（清单 / 创建 / 明细 / 确认 / 取消）──
+    .get('/scraps', (c) => c.json(listScraps(ctx.ws)))
+    .post('/scraps', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.scrap.create', body, resolveActor(ctx, c)), 201);
+    })
+    .get('/scraps/:no', (c) => {
+      const scrapNo = c.req.param('no');
+      const scrap = ctx.ws.scraps.byNo(scrapNo);
+      if (!scrap) throw new ScrapNotFoundError(scrapNo);
+      return c.json(getScrapDetail(ctx.ws, scrap));
+    })
+    .post('/scraps/:no/confirm', async (c) =>
+      c.json(await ctx.ws.tools.invoke('wms.scrap.confirm', { scrapNo: c.req.param('no') }, resolveActor(ctx, c))),
+    )
+    .post('/scraps/:no/cancel', async (c) =>
+      c.json(await ctx.ws.tools.invoke('wms.scrap.cancel', { scrapNo: c.req.param('no') }, resolveActor(ctx, c))),
     );
 }

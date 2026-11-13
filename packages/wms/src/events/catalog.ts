@@ -45,6 +45,10 @@ export const WMS_EVENT_TYPES = {
   pickingStateChanged: 'wms.picking.state_changed',
   waveCreated: 'wms.wave.created',
   waveStateChanged: 'wms.wave.state_changed',
+  transferCreated: 'wms.transfer.created',
+  transferStateChanged: 'wms.transfer.state_changed',
+  scrapCreated: 'wms.scrap.created',
+  scrapStateChanged: 'wms.scrap.state_changed',
 } as const;
 
 export type WmsEventType = (typeof WMS_EVENT_TYPES)[keyof typeof WMS_EVENT_TYPES];
@@ -530,4 +534,75 @@ export interface WaveStateChangedPayload {
   readonly from: string;
   readonly to: string;
   readonly pickingNo?: string;
+}
+
+// ── 调拨（transfer）payload ─────────────────────────
+
+/** 调拨单行：一行 = SKU + 源库位 + 目标库位 + 批次 + 数量（源目标可属不同仓库） */
+export interface TransferLinePayload {
+  readonly skuId: string;
+  readonly skuCode: string;
+  readonly fromLocationId: string;
+  readonly fromLocationCode: string;
+  readonly toLocationId: string;
+  readonly toLocationCode: string;
+  readonly batchNo: string;
+  readonly quantity: number;
+}
+
+/**
+ * 调拨单诞生：跨仓/跨库位转移的两阶段单据。
+ * 生命周期固定：created → inTransit（ship，源库位扣减）→ completed
+ * （receive，目标库位加增）；created 阶段可 canceled（不动库存）。
+ * 库存影响不落新事件类型：ship/receive 发的就是普通 inventory.adjusted
+ * （reason: transfer:{单号}），与盘点/拣货共用同一条流水通道。
+ */
+export interface TransferCreatedPayload {
+  readonly transferId: string;
+  readonly transferNo: string;
+  /** 源仓库 id（可选展示；缺省 null = 未分仓） */
+  readonly fromWarehouseId: string | null;
+  /** 目标仓库 id（可选展示；缺省 null = 未分仓） */
+  readonly toWarehouseId: string | null;
+  readonly lines: readonly TransferLinePayload[];
+  readonly note?: string;
+}
+
+export interface TransferStateChangedPayload {
+  readonly transferId: string;
+  readonly transferNo: string;
+  readonly from: string;
+  readonly to: string;
+}
+
+// ── 报损（scrap）payload ────────────────────────────
+
+/** 报损单行：一行 = SKU + 库位 + 批次 + 数量 */
+export interface ScrapLinePayload {
+  readonly skuId: string;
+  readonly skuCode: string;
+  readonly locationId: string;
+  readonly locationCode: string;
+  readonly batchNo: string;
+  readonly quantity: number;
+}
+
+/**
+ * 报损单诞生：报废/损坏出库的单据化记录。
+ * 生命周期固定：created → confirmed（逐行扣减）/ canceled（不动库存）。
+ * 扣减不落新事件类型：confirm 发的就是普通 inventory.adjusted
+ * （reason: scrap:{单号}）。
+ */
+export interface ScrapCreatedPayload {
+  readonly scrapId: string;
+  readonly scrapNo: string;
+  readonly lines: readonly ScrapLinePayload[];
+  readonly note?: string;
+}
+
+export interface ScrapStateChangedPayload {
+  readonly scrapId: string;
+  readonly scrapNo: string;
+  readonly from: string;
+  readonly to: string;
 }

@@ -124,4 +124,10 @@ export type {
   StocktakeCloseResult,
   StocktakeDetail,
   StocktakeLine,
+  Transfer,
+  TransferDetail,
+  TransferDetailLine,
+  Scrap,
+  ScrapDetail,
+  ScrapDetailLine,
 } from './wms-api';

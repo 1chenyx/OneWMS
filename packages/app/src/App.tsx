@@ -11,10 +11,13 @@ import { LoadPage, PackPage, QcPage, ReviewPage } from './pages/StagePage';
 import WavePage from './pages/WavePage';
 import PickingsPage from './pages/PickingsPage';
 import DashboardPage from './pages/DashboardPage';
+import WorkbenchPage from './pages/WorkbenchPage';
 import InventoryPage from './pages/InventoryPage';
 import SerialsPage from './pages/SerialsPage';
 import PalletsPage from './pages/PalletsPage';
 import StocktakePage from './pages/StocktakePage';
+import TransfersPage from './pages/TransfersPage';
+import ScrapsPage from './pages/ScrapsPage';
 import ExpiryPage from './pages/ExpiryPage';
 import ChatPage from './pages/ChatPage';
 import AgentsPage from './pages/AgentsPage';
@@ -29,6 +32,7 @@ import { ChatProvider } from './chat/ChatProvider';
 import { AppNavProvider, useAppNav } from './app-nav';
 import type { BuiltinPage, Page } from './app-nav';
 import ModuleRail from './components/ModuleRail';
+import CommandPalette from './components/CommandPalette';
 import Topbar from './components/Topbar';
 import ChatDock from './components/ChatDock';
 
@@ -42,6 +46,7 @@ import ChatDock from './components/ChatDock';
  */
 const PAGE_COMPONENTS: Record<BuiltinPage, ComponentType> = {
   dashboard: DashboardPage,
+  workbench: WorkbenchPage,
   skus: SkusPage,
   locations: LocationsPage,
   partners: PartnersPage,
@@ -59,6 +64,8 @@ const PAGE_COMPONENTS: Record<BuiltinPage, ComponentType> = {
   serials: SerialsPage,
   pallets: PalletsPage,
   stocktakes: StocktakePage,
+  transfers: TransfersPage,
+  scraps: ScrapsPage,
   expiry: ExpiryPage,
   chat: ChatPage,
   agents: AgentsPage,
@@ -103,6 +110,8 @@ function AppShell() {
     // 高度锁在视口里：列表、详情、对话都在主区里滚，不能把整个窗口撑开。
     <Layout className="app-shell" style={{ height: '100%', overflow: 'hidden', flexDirection: 'row' }}>
       <ModuleRail />
+      {/* Ctrl+K 全局搜索：功能再多也有直达入口，挂在壳级与页面无关 */}
+      <CommandPalette />
       <Layout style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
         <Topbar />
         <Layout.Content

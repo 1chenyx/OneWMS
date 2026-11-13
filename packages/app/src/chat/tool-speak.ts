@@ -22,6 +22,7 @@ const ACTION: Record<string, string> = {
   'wms.sku.resolve': '识别条码',
   'wms.order.create': '开出入库单',
   'wms.order.transition': '推进单据',
+  'wms.order.cancel': '取消出入库单',
   'wms.order.query': '查单据',
   'wms.order.putaway': '确认上架',
   'wms.order.conflict.list': '查看状态冲突',
@@ -239,11 +240,18 @@ function successTitle(
         title: `${dir ? `开了${dir}单` : '开了单据'}${orderNo ? ` ${orderNo}` : ''}`,
         details: lineHint(args),
       };
-    case 'wms.order.transition':
+    case 'wms.order.cancel':
+      return { title: orderNo ? `取消了单据 ${orderNo}` : '取消了单据', details: [] };
+    case 'wms.order.transition': {
+      const to = str(args.to) ?? str(payload?.to) ?? str(payload?.state);
+      if (to === 'canceled' || to === '已取消') {
+        return { title: orderNo ? `取消了单据 ${orderNo}` : '取消了单据', details: [] };
+      }
       return {
-        title: `${orderNo ? `单据 ${orderNo}` : '单据'} 转到了 ${str(args.to) ?? str(payload?.state) ?? '下一步'}`,
+        title: `${orderNo ? `单据 ${orderNo}` : '单据'} 转到了 ${to ?? '下一步'}`,
         details: [],
       };
+    }
     case 'wms.order.query':
       return { title: `查了单据${orderNo ? ` ${orderNo}` : ''}${countSuffix(raw)}`, details: [] };
     case 'wms.order.putaway':

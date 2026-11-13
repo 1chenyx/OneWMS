@@ -14,7 +14,8 @@
 export interface OrderEditTarget {
   readonly direction: 'in' | 'out';
   readonly state: string;
-  readonly expectedAt: string | null;
+  /** 可缺省：前端镜像的 HTTP 契约里这一项是可选的 */
+  readonly expectedAt?: string | null;
 }
 
 export interface OrderEditPolicy {

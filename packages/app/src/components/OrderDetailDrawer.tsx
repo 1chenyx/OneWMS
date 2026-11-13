@@ -4,7 +4,7 @@ import { Alert, App as AntApp, Button, Drawer, Input, InputNumber, Select, Space
 import { ApiError } from '../api/client';
 import type { InventoryBucketRow, Location, Order, OrderLine } from '../api/client';
 import { useInventoryBuckets, useLocations, usePartners, useProfileSnapshot, useReviseOrder, useSkus } from '../api/hooks';
-import { orderEditPolicy } from '../lib/order-edit-policy';
+import { orderEditPolicy } from '@one/wms/order-edit-policy';
 import { fmtQty } from '../lib/format';
 import { PrintPreviewModal } from './print-preview';
 import { OrderPrintSheet, orderPrintTitle } from './print-sheets';
@@ -62,11 +62,16 @@ export default function OrderDetailDrawer({
   onClose,
   stateLabel,
   onPrint,
+  canCancel = false,
+  onCancelOrder,
 }: {
   order: Order | null;
   onClose: () => void;
   stateLabel: (state: string, direction: Order['direction']) => string;
   onPrint: (order: Order) => void;
+  /** 当前流程允许取消时，详情里也给出入口 */
+  canCancel?: boolean;
+  onCancelOrder?: () => void;
 }) {
   const { message } = AntApp.useApp();
   const revise = useReviseOrder();
@@ -159,6 +164,11 @@ export default function OrderDetailDrawer({
             <Button icon={<PrinterOutlined aria-hidden />} onClick={() => setPreviewOpen(true)}>
               打印预览
             </Button>
+            {canCancel && onCancelOrder && !editing ? (
+              <Button danger aria-label={`取消单据 ${order.orderNo}`} onClick={onCancelOrder}>
+                取消
+              </Button>
+            ) : null}
             {editing ? (
               <>
                 <Button onClick={() => setEditing(false)}>取消</Button>

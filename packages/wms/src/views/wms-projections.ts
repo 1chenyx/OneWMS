@@ -8,6 +8,8 @@ import { PickingView } from './picking-view.js';
 import { WaveView } from './wave-view.js';
 import { SkuView } from './sku-view.js';
 import { StocktakeView } from './stocktake-view.js';
+import { TransferView } from './transfer-view.js';
+import { ScrapView } from './scrap-view.js';
 import { WarehouseView } from './warehouse-view.js';
 import { SerialView } from './serial-view.js';
 import { LpnView } from './lpn-view.js';
@@ -59,6 +61,10 @@ export const WMS_PROJECTION_GROUP: ProjectionGroupSpec = {
     { table: 'wms_picking' },
     { table: 'wms_wave_order' },
     { table: 'wms_wave' },
+    { table: 'wms_scrap_line' },
+    { table: 'wms_scrap' },
+    { table: 'wms_transfer_line' },
+    { table: 'wms_transfer' },
   ],
 };
 
@@ -70,6 +76,8 @@ export class WmsProjections {
   readonly orders: OrderView;
   readonly inventory: InventoryView;
   readonly stocktakes: StocktakeView;
+  readonly transfers: TransferView;
+  readonly scraps: ScrapView;
   readonly pickings: PickingView;
   readonly waves: WaveView;
   readonly warehouses: WarehouseView;
@@ -87,6 +95,8 @@ export class WmsProjections {
     this.inventory = new InventoryView(db, workspaceId);
     // 盘点 created 事件从库存投影生成快照，库存必须先于盘点应用。
     this.stocktakes = new StocktakeView(db, workspaceId, this.inventory);
+    this.transfers = new TransferView(db, workspaceId);
+    this.scraps = new ScrapView(db, workspaceId);
     // 拣货行展示联查 SKU（投影层互不依赖——联查走查询层；此处仅事件分发）。
     this.pickings = new PickingView(db, workspaceId);
     this.waves = new WaveView(db, workspaceId);
@@ -105,6 +115,8 @@ export class WmsProjections {
     this.orders.applyEvent(envelope);
     this.inventory.applyEvent(envelope);
     this.stocktakes.applyEvent(envelope);
+    this.transfers.applyEvent(envelope);
+    this.scraps.applyEvent(envelope);
     this.pickings.applyEvent(envelope);
     this.waves.applyEvent(envelope);
   }

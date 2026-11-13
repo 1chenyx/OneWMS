@@ -151,6 +151,31 @@ function dynamicItemsByCategory(
   return buckets;
 }
 
+/**
+ * 浮窗网格里的「槽位」：分组标题或功能块。
+ * 分组来自 NavItem.group（声明式模块页没有这个字段，与内置项混排时不加标题）。
+ */
+type FlyoutSlot = { header: string } | { item: NavItem };
+
+/**
+ * 功能清单 → 分段网格：无分组项排最前，之后按首次出现顺序输出各分组标题。
+ * 只有一个分组时不输出标题（两三个功能再分段反而碎）。
+ */
+function groupFlyoutItems(items: readonly NavItem[]): FlyoutSlot[] {
+  const groups = new Set(items.map((item) => item.group).filter((g): g is string => g !== undefined));
+  const titled = groups.size > 1;
+  const slots: FlyoutSlot[] = [];
+  const emitted = new Set<string>();
+  for (const item of items) {
+    if (titled && item.group !== undefined && !emitted.has(item.group)) {
+      emitted.add(item.group);
+      slots.push({ header: item.group });
+    }
+    slots.push({ item });
+  }
+  return slots;
+}
+
 function ModuleFlyout({
   category,
   items,
@@ -176,11 +201,24 @@ function ModuleFlyout({
           display: 'grid',
           gridTemplateColumns: multi ? '1fr 1fr' : '1fr',
           gap: 8,
+          // 功能块会随模块装卸继续变多（作业已有十余个）。不封顶就是硬裁切：
+          // Popover 超出视口的部分既看不见也滚不到，排在末尾的入口等于不存在。
+          maxHeight: 'calc(100vh - 150px)',
+          overflowY: 'auto',
         }}
       >
-        {items.map((item) => (
-          <ModuleTile key={item.page} item={item} active={item.page === page} onPick={onPick} />
-        ))}
+        {groupFlyoutItems(items).map((slot) =>
+          'header' in slot ? (
+            <div
+              key={`header:${slot.header}`}
+              style={{ gridColumn: '1 / -1', fontSize: 12, color: face.text3, marginTop: 4 }}
+            >
+              {slot.header}
+            </div>
+          ) : (
+            <ModuleTile key={slot.item.page} item={slot.item} active={slot.item.page === page} onPick={onPick} />
+          ),
+        )}
       </div>
     </div>
   );

@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { Card, Input, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
+import { App as AntApp, Button, Card, Input, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useExpiryBoard } from '../api/hooks';
 import { useAppNav } from '../app-nav';
 import PageHeader from '../components/PageHeader';
 import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
+import { downloadXlsx, xlsxName } from '../lib/sheet';
+import { downloadCsv, fileStamp, toCsv } from '../lib/csv';
 import type { ExpiryBatchRow, ExpiryLevel } from '../api/client';
 
 /**
@@ -58,6 +60,7 @@ function DaysLeft({ value }: { value: number | null }) {
 }
 
 export default function ExpiryPage() {
+  const { message } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
   const { data, isLoading } = useExpiryBoard();
   const [level, setLevel] = useState<ExpiryLevel | 'all'>('all');
@@ -78,6 +81,31 @@ export default function ExpiryPage() {
       r.batchNo.toLowerCase().includes(kw)
     );
   });
+
+  // 导出：当前分层/关键词筛选下的全量数据（效期看板本身全量下发，客户端过滤）
+  const doExport = (format: 'csv' | 'xlsx') => {
+    if (visibleRows.length === 0) {
+      message.warning('当前筛选下没有可导出的数据');
+      return;
+    }
+    const headers = ['分层', '编码', '名称', '批次号', '效期', '剩余天数', '余量', '库位数'];
+    const rows = visibleRows.map((r) => [
+      LEVEL_META[r.level].label,
+      r.skuCode,
+      r.name,
+      r.batchNo,
+      r.batchExpiryDate ?? '',
+      r.daysLeft ?? '',
+      r.quantity,
+      r.buckets.length,
+    ]);
+    if (format === 'xlsx') {
+      void downloadXlsx(xlsxName('效期看板'), '效期看板', { headers, rows });
+    } else {
+      downloadCsv(`效期看板-${fileStamp()}.csv`, toCsv(headers, rows));
+    }
+    message.success(`已导出 ${rows.length} 行（当前筛选条件下的全量数据）`);
+  };
 
   const columns: ColumnsType<ExpiryBatchRow> = [
     {
@@ -139,6 +167,8 @@ export default function ExpiryPage() {
               onChange={(e) => setKeyword(e.target.value)}
               style={{ width: 200 }}
             />
+            <Button onClick={() => doExport('csv')}>导出 CSV</Button>
+            <Button onClick={() => doExport('xlsx')}>导出 Excel</Button>
           </>
         }
       />

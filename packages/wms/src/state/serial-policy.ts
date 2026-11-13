@@ -89,16 +89,6 @@ export function appendSerialPlans(ctx: ToolContext, plans: readonly SerialPlan[]
   }
 }
 
-/** 非整数数量直接拒绝。返回件数。 */
-export function assertWholeSerialQty(skuCode: string, quantity: number, count: number): number {
-  const qty = quantizeQty(Math.abs(quantity));
-  const whole = Math.round(qty);
-  if (Math.abs(qty - whole) > QTY_EPS || whole !== count) {
-    throw new SerialCountError(skuCode, quantity, count);
-  }
-  return whole;
-}
-
 export function parseSerials(raw: unknown): string[] {
   if (!Array.isArray(raw) || raw.length === 0) {
     throw new Error('TOOL_REJECTED: serials 不能为空');

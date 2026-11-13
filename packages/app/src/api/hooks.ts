@@ -686,6 +686,106 @@ export function useCancelStocktake() {
   });
 }
 
+// ── 调拨 / 报损 ──────────────────────────────────────
+
+/** 发货 / 收货 / 确认报损会动库存；取消只改单据状态 */
+function useInvalidateMovement() {
+  const qc = useQueryClient();
+  return () => {
+    void qc.invalidateQueries({ queryKey: ['transfers'] });
+    void qc.invalidateQueries({ queryKey: ['scraps'] });
+    void qc.invalidateQueries({ queryKey: ['inventory'] });
+    void qc.invalidateQueries({ queryKey: ['expiry-board'] });
+    void qc.invalidateQueries({ queryKey: ['dashboard'] });
+  };
+}
+
+export function useTransfers() {
+  return useQuery({ queryKey: ['transfers'], queryFn: api.transfers });
+}
+
+/** 托盘清单（标签打印用；module.lpn 开启时才有数据） */
+export function useLpns() {
+  return useQuery({ queryKey: ['lpns'], queryFn: api.lpns });
+}
+
+export function useTransferDetail(no: string | null) {
+  return useQuery({
+    queryKey: ['transfers', no],
+    queryFn: () => api.transferDetail(no!),
+    enabled: no !== null,
+  });
+}
+
+export function useCreateTransfer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createTransfer,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['transfers'] });
+      void qc.invalidateQueries({ queryKey: ['numbering'] });
+    },
+  });
+}
+
+export function useShipTransfer() {
+  const invalidate = useInvalidateMovement();
+  return useMutation({ mutationFn: api.shipTransfer, onSuccess: invalidate });
+}
+
+export function useReceiveTransfer() {
+  const invalidate = useInvalidateMovement();
+  return useMutation({ mutationFn: api.receiveTransfer, onSuccess: invalidate });
+}
+
+export function useCancelTransfer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.cancelTransfer,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['transfers'] });
+    },
+  });
+}
+
+export function useScraps() {
+  return useQuery({ queryKey: ['scraps'], queryFn: api.scraps });
+}
+
+export function useScrapDetail(no: string | null) {
+  return useQuery({
+    queryKey: ['scraps', no],
+    queryFn: () => api.scrapDetail(no!),
+    enabled: no !== null,
+  });
+}
+
+export function useCreateScrap() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createScrap,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['scraps'] });
+      void qc.invalidateQueries({ queryKey: ['numbering'] });
+    },
+  });
+}
+
+export function useConfirmScrap() {
+  const invalidate = useInvalidateMovement();
+  return useMutation({ mutationFn: api.confirmScrap, onSuccess: invalidate });
+}
+
+export function useCancelScrap() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.cancelScrap,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['scraps'] });
+    },
+  });
+}
+
 // ── 慢通道 ───────────────────────────────────────────
 
 /** pending 提议列表（5s 轮询：AI 什么时候提议不可预期，v1 用轮询而非推送） */

@@ -414,6 +414,57 @@ export interface StocktakeCloseResult {
   }[];
 }
 
+/** 调拨单清单行（GET /api/transfers；仓库编码是联查展示，库存按行的库位走） */
+export interface Transfer {
+  id: string;
+  transferNo: string;
+  /** 'created'（新建）/ 'inTransit'（在途）/ 'completed'（已完成）/ 'canceled'（已取消） */
+  state: string;
+  fromWarehouseId: string | null;
+  toWarehouseId: string | null;
+  fromWarehouse: string | null;
+  toWarehouse: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lineCount: number;
+}
+
+export interface TransferDetailLine {
+  skuCode: string;
+  name: string;
+  unit: string | null;
+  fromLocationCode: string;
+  toLocationCode: string;
+  batchNo: string;
+  quantity: number;
+}
+
+export type TransferDetail = Transfer & { lines: TransferDetailLine[] };
+
+/** 报损单清单行（GET /api/scraps） */
+export interface Scrap {
+  id: string;
+  scrapNo: string;
+  /** 'created'（待确认）/ 'confirmed'（已确认）/ 'canceled'（已取消） */
+  state: string;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lineCount: number;
+}
+
+export interface ScrapDetailLine {
+  skuCode: string;
+  name: string;
+  unit: string | null;
+  locationCode: string;
+  batchNo: string;
+  quantity: number;
+}
+
+export type ScrapDetail = Scrap & { lines: ScrapDetailLine[] };
+
 /** 与 server 的 ExpiryLevel 同形（前端镜像 HTTP 契约，不依赖 server 包类型） */
 export type ExpiryLevel = 'expired' | 'critical' | 'warning' | 'safe' | 'unknown';
 
@@ -976,6 +1027,56 @@ export const wmsApi = {
       `/api/stocktakes/${encodeURIComponent(no)}/cancel`,
       { method: 'POST' },
     ),
+  // ── 调拨（清单 / 创建 / 明细 / 发货 / 收货 / 取消；写操作经工具总线）──
+  transfers: () => request<Transfer[]>('/api/transfers'),
+  transferDetail: (no: string) => request<TransferDetail>(`/api/transfers/${encodeURIComponent(no)}`),
+  createTransfer: (body: {
+    lines: { skuCode: string; fromLocationCode?: string; toLocationCode?: string; batchNo?: string; quantity: number }[];
+    fromWarehouseCode?: string;
+    toWarehouseCode?: string;
+    transferNo?: string;
+    note?: string;
+  }) =>
+    request<{ transferId: string; transferNo: string; state: string; lineCount: number }>(
+      '/api/transfers',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  shipTransfer: (no: string) =>
+    request<{ transferNo: string; state: string; shippedLines: number }>(
+      `/api/transfers/${encodeURIComponent(no)}/ship`,
+      { method: 'POST' },
+    ),
+  receiveTransfer: (no: string) =>
+    request<{ transferNo: string; state: string; receivedLines: number }>(
+      `/api/transfers/${encodeURIComponent(no)}/receive`,
+      { method: 'POST' },
+    ),
+  cancelTransfer: (no: string) =>
+    request<{ transferNo: string; state: string }>(
+      `/api/transfers/${encodeURIComponent(no)}/cancel`,
+      { method: 'POST' },
+    ),
+  // ── 报损（清单 / 创建 / 明细 / 确认 / 取消）──
+  scraps: () => request<Scrap[]>('/api/scraps'),
+  scrapDetail: (no: string) => request<ScrapDetail>(`/api/scraps/${encodeURIComponent(no)}`),
+  createScrap: (body: {
+    lines: { skuCode: string; locationCode?: string; batchNo?: string; quantity: number }[];
+    scrapNo?: string;
+    note?: string;
+  }) =>
+    request<{ scrapId: string; scrapNo: string; state: string; lineCount: number }>('/api/scraps', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  confirmScrap: (no: string) =>
+    request<{ scrapNo: string; state: string; scrappedLines: number }>(
+      `/api/scraps/${encodeURIComponent(no)}/confirm`,
+      { method: 'POST' },
+    ),
+  cancelScrap: (no: string) =>
+    request<{ scrapNo: string; state: string }>(`/api/scraps/${encodeURIComponent(no)}/cancel`, {
+      method: 'POST',
+    }),
 };
 
 function writePage(params: URLSearchParams, page?: { limit?: number; offset?: number }): void {

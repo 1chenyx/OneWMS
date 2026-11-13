@@ -7,21 +7,24 @@ import {
   Card,
   Checkbox,
   InputNumber,
+  Radio,
   Select,
   Space,
   Typography,
 } from 'antd';
 import JsBarcode from 'jsbarcode';
-import { useSkus } from '../api/hooks';
-import type { Sku } from '../api/client';
+import QRCode from 'qrcode';
+import { useLocations, useLpns, useSkus } from '../api/hooks';
 import PageHeader from '../components/PageHeader';
 
 /**
- * 条码标签页——把 SKU 档案变成能贴到货架/箱子上的标签。
+ * 条码标签页——把 SKU 档案 / 库位 / 托盘变成能贴到货架、箱子、托盘上的标签。
  *
- * 码值规则（与扫码识别口径一致）：有条码用条码，没有条码退用 SKU 编码——
+ * 码值规则（与扫码识别口径一致）：商品标签有条码用条码，没有条码退用 SKU 编码——
  * 自建仓库大量商品没有厂商条码，编码本身也能扫（扫码枪只是键盘输入）。
- * 码制固定 CODE128：字母数字都能编，市面扫码枪全支持。
+ * 库位标签编 locationCode，托盘(LPN)标签编 lpnCode。
+ * 码制可选：CODE128 条码（字母数字都能编，市面扫码枪全支持）或 QR 二维码
+ * （信息密度高，手机也能扫）。
  *
  * 打印：不用后端也不用生成 PDF——页面里放一张「标签纸」，@media print 只
  * 显示它（其余全部 visibility:hidden），交给浏览器/WebView 的打印对话框，
@@ -35,52 +38,107 @@ const LABEL_PRESETS = [
   { key: '80x45', label: '80 × 45 mm（大号，纸箱/整箱）', width: 80, height: 45 },
 ] as const;
 
-/** 码值：条码优先，编码兜底 */
-const codeValueOf = (sku: Sku) => (sku.barcode?.trim() ? sku.barcode.trim() : sku.skuCode);
+type LabelKind = 'sku' | 'location' | 'lpn';
+type Symbology = 'code128' | 'qr';
+
+/** 打印条目（三种数据源归一）：value 是码值，code 是主文案，title 是辅助文案 */
+interface LabelItem {
+  key: string;
+  value: string;
+  code: string;
+  title: string;
+  unit?: string | null;
+  /** 下拉选项展示用的备注（如「无条码，用编码」） */
+  hint: string;
+}
+
+const KIND_META: Record<LabelKind, { label: string; placeholder: string }> = {
+  sku: { label: '商品标签', placeholder: '选择 SKU（可多选、可搜索）' },
+  location: { label: '库位标签', placeholder: '选择库位（可多选、可搜索）' },
+  lpn: { label: '托盘标签', placeholder: '选择托盘（可多选、可搜索）' },
+};
 
 export default function LabelsPage() {
   const { message } = AntApp.useApp();
-  const { data: skus, isLoading } = useSkus();
+  const { data: skus, isLoading: skusLoading } = useSkus();
+  const { data: locations, isLoading: locationsLoading } = useLocations();
+  const { data: lpns, isLoading: lpnsLoading } = useLpns();
+  const [kind, setKind] = useState<LabelKind>('sku');
+  const [symbology, setSymbology] = useState<Symbology>('code128');
   const [selected, setSelected] = useState<string[]>([]);
   const [presetKey, setPresetKey] = useState<string>(LABEL_PRESETS[1].key);
   const [columns, setColumns] = useState(3);
   const [copies, setCopies] = useState(1);
   const [showName, setShowName] = useState(true);
-  const [showSkuCode, setShowSkuCode] = useState(true);
+  const [showCode, setShowCode] = useState(true);
   const [showValue, setShowValue] = useState(true);
   const [showUnit, setShowUnit] = useState(false);
   const [onlyWithBarcode, setOnlyWithBarcode] = useState(false);
 
   const preset = LABEL_PRESETS.find((p) => p.key === presetKey) ?? LABEL_PRESETS[1];
 
-  const options = useMemo(() => {
+  /** 三种数据源归一成待选条目 */
+  const items = useMemo<LabelItem[]>(() => {
+    if (kind === 'location') {
+      return (locations ?? []).map((l) => ({
+        key: l.locationCode,
+        value: l.locationCode,
+        code: l.locationCode,
+        title: l.name,
+        hint: l.warehouseCode ? `仓库 ${l.warehouseCode}` : '',
+      }));
+    }
+    if (kind === 'lpn') {
+      return (lpns ?? []).map((p) => ({
+        key: p.lpnCode,
+        value: p.lpnCode,
+        code: p.lpnCode,
+        title: `库位 ${p.locationCode}`,
+        hint: `${p.lineCount} 行`,
+      }));
+    }
     const list = onlyWithBarcode ? (skus ?? []).filter((s) => s.barcode) : (skus ?? []);
     return list.map((s) => ({
-      value: s.id,
-      label: `${s.skuCode} · ${s.name}${s.barcode ? `（条码 ${s.barcode}）` : '（无条码，用编码）'}`,
+      key: s.skuCode,
+      value: s.barcode?.trim() ? s.barcode.trim() : s.skuCode,
+      code: s.skuCode,
+      title: s.name,
+      unit: s.unit,
+      hint: s.barcode ? `条码 ${s.barcode}` : '无条码，用编码',
     }));
-  }, [skus, onlyWithBarcode]);
+  }, [kind, skus, locations, lpns, onlyWithBarcode]);
 
-  /** 待打印清单：每个 SKU 按份数重复（重复的标签要连排，方便一张张撕） */
+  // 换标签类型时换一套选择（key 语义不同，留着会打出错标签）
+  useEffect(() => {
+    setSelected([]);
+  }, [kind]);
+
+  const isLoading = kind === 'sku' ? skusLoading : kind === 'location' ? locationsLoading : lpnsLoading;
+  const options = items.map((it) => ({
+    value: it.key,
+    label: it.hint ? `${it.code} · ${it.title}（${it.hint}）` : `${it.code} · ${it.title}`,
+  }));
+
+  /** 待打印清单：每个条目按份数重复（重复的标签要连排，方便一张张撕） */
   const sheet = useMemo(() => {
-    const byId = new Map((skus ?? []).map((s) => [s.id, s] as const));
-    const out: { key: string; sku: Sku; value: string }[] = [];
+    const byKey = new Map(items.map((it) => [it.key, it] as const));
+    const out: LabelItem[] = [];
     const n = Math.min(Math.max(copies, 1), 999);
-    for (const id of selected) {
-      const sku = byId.get(id);
-      if (!sku) continue;
+    for (const key of selected) {
+      const item = byKey.get(key);
+      if (!item) continue;
       for (let i = 0; i < n; i += 1) {
-        out.push({ key: `${sku.id}#${i}`, sku, value: codeValueOf(sku) });
+        out.push({ ...item, key: `${key}#${i}` });
       }
     }
     return out;
-  }, [selected, skus, copies]);
+  }, [selected, items, copies]);
 
-  const selectAllFiltered = () => setSelected((skus ?? []).filter((s) => !onlyWithBarcode || s.barcode).map((s) => s.id));
+  const selectAllFiltered = () => setSelected(items.map((it) => it.key));
 
   const doPrint = () => {
     if (sheet.length === 0) {
-      message.warning('先选要打印的 SKU');
+      message.warning('先选要打印的条目');
       return;
     }
     // 让浏览器绘制完最后一帧再拉起打印对话框，否则可能打出空白页
@@ -91,7 +149,7 @@ export default function LabelsPage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
       <PageHeader
         title="条码标签"
-        subtitle="选 SKU → 挑标签纸规格 → 打印。有条码打条码，没条码打 SKU 编码（都能扫）"
+        subtitle="选标签类型与条目 → 挑标签纸规格 → 打印。商品有条码打条码，没条码打 SKU 编码（都能扫）"
         extra={
           <Button type="primary" icon={<PrinterOutlined />} disabled={sheet.length === 0} onClick={doPrint}>
             打印 {sheet.length > 0 ? `${sheet.length} 张` : ''}
@@ -101,12 +159,41 @@ export default function LabelsPage() {
 
       <Card title={<><TagsOutlined /> 选择与版式</>}>
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Space wrap size={16}>
+            <Space size={6}>
+              <Typography.Text type="secondary">标签类型</Typography.Text>
+              <Radio.Group
+                optionType="button"
+                buttonStyle="solid"
+                value={kind}
+                onChange={(e) => setKind(e.target.value as LabelKind)}
+                options={[
+                  { value: 'sku', label: KIND_META.sku.label },
+                  { value: 'location', label: KIND_META.location.label },
+                  { value: 'lpn', label: KIND_META.lpn.label },
+                ]}
+              />
+            </Space>
+            <Space size={6}>
+              <Typography.Text type="secondary">码制</Typography.Text>
+              <Radio.Group
+                optionType="button"
+                value={symbology}
+                onChange={(e) => setSymbology(e.target.value as Symbology)}
+                options={[
+                  { value: 'code128', label: '条码 CODE128' },
+                  { value: 'qr', label: '二维码 QR' },
+                ]}
+              />
+            </Space>
+          </Space>
+
           <Space wrap size={8}>
             <Select
               mode="multiple"
               showSearch
               optionFilterProp="label"
-              placeholder="选择 SKU（可多选、可搜索）"
+              placeholder={KIND_META[kind].placeholder}
               style={{ minWidth: 420, maxWidth: '100%' }}
               value={selected}
               onChange={setSelected}
@@ -116,9 +203,11 @@ export default function LabelsPage() {
               allowClear
             />
             <Button size="small" onClick={selectAllFiltered}>全选当前列表</Button>
-            <Checkbox checked={onlyWithBarcode} onChange={(e) => setOnlyWithBarcode(e.target.checked)}>
-              只看有条码的
-            </Checkbox>
+            {kind === 'sku' ? (
+              <Checkbox checked={onlyWithBarcode} onChange={(e) => setOnlyWithBarcode(e.target.checked)}>
+                只看有条码的
+              </Checkbox>
+            ) : null}
           </Space>
 
           <Space wrap size={16}>
@@ -137,7 +226,7 @@ export default function LabelsPage() {
               <Typography.Text type="secondary">张</Typography.Text>
             </Space>
             <Space size={6}>
-              <Typography.Text type="secondary">每个 SKU</Typography.Text>
+              <Typography.Text type="secondary">每个条目</Typography.Text>
               <InputNumber min={1} max={999} precision={0} value={copies} onChange={(v) => setCopies(v ?? 1)} style={{ width: 80 }} />
               <Typography.Text type="secondary">份</Typography.Text>
             </Space>
@@ -145,10 +234,18 @@ export default function LabelsPage() {
 
           <Space wrap size={16}>
             <Typography.Text type="secondary">标签上印什么：</Typography.Text>
-            <Checkbox checked={showValue} onChange={(e) => setShowValue(e.target.checked)}>条码数字</Checkbox>
-            <Checkbox checked={showSkuCode} onChange={(e) => setShowSkuCode(e.target.checked)}>SKU 编码</Checkbox>
-            <Checkbox checked={showName} onChange={(e) => setShowName(e.target.checked)}>商品名称</Checkbox>
-            <Checkbox checked={showUnit} onChange={(e) => setShowUnit(e.target.checked)}>单位（有设置的才印）</Checkbox>
+            <Checkbox checked={showValue} onChange={(e) => setShowValue(e.target.checked)}>
+              {symbology === 'qr' ? '码值文本' : '条码数字'}
+            </Checkbox>
+            <Checkbox checked={showCode} onChange={(e) => setShowCode(e.target.checked)}>
+              {kind === 'sku' ? 'SKU 编码' : kind === 'location' ? '库位编码' : '托盘号'}
+            </Checkbox>
+            <Checkbox checked={showName} onChange={(e) => setShowName(e.target.checked)}>
+              {kind === 'sku' ? '商品名称' : '名称/说明'}
+            </Checkbox>
+            {kind === 'sku' ? (
+              <Checkbox checked={showUnit} onChange={(e) => setShowUnit(e.target.checked)}>单位（有设置的才印）</Checkbox>
+            ) : null}
           </Space>
 
           <Alert
@@ -168,7 +265,7 @@ export default function LabelsPage() {
 
       <Card title={`预览（${sheet.length} 张 · ${preset.width}×${preset.height} mm）`}>
         {sheet.length === 0 ? (
-          <Typography.Text type="secondary">还没有选 SKU——上面选完这里就出预览</Typography.Text>
+          <Typography.Text type="secondary">还没有选条目——上面选完这里就出预览</Typography.Text>
         ) : (
           <div id="label-print-area">
             <div
@@ -181,14 +278,14 @@ export default function LabelsPage() {
               {sheet.map((item) => (
                 <Label
                   key={item.key}
-                  value={item.value}
-                  sku={item.sku}
+                  item={item}
+                  symbology={symbology}
                   widthMm={preset.width}
                   heightMm={preset.height}
                   showName={showName}
-                  showSkuCode={showSkuCode}
+                  showCode={showCode}
                   showValue={showValue}
-                  showUnit={showUnit}
+                  showUnit={kind === 'sku' && showUnit}
                 />
               ))}
             </div>
@@ -211,39 +308,41 @@ export default function LabelsPage() {
 }
 
 /**
- * 单张标签：固定 mm 尺寸（打印 1:1），条码用 SVG 矢量渲染——位图放大会糊，
- * 矢量不会。JsBarcode 对编不了的字符会抛异常，这里兜住并显式报错，
- * 而不是打出一排空白标签让人白贴。
+ * 单张标签：固定 mm 尺寸（打印 1:1）。CODE128 用 SVG 矢量渲染——位图放大会糊，
+ * 矢量不会；QR 由 qrcode 生成 dataURL 以 img 嵌入。JsBarcode 对编不了的字符会抛
+ * 异常，这里兜住并显式报错，而不是打出一排空白标签让人白贴。
  */
 function Label({
-  value,
-  sku,
+  item,
+  symbology,
   widthMm,
   heightMm,
   showName,
-  showSkuCode,
+  showCode,
   showValue,
   showUnit,
 }: {
-  value: string;
-  sku: Sku;
+  item: LabelItem;
+  symbology: Symbology;
   widthMm: number;
   heightMm: number;
   showName: boolean;
-  showSkuCode: boolean;
+  showCode: boolean;
   showValue: boolean;
   showUnit: boolean;
 }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (symbology !== 'code128') return;
     const svg = svgRef.current;
     if (!svg) return;
     try {
       // 清空上一次渲染的节点（同一元素重复调用会叠加）
       while (svg.firstChild) svg.removeChild(svg.firstChild);
-      JsBarcode(svg, value, {
+      JsBarcode(svg, item.value, {
         format: 'CODE128',
         displayValue: showValue,
         width: 1.4,
@@ -257,7 +356,25 @@ function Label({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [value, showValue, heightMm]);
+  }, [symbology, item.value, showValue, heightMm]);
+
+  useEffect(() => {
+    if (symbology !== 'qr') return;
+    let alive = true;
+    QRCode.toDataURL(item.value, { margin: 0, width: 240, errorCorrectionLevel: 'M' })
+      .then((url) => {
+        if (alive) {
+          setQrUrl(url);
+          setError(null);
+        }
+      })
+      .catch((e: unknown) => {
+        if (alive) setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [symbology, item.value]);
 
   return (
     <div
@@ -280,19 +397,26 @@ function Label({
     >
       {error ? (
         <Typography.Text type="danger" style={{ fontSize: 10 }}>
-          条码生成失败：{error}
+          码生成失败：{error}
         </Typography.Text>
       ) : null}
-      {/* svg 必须常驻：出错时若卸载它，ref 变 null，effect 早退就再也恢复不了 */}
-      <svg
-        ref={svgRef}
-        style={{ maxWidth: '100%', height: 'auto', display: error ? 'none' : undefined }}
-      />
-      {showSkuCode ? (
-        <div style={{ fontSize: 9, fontFamily: 'monospace', lineHeight: 1.2 }}>{sku.skuCode}</div>
+      {symbology === 'code128' ? (
+        // svg 必须常驻：出错时若卸载它，ref 变 null，effect 早退就再也恢复不了
+        <svg
+          ref={svgRef}
+          style={{ maxWidth: '100%', height: 'auto', display: error ? 'none' : undefined }}
+        />
+      ) : qrUrl ? (
+        <img src={qrUrl} alt={item.value} style={{ maxWidth: '100%', maxHeight: `${heightMm * 0.7}mm`, height: 'auto' }} />
       ) : null}
-      {showUnit && sku.unit ? (
-        <div style={{ fontSize: 9, lineHeight: 1.2 }}>单位：{sku.unit}</div>
+      {showValue && symbology === 'qr' ? (
+        <div style={{ fontSize: 9, fontFamily: 'monospace', lineHeight: 1.2 }}>{item.value}</div>
+      ) : null}
+      {showCode ? (
+        <div style={{ fontSize: 9, fontFamily: 'monospace', lineHeight: 1.2 }}>{item.code}</div>
+      ) : null}
+      {showUnit && item.unit ? (
+        <div style={{ fontSize: 9, lineHeight: 1.2 }}>单位：{item.unit}</div>
       ) : null}
       {showName ? (
         <div
@@ -305,7 +429,7 @@ function Label({
             whiteSpace: 'nowrap',
           }}
         >
-          {sku.name}
+          {item.title}
         </div>
       ) : null}
     </div>

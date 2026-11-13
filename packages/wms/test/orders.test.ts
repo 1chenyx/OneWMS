@@ -225,6 +225,36 @@ describe('单据：状态机', () => {
     expect(open).toHaveLength(1);
     expect(open[0]).toMatchObject({ orderNo: no, fromState: 'created', toState: 'canceled', actualState: 'received' });
   });
+
+  it('wms.order.cancel：已创建的单改为已取消，库存不动；不存在的单拒绝', async () => {
+    const no = await createIn();
+    const sku = ws.skus.byCode('A-1')!;
+    const r = (await ws.tools.invoke('wms.order.cancel', { orderNo: no })) as { from: string; to: string };
+    expect(r).toMatchObject({ orderNo: no, from: 'created', to: 'canceled' });
+    expect(ws.orders.byNo(no)!.state).toBe('canceled');
+    expect(ws.inventory.quantityOf(sku.id)).toBe(0);
+    await expect(ws.tools.invoke('wms.order.cancel', { orderNo: 'GHOST' })).rejects.toThrow(OrderNotFoundError);
+  });
+
+  it('wms.order.cancel：已收货按冲销扣回；已完成拒绝且库存不变', async () => {
+    const no = await createIn();
+    const sku = ws.skus.byCode('A-1')!;
+    await ws.tools.invoke('wms.order.transition', { orderNo: no, to: 'received' });
+    expect(ws.inventory.quantityOf(sku.id)).toBe(10);
+    await ws.tools.invoke('wms.order.cancel', { orderNo: no });
+    expect(ws.orders.byNo(no)!.state).toBe('canceled');
+    expect(ws.inventory.quantityOf(sku.id)).toBe(0);
+
+    const done = await createIn();
+    await ws.tools.invoke('wms.order.transition', { orderNo: done, to: 'received' });
+    await ws.tools.invoke('wms.order.putaway', { orderNo: done });
+    await ws.tools.invoke('wms.order.transition', { orderNo: done, to: 'done' });
+    const before = ws.events.count();
+    await expect(ws.tools.invoke('wms.order.cancel', { orderNo: done })).rejects.toThrow(InvalidTransitionError);
+    expect(ws.events.count()).toBe(before);
+    expect(ws.orders.byNo(done)!.state).toBe('done');
+    expect(ws.inventory.quantityOf(sku.id)).toBe(10);
+  });
 });
 
 /** 让相邻事件的 updated_at 落在不同毫秒 */

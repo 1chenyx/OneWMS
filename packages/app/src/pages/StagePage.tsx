@@ -28,7 +28,8 @@ export default function StagePage({
   offMessage: string;
   moduleId: string;
   direction: 'in' | 'out';
-  fromStates: readonly string[];
+  /** 根据模块开关计算本步骤的入口状态：只显示真正流到这一步的单 */
+  fromStates: (modules: Record<string, { enabled?: boolean } | undefined>) => readonly string[];
   to: string;
   action: string;
 }) {
@@ -41,15 +42,17 @@ export default function StagePage({
   const transition = useTransitionOrder();
   const keyword = orderNoFilter.trim().toLowerCase();
 
+  const modules = snapshot.data?.modules ?? {};
+  const states = fromStates(modules);
   const waiting = useMemo(
     () =>
       (Array.isArray(orders) ? orders : []).filter(
         (order) =>
           order.direction === direction &&
-          fromStates.includes(order.state) &&
+          states.includes(order.state) &&
           (keyword ? order.orderNo.toLowerCase().includes(keyword) : true),
       ),
-    [orders, direction, fromStates, keyword],
+    [orders, direction, states, keyword],
   );
 
   const confirm = async (orderNo: string) => {
@@ -149,10 +152,29 @@ export default function StagePage({
   );
 }
 
-const RECEIVED = ['received'] as const;
-const REVIEW_FROM = ['picked', 'waved', 'created'] as const;
-const PACK_FROM = ['reviewed', 'picked', 'waved', 'created'] as const;
-const LOAD_FROM = ['packed', 'reviewed', 'picked', 'waved', 'created'] as const;
+type Modules = Record<string, { enabled?: boolean } | undefined>;
+
+const moduleOn = (modules: Modules, id: string): boolean => modules[id]?.enabled === true;
+
+const RECEIVED = () => ['received'] as const;
+/** 复核入口：拣货开着等拣完，否则波次，再否则刚创建的单直接复核 */
+const REVIEW_FROM = (m: Modules) =>
+  moduleOn(m, 'module.picking') ? ['picked']
+  : moduleOn(m, 'module.wave') ? ['waved']
+  : ['created'];
+/** 打包入口：复核开着等复核完，否则拣货，再否则波次/创建 */
+const PACK_FROM = (m: Modules) =>
+  moduleOn(m, 'module.review') ? ['reviewed']
+  : moduleOn(m, 'module.picking') ? ['picked']
+  : moduleOn(m, 'module.wave') ? ['waved']
+  : ['created'];
+/** 装车入口：打包开着等打包完，否则复核/拣货，再否则波次/创建 */
+const LOAD_FROM = (m: Modules) =>
+  moduleOn(m, 'module.pack') ? ['packed']
+  : moduleOn(m, 'module.review') ? ['reviewed']
+  : moduleOn(m, 'module.picking') ? ['picked']
+  : moduleOn(m, 'module.wave') ? ['waved']
+  : ['created'];
 
 export function QcPage() {
   return (

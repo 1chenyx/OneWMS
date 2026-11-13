@@ -27,7 +27,8 @@ import OrderCreatePage from './OrderCreatePage';
  * 质检、上架打开时，已收货不能在这里跳过，到质检页和上架页做。
  * 波次、拣货、打包、装车打开时，出库单按这个顺序做，发货仍回到这张单。
  * P1 表格规范：单号等宽列；明细在详情里看，主表只留主干；流转按钮收进
- * Dropdown（点选目标态 → modal.confirm 二次确认——出入库动库存，不裸点）；
+ * Dropdown（点选目标态 → modal.confirm 二次确认——出入库动库存，不裸点）。
+ * 通向已取消的边不进流转菜单，单独放「取消」：开错的单停在已取消，单号保留。
  * 清单按页向服务端要，单号过滤走 q。点单号或「详情」打开抽屉。
  * 详情只看单据。右上角「打印预览」再看纸样。勾选当前页可以一次打出多页，不经过预览。
  * 「新建单据」离开清单，打开整页开单。入库页和出库页各开各的，方向在进页时已经定了。
@@ -85,6 +86,17 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : `操作失败：${String(e)}`);
     }
+  };
+
+  const askCancel = (order: Order) => {
+    modal.confirm({
+      title: `取消单据 ${order.orderNo}？`,
+      okText: '确认取消',
+      cancelText: '留下',
+      okButtonProps: { danger: true },
+      content: cancelExplain(snapshot.data, order),
+      onOk: () => doTransition(order.orderNo, 'canceled'),
+    });
   };
 
   const askTransition = (order: Order, to: string) => {
@@ -254,7 +266,7 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
     {
       title: '流转',
       key: 'actions',
-      width: 220,
+      width: 260,
       render: (_, r) => {
         const nexts = nextStates(snapshot.data, r.direction, r.state);
         const moduleOn = (id: string) => snapshot.data?.modules[id]?.enabled === true;
@@ -281,7 +293,8 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
         const shipState = snapshot.data
           ? settingState(snapshot.data, 'outboundDecreaseState', 'shipped')
           : 'shipped';
-        let flowNexts = nexts.filter((to) => !['putaway', 'inspected', 'waved', 'reviewed', 'packed', 'loaded'].includes(to));
+        const canCancel = nexts.includes('canceled');
+        let flowNexts = nexts.filter((to) => !['putaway', 'inspected', 'waved', 'reviewed', 'packed', 'loaded', 'canceled'].includes(to));
         if (canQc || (putawayOn && (r.state === 'received' || r.state === 'inspected'))) {
           flowNexts = flowNexts.filter((to) => to !== 'done');
         }
@@ -299,7 +312,8 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
           !canOpenWave &&
           !canReview &&
           !canPack &&
-          !canLoad
+          !canLoad &&
+          !canCancel
         ) {
           return <Typography.Text type="secondary">—</Typography.Text>;
         }
@@ -388,6 +402,19 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
               <Tooltip title="到装车页确认。开启装车后，不能直接发货。">
                 <Button size="small" type="primary" ghost style={{ marginRight: 8 }} onClick={() => navigate('load', { orderNo: r.orderNo })}>
                   去装车
+                </Button>
+              </Tooltip>
+            ) : null}
+            {canCancel ? (
+              <Tooltip title="开错了就取消。单据留在列表里，状态改为已取消，单号不回收。">
+                <Button
+                  size="small"
+                  danger
+                  aria-label={`取消单据 ${r.orderNo}`}
+                  style={{ marginRight: 8 }}
+                  onClick={() => askCancel(r)}
+                >
+                  取消
                 </Button>
               </Tooltip>
             ) : null}
@@ -522,6 +549,8 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
         }}
         stateLabel={(state, direction) => stateLabel(snapshot.data, state, direction)}
         onPrint={(order) => session.printNow([order])}
+        canCancel={detailOrder ? nextStates(snapshot.data, detailOrder.direction, detailOrder.state).includes('canceled') : false}
+        onCancelOrder={detailOrder ? () => askCancel(detailOrder) : undefined}
       />
       <PrintRoot
         id="order-print-area"
@@ -549,6 +578,18 @@ function stateLabel(snapshot: ProfileSnapshot | undefined, state: string, direct
     if (hit) return hit.label;
   }
   return state;
+}
+
+/** 取消后单据留在列表里。已入账的边按效应说明会不会回冲。 */
+function cancelExplain(snapshot: ProfileSnapshot | undefined, order: Order): string {
+  const wf = snapshot?.workflows[WORKFLOW_BY_DIRECTION[order.direction]];
+  const edge = wf?.transitions.find(
+    (t) => t.from === order.state && t.to === 'canceled' && evalWhenCondition(t.when, snapshot?.modules ?? {}),
+  );
+  const keep = '单据会留在列表里，状态改为已取消，单号不回收。';
+  if (edge?.effect === 'decrease') return `${keep}已经入账的数量会从库存扣回。`;
+  if (edge?.effect === 'increase') return `${keep}已经出库的数量会加回库存。`;
+  return `${keep}库存不会变动。`;
 }
 
 /** 这次转移可以改实收/实发：模块开着，且这条边是入库加账或出库减账，不是冲销 */

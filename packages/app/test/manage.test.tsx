@@ -78,10 +78,12 @@ const snapshotFixture = {
         { id: 'created', label: '已创建' },
         { id: 'received', label: '已收货' },
         { id: 'done', label: '已完成' },
+        { id: 'canceled', label: '已取消' },
       ],
       transitions: [
         { from: 'created', to: 'received' },
         { from: 'received', to: 'done' },
+        { from: 'created', to: 'canceled' },
       ],
     },
     outbound: {
@@ -93,6 +95,8 @@ const snapshotFixture = {
       transitions: [
         { from: 'created', to: 'picking' },
         { from: 'picking', to: 'done' },
+        { from: 'created', to: 'canceled' },
+        { from: 'picking', to: 'canceled' },
       ],
     },
   },
@@ -434,6 +438,39 @@ describe('OrdersPage：workflows 驱动流转', () => {
     await user.click(screen.getByRole('button', { name: /流转/ })); // 打开 Dropdown 菜单
     expect(await screen.findByRole('menuitem', { name: '已收货' })).toBeInTheDocument(); // created → received
     expect(screen.queryByRole('menuitem', { name: '拣货中' })).not.toBeInTheDocument(); // 入库单无此路径
+    expect(screen.queryByRole('menuitem', { name: '已取消' })).not.toBeInTheDocument(); // 取消单独成按钮
+  });
+
+  it('取消单据：列表确认后走到 canceled，流转菜单里没有已取消', async () => {
+    transitionMock.mockResolvedValueOnce({ orderNo: 'IN-20261030-1', from: 'created', to: 'canceled' });
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage direction="in" />));
+
+    await user.click(screen.getByRole('button', { name: /流转/ }));
+    expect(await screen.findByRole('menuitem', { name: '已收货' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: '已取消' })).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    await user.click(screen.getByRole('button', { name: '取消单据 IN-20261030-1' }));
+    expect(await screen.findByText(/库存不会变动/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认取消' }));
+    await waitFor(() =>
+      expect(transitionMock).toHaveBeenCalledWith({ orderNo: 'IN-20261030-1', to: 'canceled' }),
+    );
+  });
+
+  it('取消单据：详情里也能取消', async () => {
+    transitionMock.mockResolvedValueOnce({ orderNo: 'IN-20261030-1', from: 'created', to: 'canceled' });
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage direction="in" />));
+
+    await user.click(screen.getByRole('button', { name: '详情' }));
+    const detail = await screen.findByRole('dialog', { name: /详情/ });
+    await user.click(within(detail).getByRole('button', { name: '取消单据 IN-20261030-1' }));
+    await user.click(await screen.findByRole('button', { name: '确认取消' }));
+    await waitFor(() =>
+      expect(transitionMock).toHaveBeenCalledWith({ orderNo: 'IN-20261030-1', to: 'canceled' }),
+    );
   });
 
   it('明细在详情里：点详情看到 SKU、名称和数量', async () => {

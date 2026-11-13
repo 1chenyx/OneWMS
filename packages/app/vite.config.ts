@@ -17,6 +17,14 @@ export default defineConfig({
         replacement: fileURLToPath(new URL('../wms/src/numbering/pattern.ts', import.meta.url)),
       },
       {
+        find: '@one/wms/order-edit-policy',
+        replacement: fileURLToPath(new URL('../wms/src/state/order-edit-policy.ts', import.meta.url)),
+      },
+      {
+        find: '@one/wms/page',
+        replacement: fileURLToPath(new URL('../wms/src/queries/page.ts', import.meta.url)),
+      },
+      {
         find: '@one/core/when',
         replacement: fileURLToPath(new URL('../core/src/profile/when.ts', import.meta.url)),
       },

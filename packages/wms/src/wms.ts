@@ -47,7 +47,11 @@ import { createSerialTools } from './tools/serial-tools.js';
 import { SerialView } from './views/serial-view.js';
 import { lpnManifest } from './lpn-manifest.js';
 import { createLpnTools } from './tools/lpn-tools.js';
+import { createTransferTools } from './tools/transfer-tools.js';
+import { createScrapTools } from './tools/scrap-tools.js';
 import { LpnView } from './views/lpn-view.js';
+import { TransferView } from './views/transfer-view.js';
+import { ScrapView } from './views/scrap-view.js';
 
 /**
  * WmsDomain —— 领域装配器：把仓储领域「挂载」到一个内核实例上。
@@ -93,6 +97,8 @@ export class WmsDomain {
     const warehouseToolDefs = createWarehouseTools((id) => this.workspace(id));
     const serialToolDefs = createSerialTools((id) => this.workspace(id));
     const lpnToolDefs = createLpnTools((id) => this.workspace(id));
+    const transferToolDefs = createTransferTools((id) => this.workspace(id));
+    const scrapToolDefs = createScrapTools((id) => this.workspace(id));
     for (const tool of [
       ...toolDefs,
       ...putawayToolDefs,
@@ -100,6 +106,8 @@ export class WmsDomain {
       ...warehouseToolDefs,
       ...serialToolDefs,
       ...lpnToolDefs,
+      ...transferToolDefs,
+      ...scrapToolDefs,
     ]) {
       bus.register(tool);
     }
@@ -204,6 +212,8 @@ export class WmsWorkspace {
   readonly orders: OrderView;
   readonly inventory: InventoryView;
   readonly stocktakes: StocktakeView;
+  readonly transfers: TransferView;
+  readonly scraps: ScrapView;
   readonly pickings: PickingView;
   readonly waves: WaveView;
   readonly warehouses: WarehouseView;
@@ -286,6 +296,8 @@ export class WmsWorkspace {
     this.orders = this.#projections.orders;
     this.inventory = this.#projections.inventory;
     this.stocktakes = this.#projections.stocktakes;
+    this.transfers = this.#projections.transfers;
+    this.scraps = this.#projections.scraps;
     this.pickings = this.#projections.pickings;
     this.waves = this.#projections.waves;
     this.warehouses = this.#projections.warehouses;

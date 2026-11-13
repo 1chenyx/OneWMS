@@ -846,7 +846,6 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 │  pages/PickingsPage.tsx    拣货单（M21：清单 + 展开行  │
 │                            内实拣录入 + 关单/取消）     │
 ├─ 组件层 ──────────────────────────────────────────────┤
-│  components/ImpactReportView.tsx   影响报告渲染        │
 │  components/ToolInvocationCard.tsx 工具调用过程展示    │
 │                        （流式回填 + 结果表格 + 后置    │
 │                         动作跳转按钮）                  │
@@ -896,8 +895,7 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 | `pages/ChatPage.tsx` | 对话面板（M12）：消息流渲染、发送（isStreaming 串行）、工具卡 + AskCard + 后置动作按钮（onAnswer/onNavigate 注入）；M16：输入区下方 Segmented 助手切换器（选项来自 GET /api/agents，流式中锁定）+「管理助手」入口；**顶部待确认提议面板**（useProposals 5s 轮询 + 对话内 profile.propose 成功即刷）——慢通道拍板收敛在本页，展开 ProposalDetail 直接确认/拒绝（配置确认页已并入） | 不管理会话状态与 SSE 消费（ChatProvider 的事）、不做助手定义管理（AgentsPage 的事） |
 | `pages/AgentsPage.tsx` | 助手管理页（M16，「配置 AI」的界面）：整页左右。左侧助手清单，右侧是当前助手的详情（id/名称/职责；人设和模型在弹出层；已载入助手的 id 不可改）。详情里按业务显示现状（不开放 / 只能查询 / 可以修改 / 单独调整；配置类是只能查看 / 可以提议）。点开一块，用大按钮定整档；需要时再逐项调整，再回到业务一览。具体工具在感叹号上，悬停才出现。新建/删除改本地草稿，删除要确认。保存把整份清单 POST /api/agents/propose，本页弹出「确认助手改动」（AgentApplyConfirm，和对话页的 ProposalDetail 不是同一个窗口）：确认才写入，放弃则保持原配置。清单清空后保存会恢复内置三件套 | 不使用对话页的配置确认窗、不直接写 Profile（经 server 慢通道端点，确认也走 proposals confirm） |
 | `pages/AiConfigPage.tsx` | AI 模型配置页（M17，接入层面板）：状态卡（GET 真相面——configured/source/脱敏配置）+ 配置表单（接入方式 Radio / 模型名 / Base URL 按条件必填 / 密钥 Input.Password；速填预设 OpenAI/DeepSeek/本地 Ollama）+ 测试连接（POST /test 结果内联渲染：成功耗时/失败原文）/ 保存并生效（PUT）/ 关闭 AI（DELETE，Popconfirm 二次确认）。密钥编辑约定：已保存密钥不回显，留空且接入方式与 Base URL 未变 = 服务端沿用 | 不做配置校验与持久化（server 的事——页面是触发器 + 状态显示器）、不缓存密钥明文（GET 不回传，表单不留存） |
-| `components/ImpactReportView.tsx` | 影响报告渲染：summary 统计 + items 按 severity 分色（warning 黄 / info 蓝）+ 中文 description 直出 | 不做裁决（人确认） |
-| `components/ProposalDetail.tsx` | note/patch 摘要 + ImpactReportView + 确认/拒绝按钮（409/422 按 code 提示） | 不直接调 ProfileService（只走 HTTP） |
+| `components/ProposalDetail.tsx` | note/patch 摘要 + 确认/拒绝按钮（409/422 按 code 提示） | 不直接调 ProfileService（只走 HTTP） |
 | `components/ToolInvocationCard.tsx` | 工具调用过程卡（M12）：流式落卡/回填终态、参数与结果摘要、ui.ask 分流（AskCard / 问答回显）、成功工具的后置动作按钮（如「去库存页查看」「去效期看板」（M15）；profile.propose 不出——确认收敛在 ChatPage 待确认面板） | 不执行工具、不直接跳页（onNavigate 回调注入） |
 | `components/ToolResultView.tsx` | 查询结果按 toolId + payload 形态渲染表格（inventory.query 三形态 / expiring / location.list，超 50 行截断），其余 JSON 兜底 | 不做数据拉取（渲染传入的 payload 快照） |
 | `components/AskCard.tsx` | ui.ask 挂起态的回答输入（提交/跳过，提交后锁定） | 不提交请求（onAnswer 回调注入） |
@@ -932,6 +930,6 @@ WmsWorkspace 构造期的 `#seedDefaultProfile()` 已被 `modules.install(WMS_MA
 
 ## 测试策略（app）——jsdom + @testing-library/react
 
-- **组件级**：ImpactReportView（severity 分色、items 直出）、ProposalDetail（确认按钮 → mock client 成功/409 两分支）、ToolInvocationCard（过程三态、查询结果三形态表格、ui.ask 挂起/回填、后置动作按钮——失败/执行中/无 onNavigate 不出按钮；profile.propose 成功不出按钮——确认收敛对话页面板）、SkuFormModal（type→控件映射、json 校验）、ScanInput（M18——空回车不触发、trim 规整、扫后清空续扫）。
+- **组件级**：ProposalDetail（确认按钮 → mock client 成功/409 两分支）、ToolInvocationCard（过程三态、查询结果三形态表格、ui.ask 挂起/回填、后置动作按钮——失败/执行中/无 onNavigate 不出按钮；profile.propose 成功不出按钮——确认收敛对话页面板）、SkuFormModal（type→控件映射、json 校验）、ScanInput（M18——空回车不触发、trim 规整、扫后清空续扫）。
 - **页面 smoke**：ChatPage 走真实 ChatProvider + mock streamChatMessage（SSE 事件脚本化：工具卡回填、流式文本、error 落卡、ui.ask 挂起→回答/跳过 gate 时序、propose 成功 → 顶部待确认面板出现提议并可展开确认——配置确认页已并入对话页）；app-nav（navigate 切页、initialFilter 一次性消费）；SkusPage **动态列核心机制**（snapshot 含可见 spec + 隐藏 category → 表头有「规格」无「分类」；M18 加：条码列有码显码、无码行内显 `-`、新建表单收集条码（trim 后提交）；M20 加：安全库存列有值显值、0 显 `-`、表单收集 reorderPoint（>0 才提交））；OrdersPage / InventoryPage 列表渲染 + 提交 + 过滤框（关键字命中 + AI 跳转预填；M19 加：冻结三件套列渲染 + HoldModal——活动冻结可见（原因与分隔符同节点 → 子串匹配）、追加冻结提交体、Popconfirm 释放调 holdId；M20 加：安全库存列 + 「只看低库存」Checkbox 过滤掉充足 SKU）；ExpiryPage（M14，M15 进阶）mock useExpiryBoard——五层统计卡计数、剩余天数分形渲染（已过期 N 天 / 今天到期 / —）、库位列计数「N 库位」、行展开库位×余量明细（余量降序）、层过滤收敛、关键词过滤与空表、AI 跳转 skuCode 预填；SettingsPage（M8）mock 三组端点——节点名片渲染、同步回合结果、迁移导入结果；StocktakePage（业务补齐 17）mock 盘点组 hooks——清单渲染（状态 Tag/进度）、创建弹窗（全场/勾选库位提交体）、明细行录入提交与差异列渲染、关单确认与失效断言；AiConfigPage（M17）mock 配置组 hooks——状态卡三分支（未配置/已配置/来源）、必填校验不提交、保存提交体（ollama 无密钥字段且 baseUrl 选填）、测试连接成功/失败结果渲染、关闭 AI 二次确认。
 - 不测 AntD 内部行为；不断言样式细节（只断语义角色与文本）。

@@ -571,7 +571,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     id: 'wms.order.transition',
     label: '单据状态转移',
     description:
-      '推进单据状态，并按该转移的库存效应联动库存（按行的库位 + 批次）。未在转移上声明 effect 时：入库进入 received（可用 settings.inboundIncreaseState 改名）按行增加库存；出库进入 picking（outboundCheckState）只预检余量；出库进入 shipped（outboundDecreaseState）按行扣减。转移上的 effect（increase/decrease/check/none）优先于这三键。module.reversal 启用时，已收货可取消并扣回，已发货可取消并加回；停用后这两条转移不可用。module.partial 启用时，会改库存的转移可以带 lines 声明实收/实发（不大于该行订单数量，0 表示这行没到/没发）；不带 lines 按订单数量整单入账。停用 module.partial 后不能改少。已经入账的行，冲销按已入账数量，不能再改。合法目标由当前流程决定。过期批次拦截只作用于出库履约，不拦截入库冲销。拣货关单不走本工具的短发。module.reservation 启用时，出库进入只预检的状态会按行占用可用量，其他出库单不能再拿走；发货或取消时释放。停用后新的拣货不再占用，已有占用仍会在发货或取消时释放。module.picking 启用时，出库从已创建进入拣货中（只预检）。拣货单关单后进入已拣货并按实拣扣减，再到本工具从已拣货发货（这一步不再扣库存）。不能用本工具直接发货、标成已拣货或完成。停用后已创建直接发货（预检并扣减），已经在拣货中的单仍可发货或取消，已经是已拣货的单仍可发货。有未关拣货单时，直接发货会被拒绝。module.putaway 启用时，已收货的入库单不能直接完成，要先用 wms.order.putaway 上架（可归位）；停用后已收货直接完成。已经上架的单仍可完成。module.qc 启用时，已收货要先质检（wms.order.transition 到 inspected），不能直接上架或完成；停用后收货后按上架开关继续。已经质检的单仍可上架或完成。module.wave 启用时，已创建要先用 wms.wave.create 把一张或多张出库单组成一个波次（进入 waved，不动库存，按库位把数量加总）。不能用本工具直接改成 waved，也不能跳过波次去拣货、发货或完成。整波拣货用 wms.wave.pick，生成一张拣货单。停用后从已创建继续。已经组波的单仍可拣货、发货或取消；还在未拣波次里的单不能单独转入拣货。module.review 启用时，要先到 reviewed 才能打包、装车或发货。module.pack 启用时，要先到 packed 才能装车或发货。module.load 启用时，要先到 loaded 才能发货。复核、打包和装车不扣库存。拣货已经扣过的，发货不再扣。停用后新单跳过该步，已经进入该步的单仍可继续。',
+      '推进单据状态，并按该转移的库存效应联动库存（按行的库位 + 批次）。未在转移上声明 effect 时：入库进入 received（可用 settings.inboundIncreaseState 改名）按行增加库存；出库进入 picking（outboundCheckState）只预检余量；出库进入 shipped（outboundDecreaseState）按行扣减。转移上的 effect（increase/decrease/check/none）优先于这三键。module.reversal 启用时，已收货可取消并扣回，已发货可取消并加回；停用后这两条转移不可用。module.partial 启用时，会改库存的转移可以带 lines 声明实收/实发（不大于该行订单数量，0 表示这行没到/没发）；不带 lines 按订单数量整单入账。停用 module.partial 后不能改少。已经入账的行，冲销按已入账数量，不能再改。合法目标由当前流程决定。过期批次拦截只作用于出库履约，不拦截入库冲销。拣货关单不走本工具的短发。module.reservation 启用时，出库进入只预检的状态会按行占用可用量，其他出库单不能再拿走；发货或取消时释放。停用后新的拣货不再占用，已有占用仍会在发货或取消时释放。module.picking 启用时，出库从已创建进入拣货中（只预检）。拣货单关单后进入已拣货并按实拣扣减，再到本工具从已拣货发货（这一步不再扣库存）。不能用本工具直接发货、标成已拣货或完成。停用后已创建直接发货（预检并扣减），已经在拣货中的单仍可发货或取消，已经是已拣货的单仍可发货。有未关拣货单时，直接发货会被拒绝。module.putaway 启用时，已收货的入库单不能直接完成，要先用 wms.order.putaway 上架（可归位）；停用后已收货直接完成。已经上架的单仍可完成。module.qc 启用时，已收货要先质检（wms.order.transition 到 inspected），不能直接上架或完成；停用后收货后按上架开关继续。已经质检的单仍可上架或完成。module.wave 启用时，已创建要先用 wms.wave.create 把一张或多张出库单组成一个波次（进入 waved，不动库存，按库位把数量加总）。不能用本工具直接改成 waved，也不能跳过波次去拣货、发货或完成。整波拣货用 wms.wave.pick，生成一张拣货单。停用后从已创建继续。已经组波的单仍可拣货、发货或取消；还在未拣波次里的单不能单独转入拣货。module.review 启用时，要先到 reviewed 才能打包、装车或发货。module.pack 启用时，要先到 packed 才能装车或发货。module.load 启用时，要先到 loaded 才能发货。复核、打包和装车不扣库存。拣货已经扣过的，发货不再扣。停用后新单跳过该步，已经进入该步的单仍可继续。取消或删除开错的单用 wms.order.cancel，不要用本工具把目标设成 canceled。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -589,6 +589,27 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
       required: ['orderNo', 'to'],
     },
     handler: (params, ctx) => applyOrderTransition(resolveWorkspace(ctx.workspaceId), ctx, params),
+  };
+
+  const orderCancel: ToolDefinition<{ orderNo: string }> = {
+    id: 'wms.order.cancel',
+    label: '取消出入库单',
+    description:
+      '取消或删除一张开错或不要的出入库单，改为已取消并保留单号。' +
+      '不能从账上抹掉，单号不回收。当前流程有通向已取消的边才成功：已创建、到货预报、已组波、拣货中通常可以取消，不动库存，拣货占用会释放。' +
+      '单据冲销开着时，已收货取消会按已入账数量扣回，已发货取消会加回。' +
+      '已完成、已上架、已质检、已拣货、已复核、已打包、已装车，或流程里没有这条边时会拒绝。' +
+      '用户说删掉、作废、不要了，用本工具。',
+    permission: 'write',
+    parameters: {
+      type: 'object',
+      properties: {
+        orderNo: { type: 'string', description: '要取消的入库单或出库单号' },
+      },
+      required: ['orderNo'],
+    },
+    handler: (params, ctx) =>
+      applyOrderTransition(resolveWorkspace(ctx.workspaceId), ctx, { orderNo: params.orderNo, to: 'canceled' }),
   };
 
   const orderQuery: ToolDefinition<{
@@ -874,7 +895,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     },
   };
 
-  return [def(orderCreate), def(orderTransition), def(orderRevise), def(orderQuery)];
+  return [def(orderCreate), def(orderTransition), def(orderCancel), def(orderRevise), def(orderQuery)];
 }
 
 /** 原单的实绩额度。没有流水时回退到单据行。 */

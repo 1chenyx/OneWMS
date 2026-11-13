@@ -307,19 +307,6 @@ export class HoldNotFoundError extends CoreError {
   }
 }
 
-/**
- * 历史错误码。投影不再抛出：from 对不上的 state_changed 进入冲突队列。
- * 保留类型，避免已编译的调用方断开。
- */
-export class OrderStateConflictError extends CoreError {
-  constructor(orderNo: string, eventFrom: string, actual: string) {
-    super(
-      'WMS_STATE_CONFLICT',
-      `单据 ${orderNo} 状态冲突：事件声明 ${eventFrom} → 实际当前 ${actual}（并发状态转移，待人工裁决）`,
-    );
-  }
-}
-
 // ── 盘点（M17）───────────────────────────────────────
 
 /** 盘点单不存在 */
@@ -843,5 +830,81 @@ export class PickingLineNotFoundError extends CoreError {
 export class PickingNoOrdersError extends CoreError {
   constructor() {
     super('WMS_PICKING_NO_ORDERS', 'orderNos 不能为空——至少聚合一张「拣货中」状态的出库单');
+  }
+}
+
+// ── 调拨（transfer）─────────────────────────────────
+
+/** 调拨单不存在 */
+export class TransferNotFoundError extends CoreError {
+  constructor(transferNo: string) {
+    super('WMS_TRANSFER_NOT_FOUND', `调拨单不存在: ${transferNo}`);
+  }
+}
+
+/** 调拨单号已存在（业务键唯一） */
+export class TransferExistsError extends CoreError {
+  constructor(transferNo: string) {
+    super('WMS_TRANSFER_EXISTS', `调拨单号已存在: ${transferNo}`);
+  }
+}
+
+/** 调拨单状态不满足本次操作（ship 只对 created；receive 只对 inTransit；cancel 只对 created） */
+export class TransferStateError extends CoreError {
+  constructor(transferNo: string, state: string, action: string) {
+    const label =
+      state === 'inTransit' ? '在途' : state === 'completed' ? '已完成' : state === 'canceled' ? '已取消' : state;
+    super(
+      'WMS_TRANSFER_STATE',
+      `调拨单 ${transferNo} 当前是「${label}」，不能${action}——发货只对新建单，收货只对在途单，取消只对新建单`,
+    );
+  }
+}
+
+/** 调拨单至少要一行明细 */
+export class TransferNoLinesError extends CoreError {
+  constructor() {
+    super('WMS_TRANSFER_NO_LINES', '调拨单至少要一行明细（SKU + 源库位 + 目标库位 + 数量）');
+  }
+}
+
+// ── 报损（scrap）───────────────────────────────────
+
+/** 报损单不存在 */
+export class ScrapNotFoundError extends CoreError {
+  constructor(scrapNo: string) {
+    super('WMS_SCRAP_NOT_FOUND', `报损单不存在: ${scrapNo}`);
+  }
+}
+
+/** 报损单号已存在（业务键唯一） */
+export class ScrapExistsError extends CoreError {
+  constructor(scrapNo: string) {
+    super('WMS_SCRAP_EXISTS', `报损单号已存在: ${scrapNo}`);
+  }
+}
+
+/** 报损单状态不满足本次操作（confirm/cancel 只对 created） */
+export class ScrapStateError extends CoreError {
+  constructor(scrapNo: string, state: string, action: string) {
+    const label = state === 'confirmed' ? '已确认' : state === 'canceled' ? '已取消' : state;
+    super('WMS_SCRAP_STATE', `报损单 ${scrapNo} 当前是「${label}」，不能${action}——只有待确认的单才能操作`);
+  }
+}
+
+/** 报损单至少要一行明细 */
+export class ScrapNoLinesError extends CoreError {
+  constructor() {
+    super('WMS_SCRAP_NO_LINES', '报损单至少要一行明细（SKU + 库位 + 数量）');
+  }
+}
+
+/** 按序列号管理的 SKU 暂不进调拨/报损单（序列号随单据出库的联动未实现——先拒绝防账目漂移） */
+export class SerialManagedNotSupportedError extends CoreError {
+  constructor(skuCode: string, doc: string) {
+    super(
+      'WMS_SERIAL_MANAGED_NOT_SUPPORTED',
+      `SKU ${skuCode} 按序列号管理，暂不支持在${doc}中操作——请先经库存调整逐件处理序列号`,
+    );
   }
 }

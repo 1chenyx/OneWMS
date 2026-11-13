@@ -12,6 +12,7 @@ import {
   ControlOutlined,
   DashboardOutlined,
   DatabaseOutlined,
+  DeploymentUnitOutlined,
   AuditOutlined,
   CarOutlined,
   EnvironmentOutlined,
@@ -25,9 +26,11 @@ import {
   ImportOutlined,
   VerticalAlignTopOutlined,
   ReconciliationOutlined,
+  RestOutlined,
   RobotOutlined,
   SettingOutlined,
   SlidersOutlined,
+  SwapOutlined,
   TagsOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
@@ -46,6 +49,8 @@ export interface NavItem {
   icon: NavIcon;
   /** 设了就只在该模块 enabled === true 时出现在浮窗里 */
   moduleId?: string;
+  /** 浮窗内的分组标题：同类功能超过一屏（如「作业」）时按段扫视。不设 = 排在最前的无标题段 */
+  group?: string;
 }
 
 /** 一级导航大类 */
@@ -84,19 +89,23 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
     description: '出入库、库存与盘点',
     icon: CarryOutOutlined,
     items: [
-      { page: 'inbound', label: '入库单', icon: ImportOutlined },
-      { page: 'qc', label: '质检', icon: AuditOutlined, moduleId: 'module.qc' },
-      { page: 'putaway', label: '上架', icon: VerticalAlignTopOutlined, moduleId: 'module.putaway' },
-      { page: 'outbound', label: '出库单', icon: ExportOutlined },
-      { page: 'wave', label: '波次', icon: PartitionOutlined, moduleId: 'module.wave' },
-      { page: 'pickings', label: '拣货单', icon: ContainerOutlined, moduleId: 'module.picking' },
-      { page: 'review', label: '复核', icon: FileDoneOutlined, moduleId: 'module.review' },
-      { page: 'pack', label: '打包', icon: InboxOutlined, moduleId: 'module.pack' },
-      { page: 'load', label: '装车', icon: CarOutlined, moduleId: 'module.load' },
-      { page: 'inventory', label: '库存', icon: DatabaseOutlined },
-      { page: 'serials', label: '序列号', icon: BarcodeOutlined, moduleId: 'module.serial' },
-      { page: 'pallets', label: '托盘', icon: InboxOutlined, moduleId: 'module.lpn' },
-      { page: 'stocktakes', label: '盘点', icon: ReconciliationOutlined },
+      // 作业台是无分组的头名位：以流程待办为入口，先于一切功能清单
+      { page: 'workbench', label: '作业台', icon: DeploymentUnitOutlined },
+      { page: 'inbound', label: '入库单', icon: ImportOutlined, group: '入库' },
+      { page: 'qc', label: '质检', icon: AuditOutlined, moduleId: 'module.qc', group: '入库' },
+      { page: 'putaway', label: '上架', icon: VerticalAlignTopOutlined, moduleId: 'module.putaway', group: '入库' },
+      { page: 'outbound', label: '出库单', icon: ExportOutlined, group: '出库' },
+      { page: 'wave', label: '波次', icon: PartitionOutlined, moduleId: 'module.wave', group: '出库' },
+      { page: 'pickings', label: '拣货单', icon: ContainerOutlined, moduleId: 'module.picking', group: '出库' },
+      { page: 'review', label: '复核', icon: FileDoneOutlined, moduleId: 'module.review', group: '出库' },
+      { page: 'pack', label: '打包', icon: InboxOutlined, moduleId: 'module.pack', group: '出库' },
+      { page: 'load', label: '装车', icon: CarOutlined, moduleId: 'module.load', group: '出库' },
+      { page: 'inventory', label: '库存', icon: DatabaseOutlined, group: '库存与维护' },
+      { page: 'serials', label: '序列号', icon: BarcodeOutlined, moduleId: 'module.serial', group: '库存与维护' },
+      { page: 'pallets', label: '托盘', icon: InboxOutlined, moduleId: 'module.lpn', group: '库存与维护' },
+      { page: 'stocktakes', label: '盘点', icon: ReconciliationOutlined, group: '库存与维护' },
+      { page: 'transfers', label: '调拨单', icon: SwapOutlined, group: '库存与维护' },
+      { page: 'scraps', label: '报损单', icon: RestOutlined, group: '库存与维护' },
     ],
   },
   {
@@ -142,6 +151,20 @@ export function categoryOfPage(page: Page): NavCategory {
   return NAV_CATEGORIES.find((c) => c.items.some((item) => item.page === page)) ?? NAV_CATEGORIES[0];
 }
 
+/** 某个大类下登记的内置功能项（不含声明式模块页——那些由 useUiPages 追加） */
+export function navItemsOf(key: CategoryKey): readonly NavItem[] {
+  return NAV_CATEGORIES.find((c) => c.key === key)?.items ?? [];
+}
+
+/** 内置功能的中文名。查不到回 page 本身——宁可显示原始 id，也不要一片空白。 */
+export function navLabelOf(page: Page): string {
+  for (const category of NAV_CATEGORIES) {
+    const found = category.items.find((item) => item.page === page);
+    if (found) return found.label;
+  }
+  return String(page);
+}
+
 // ── 声明式模块页面的归类与图标（B.6）────────────────────────
 //
 // manifest 里的 category / icon 是**自由字符串**：core 是领域无关层，
@@ -176,6 +199,7 @@ const NAV_ICONS: Record<string, NavIcon> = {
   ControlOutlined,
   DashboardOutlined,
   DatabaseOutlined,
+  DeploymentUnitOutlined,
   EnvironmentOutlined,
   ExportOutlined,
   FieldTimeOutlined,
@@ -186,9 +210,11 @@ const NAV_ICONS: Record<string, NavIcon> = {
   PartitionOutlined,
   PieChartOutlined,
   ReconciliationOutlined,
+  RestOutlined,
   RobotOutlined,
   SettingOutlined,
   SlidersOutlined,
+  SwapOutlined,
   TagsOutlined,
   TeamOutlined,
   VerticalAlignTopOutlined,

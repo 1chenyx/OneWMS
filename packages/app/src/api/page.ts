@@ -1,14 +1,9 @@
 import { useState } from 'react';
 import { LIST_PAGE_SIZE } from '../components/table-style';
+import type { ListPage } from '@one/wms/page';
 
-/** 与服务端 { total, limit, offset, hasMore, rows } 相同。不传 limit 时接口仍返回数组。 */
-export interface ListPage<T> {
-  total: number;
-  limit: number;
-  offset: number;
-  hasMore: boolean;
-  rows: T[];
-}
+/** 分页壳直接复用服务端 wms 的定义，避免两边字段漂移。不传 limit 时接口仍返回数组。 */
+export type { ListPage };
 
 export function isListPage<T>(data: T[] | ListPage<T> | undefined): data is ListPage<T> {
   return !!data && !Array.isArray(data) && Array.isArray(data.rows);

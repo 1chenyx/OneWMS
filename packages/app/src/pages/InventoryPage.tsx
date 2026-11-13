@@ -25,6 +25,8 @@ import ReplenishModal from '../components/ReplenishModal';
 import { InventorySheetPort } from '../components/sheet-specs';
 import { serverPagination, monoCell, numCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
+import { downloadXlsx, xlsxName } from '../lib/sheet';
+import { downloadCsv, fileStamp, toCsv } from '../lib/csv';
 
 /**
  * 库存页：默认按 SKU 合计（余量 / 冻结 / 可用量 / 安全库存）。
@@ -130,6 +132,86 @@ export default function InventoryPage() {
   const showReserved =
     reservationOn ||
     (isListPage(payload) ? payload.hasReserved : loaded.some((r) => (r.reserved ?? 0) > 0));
+
+  // ── 导出：当前筛选条件下的全量数据（服务端分页，按 200/页循环拉全）──
+  const [exporting, setExporting] = useState(false);
+  const fetchAllExport = async (): Promise<{ headers: string[]; rows: unknown[][] }> => {
+    if (sliced) {
+      const all: InventorySliceRow[] = [];
+      for (let offset = 0; ; offset += 200) {
+        const page = await api.inventorySlices({
+          view: activeView,
+          q: kw || undefined,
+          locationCode,
+          batchNo: batchKey || undefined,
+          ...(warehouseKey === '__unassigned__'
+            ? { unassigned: true }
+            : warehouseKey
+              ? { warehouseCode: warehouseKey }
+              : {}),
+          limit: 200,
+          offset,
+        });
+        all.push(...page.rows);
+        if (!page.hasMore || page.rows.length === 0) break;
+      }
+      const headers =
+        activeView === 'location'
+          ? ['编码', '名称', '库位', '库位名称', '余量']
+          : activeView === 'batch'
+            ? ['编码', '名称', '批次', '效期', '余量']
+            : activeView === 'warehouse'
+              ? ['仓库', '编码', '名称', '余量']
+              : ['编码', '名称', '余量'];
+      return {
+        headers,
+        rows: all.map((r) => {
+          const qty = r.quantity;
+          if (activeView === 'location') return [r.skuCode, r.name, r.locationCode ?? '', r.locationName ?? '', qty];
+          if (activeView === 'batch') return [r.skuCode, r.name, r.batchNo ?? '', r.batchExpiryDate ?? '', qty];
+          if (activeView === 'warehouse') return [warehouseLabel(r), r.skuCode, r.name, qty];
+          return [r.skuCode, r.name, qty];
+        }),
+      };
+    }
+    const all: InventoryRow[] = [];
+    for (let offset = 0; ; offset += 200) {
+      const page = await api.inventory({ q: kw || undefined, lowOnly, limit: 200, offset });
+      all.push(...page.rows);
+      if (!page.hasMore || page.rows.length === 0) break;
+    }
+    const withReserved = reservationOn || all.some((r) => (r.reserved ?? 0) > 0);
+    const headers = ['编码', '名称', '当前余量', '冻结量', ...(withReserved ? ['预占'] : []), '可用量', '安全库存'];
+    return {
+      headers,
+      rows: all.map((r) => [
+        r.skuCode,
+        r.name,
+        r.quantity,
+        r.held,
+        ...(withReserved ? [r.reserved ?? 0] : []),
+        r.available,
+        r.reorderPoint,
+      ]),
+    };
+  };
+
+  const doExport = async (format: 'csv' | 'xlsx') => {
+    setExporting(true);
+    try {
+      const table = await fetchAllExport();
+      if (format === 'xlsx') {
+        await downloadXlsx(xlsxName('库存汇总'), '库存汇总', table);
+      } else {
+        downloadCsv(`库存汇总-${fileStamp()}.csv`, toCsv(table.headers, table.rows));
+      }
+      message.success(`已导出 ${table.rows.length} 行（当前筛选条件下的全量数据）`);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : `导出失败：${String(e)}`);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const columns: ColumnsType<InventoryRow> = [
     { title: '编码', dataIndex: 'skuCode', key: 'skuCode', onCell: monoCell },
@@ -303,6 +385,8 @@ export default function InventoryPage() {
               </Checkbox>
             )}
             {replenishOn ? <Button onClick={() => setReplenishOpen(true)}>生成补货单</Button> : null}
+            <Button loading={exporting} onClick={() => doExport('csv')}>导出 CSV</Button>
+            <Button loading={exporting} onClick={() => doExport('xlsx')}>导出 Excel</Button>
             <InventorySheetPort reservationOn={reservationOn} />
             <Button type="primary" icon={<EditOutlined />} onClick={() => openAdjust(null)}>
               库存调整

@@ -33,6 +33,16 @@ export {
   type StocktakeRecord,
   type StocktakeLineRecord,
 } from './views/stocktake-view.js';
+export {
+  TransferView,
+  type TransferRecord,
+  type TransferLineRecord,
+} from './views/transfer-view.js';
+export {
+  ScrapView,
+  type ScrapRecord,
+  type ScrapLineRecord,
+} from './views/scrap-view.js';
 export { PartnerView, type PartnerRecord, type PartnerKind } from './views/partner-view.js';
 export {
   PickingView,
@@ -46,7 +56,6 @@ export {
   canTransition,
   assertTransition,
   transitionsFrom,
-  isTerminalState,
 } from './state/order-state-machine.js';
 export type {
   OrderDirection,
@@ -110,6 +119,27 @@ export {
   sampleNumber,
 } from './numbering/pattern.js';
 export type { NumberPlaceId, NumberingRules } from './numbering/pattern.js';
+
+export { applyMapping, outboundMatches } from './integration/map.js';
+export { IntegrationQueue, nextAttemptAt } from './integration/queue.js';
+export type { InboxDisposition, InboxRow, OutboxMark, OutboxRow, OutboxStatus } from './integration/queue.js';
+export { IntegrationSecretStore } from './integration/secrets.js';
+export { IntegrationStoreError } from './integration/store-error.js';
+export { validateConnector, validateIntegrationSettings } from './integration/validate.js';
+export { INTEGRATION_DEFAULTS } from './integration/types.js';
+export type {
+  CanonicalKind,
+  CodeEntity,
+  CodeLookup,
+  Connector,
+  IntegrationIssue,
+  IntegrationSettings,
+  MapResult,
+  Route,
+  ValidateConnectorResult,
+  ValidateSettingsResult,
+  ValueSource,
+} from './integration/types.js';
 
 export { listOrdersWithLines, listOrdersWithLinesPage, withOrderLines } from './queries/order-queries.js';
 export { getReturnable } from './queries/return-queries.js';
@@ -179,6 +209,10 @@ export type {
   StocktakeLineState,
   StocktakeWithProgress,
 } from './queries/stocktake-queries.js';
+export { getTransferDetail, listTransfers, transferLineStates, withTransferCount } from './queries/transfer-queries.js';
+export type { TransferDetail, TransferDetailLine, TransferWithCount } from './queries/transfer-queries.js';
+export { getScrapDetail, listScraps, withScrapCount } from './queries/scrap-queries.js';
+export type { ScrapDetail, ScrapDetailLine, ScrapWithCount } from './queries/scrap-queries.js';
 
 export {
   SkuAlreadyExistsError,
@@ -199,7 +233,6 @@ export {
   StockReservedError,
   HoldExceedsStockError,
   HoldNotFoundError,
-  OrderStateConflictError,
   OrderConflictNotFoundError,
   OrderConflictClosedError,
   StocktakeNotFoundError,
@@ -278,4 +311,13 @@ export {
   PackRequiredError,
   LoadRequiredError,
   PutawayCapacityError,
+  TransferNotFoundError,
+  TransferExistsError,
+  TransferStateError,
+  TransferNoLinesError,
+  ScrapNotFoundError,
+  ScrapExistsError,
+  ScrapStateError,
+  ScrapNoLinesError,
+  SerialManagedNotSupportedError,
 } from './errors.js';
