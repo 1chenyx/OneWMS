@@ -14,6 +14,12 @@ export interface SpokenTool {
   details: string[];
 }
 
+const LOAD_GROUP_TITLE: Record<string, string> = {
+  order: '开单',
+  'order-flow': '单据流转',
+  'order-edit': '改单',
+};
+
 const ACTION: Record<string, string> = {
   'wms.sku.create': '创建商品',
   'wms.sku.update': '更新商品',
@@ -364,7 +370,13 @@ function successTitle(
     }
     case 'tools.load': {
       const group = str(args.group) ?? str(payload?.group);
-      return { title: group ? `加载了 ${group} 的完整说明` : '加载了工具说明', details: [] };
+      const titled = group ? LOAD_GROUP_TITLE[group] : undefined;
+      const title = titled
+        ? `加载了${titled}的完整说明`
+        : group
+          ? `加载了 ${group} 的完整说明`
+          : '加载了工具说明';
+      return { title, details: [] };
     }
     case 'chat.attachment.read': {
       const file = str(payload?.name) ?? str(args.attachmentId);

@@ -1,79 +1,224 @@
-import { TOOLS_LOAD_ID, toolGroup } from './tool-catalog.js';
-import type { AgentMessage, ToolCallResult } from './types.js';
+import { LOADED_GROUP_KEEP, TOOLS_LOAD_ID, toolGroup } from './tool-catalog.js';
+import type { AgentMessage, ToolCallRequest, ToolCallResult } from './types.js';
 
 /**
- * 送给模型的历史窗口。
+ * 送给模型的任务框。
  *
- * 会话里留着完整工具结果（界面气泡和存档都读那一份）。进模型的副本只保留
- * 当前这一轮用户消息之内的工具结果全文，更早的收成「工具名、成败、一句结论」。
- * 结论里留单号、数量这类标识，明细让模型用工具再查。
- * 近处的单次返回也有字符上限，超出就截断并让模型用 limit / offset 再查。
- * tools.load 的整组说明保留到这组工具被成功调用之前（按说明发调用的那一步
- * 还看得到）。调用之后、以及下一条用户消息，都收成一句，要细则再加载。
- * 更早的用户/助手原文和工具参数也截断。不改入参：编排层返回的 messages 仍是全文。
+ * 会话里留着完整对话和工具结果（界面气泡和存档都读那一份）。
+ * 每一次模型调用不重放这段记录，只新组任务框：
+ *  - 这一句用户请求
+ *  - 上一句助手回复（接「改刚才那单」，超长留结尾）
+ *  - 短：再往前的对话不带。标准或长：更早的对话压成短行，和上一句回复一起放进所选字数，装不下就丢掉最旧的
+ *  - 这一轮已经做成的事，每件一行（单号、数量）。还没用过的 tools.load 说明只出现一次
+ *  - 还没处理的最新一批结果
+ * 没有这些补充时，原样送出用户消息。不改入参。
  */
 
-/** 保留工具结果全文的用户轮数（含当前这轮）。再早的收成一句 */
-export const RECENT_USER_TURNS_FULL = 1;
+/** 上一句回复的字符上限。超长留结尾，单号通常写在句末 */
+export const PREVIOUS_REPLY_MAX = 800;
 
-/** 保留用户/助手原文的用户轮数（含当前这轮）。再早的截断 */
-export const DIALOGUE_TURNS_FULL = 4;
+/** 用户选的上下文长度。短是默认，不带更早的对话 */
+export type ContextLength = 'short' | 'medium' | 'long';
 
-/** 单次工具结果进模型的 JSON 字符上限 */
+/**
+ * 上一句回复加上更早短行的合计字数（不含栏目标题）。
+ * 短为 0：即使上一句回复没写满，也不把更早的对话补进来。
+ */
+export const CONTEXT_BUDGET = {
+  short: 0,
+  medium: 2000,
+  long: 4000,
+} as const;
+
+/** 更早一轮的用户原话，压成一行时的字数 */
+const DIGEST_USER_MAX = 40;
+
+/** 更早一轮的助手回复，压成一行时的字数 */
+const DIGEST_REPLY_MAX = 80;
+
+/** 与 wms-agent 的时间行相同。这里单独写，避免和装配层互相引用 */
+const TIME_LINE = /^当前时间：\S+\n/;
+
+const USER_SAID = '用户说：';
+
+/** 单次工具结果进任务框的 JSON 字符上限 */
 export const TOOL_RESULT_CHAR_BUDGET = 4000;
 
 /**
- * tools.load 结果（整组完整说明）的字符上限。实测最大组（order）约 6.3K 字符，
- * 8000 放得下全部；真超了才截断。
+ * tools.load 说明的字符上限。单据拆开后最大的一组约 3K 字符，
+ * 8000 放得下；真超了才截断。
  */
 export const TOOLS_LOAD_CHAR_BUDGET = 8000;
 
 const CONCLUSION_MAX = 120;
 
-/** 更早对话原文、工具参数的字符上限 */
-const OLD_TEXT_MAX = 180;
+/** 从完整历史做出这一步的任务框。窗口外的内容不进模型。 */
+export function frameForModel(
+  messages: readonly AgentMessage[],
+  contextLength: ContextLength = 'short',
+): AgentMessage[] {
+  const turnAt = lastUserIndex(messages);
+  if (turnAt < 0) return [{ role: 'user', text: '' }];
+  const request = messages[turnAt];
+  if (!request || request.role !== 'user') return [{ role: 'user', text: '' }];
 
-/** 从完整历史做出进模型的副本。窗口内没改过的消息原样引用。 */
-export function messagesForModel(messages: readonly AgentMessage[]): AgentMessage[] {
-  const resultsFrom = recentTurnStart(messages, RECENT_USER_TURNS_FULL);
-  const dialogueFrom = recentTurnStart(messages, DIALOGUE_TURNS_FULL);
-  return messages.map((message, index) => {
-    if (message.role === 'tool-results') {
-      const recent = index >= resultsFrom;
-      const results = message.results.map((result) => shapeResult(messages, index, result, recent));
-      if (results.every((result, i) => result === message.results[i])) return message;
-      return { ...message, results };
+  const prior = previousReply(messages, turnAt);
+  const earlier = earlierDigest(messages, turnAt, contextLength, prior?.length ?? 0);
+  const done: string[] = [];
+  const docs: string[] = [];
+  const latest: string[] = [];
+  const rounds = resultRounds(messages, turnAt);
+  const pending = rounds.flatMap((round) =>
+    round.results.filter((result) => isPendingLoad(messages, round.index, result)),
+  );
+  const shownDocs = new Set(pending.slice(-LOADED_GROUP_KEEP));
+
+  rounds.forEach((round, roundIndex) => {
+    const isLatest = roundIndex === rounds.length - 1;
+    for (const result of round.results) {
+      if (isPendingLoad(messages, round.index, result)) {
+        const text = shownDocs.has(result) ? docsText(result) : undefined;
+        if (text) docs.push(text);
+        else done.push(oneLine(result));
+        continue;
+      }
+      if (isLatest && result.toolId !== TOOLS_LOAD_ID) {
+        latest.push(renderLatest(messages, result));
+        continue;
+      }
+      done.push(oneLine(result));
     }
-    if (index >= dialogueFrom) return message;
-    if (message.role === 'user' || message.role === 'assistant') {
-      const text = clip(message.text, OLD_TEXT_MAX);
-      return text === message.text ? message : { ...message, text };
-    }
-    if (message.role === 'tool-calls') {
-      const text = message.text ? clip(message.text, OLD_TEXT_MAX) : undefined;
-      const calls = message.calls.map((call) => {
-        const args = clipArgs(call.args);
-        return args === call.args ? call : { ...call, args };
-      });
-      if (text === message.text && calls.every((call, i) => call === message.calls[i])) return message;
-      return { ...message, text, calls };
-    }
-    return message;
   });
+
+  if (!earlier && !prior && done.length === 0 && docs.length === 0 && latest.length === 0) return [request];
+
+  const parts: string[] = [];
+  if (earlier) parts.push(`更早的对话：\n${earlier}`);
+  if (prior) parts.push(`上一句回复：\n${prior}`);
+  parts.push(`用户请求：\n${request.text}`);
+  if (done.length > 0) parts.push(`这一轮已完成：\n${done.map((line) => `- ${line}`).join('\n')}`);
+  if (docs.length > 0) parts.push(docs.join('\n\n'));
+  if (latest.length > 0) parts.push(`最新结果：\n${latest.join('\n\n')}`);
+  return [{ role: 'user', text: parts.join('\n\n') }];
+}
+
+function lastUserIndex(messages: readonly AgentMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') return i;
+  }
+  return -1;
+}
+
+interface SpokenTurn {
+  user: string;
+  reply?: string;
 }
 
 /**
- * 这份 tools.load 说明下一跳模型调用还用得着吗。
- * 该组已经被成功调用过（同一次结果或之后），说明文档已经用上，可以收起。
- * 别的组、ui.ask 都不算用过：模型可能还要按这份说明继续调这组工具。
+ * 这一句之前的对话，压成短行。从最近一轮往前装，装不下就停，更旧的整行丢掉。
+ * 字数只算短行正文和上一句回复，不算「更早的对话」「上一句回复」这几个字。
  */
-function loadStillNeeded(messages: readonly AgentMessage[], index: number, result: ToolCallResult): boolean {
+function earlierDigest(
+  messages: readonly AgentMessage[],
+  turnAt: number,
+  contextLength: ContextLength,
+  priorLength: number,
+): string | undefined {
+  if (contextLength === 'short') return undefined;
+  const room = CONTEXT_BUDGET[contextLength] - priorLength;
+  if (room <= 0) return undefined;
+  const turns = turnsBefore(messages, turnAt);
+  const lines: string[] = [];
+  let used = 0;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
+    if (!turn) continue;
+    const line = digestLine(turn, i < turns.length - 1);
+    if (!line) continue;
+    const next = used + line.length + (lines.length > 0 ? 1 : 0);
+    if (next > room) break;
+    lines.push(line);
+    used = next;
+  }
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
+/** 当前这句之前的每一轮用户原话，以及那一轮的助手回复。工具结果不收进来 */
+function turnsBefore(messages: readonly AgentMessage[], turnAt: number): SpokenTurn[] {
+  const turns: SpokenTurn[] = [];
+  for (let i = 0; i < turnAt; i++) {
+    const message = messages[i];
+    if (message?.role !== 'user') continue;
+    let reply = '';
+    for (let j = i + 1; j < turnAt; j++) {
+      const next = messages[j];
+      if (!next || next.role === 'user') break;
+      if (next.role === 'assistant' && next.text.trim()) reply = next.text.trim();
+    }
+    const user = spokenUser(message.text);
+    if (!user) continue;
+    turns.push({ user, reply: reply || undefined });
+  }
+  return turns;
+}
+
+/** 去掉开头的时间行。附件消息只留「用户说：」后面的那句 */
+function spokenUser(text: string): string {
+  const stripped = text.replace(TIME_LINE, '');
+  const at = stripped.lastIndexOf(USER_SAID);
+  const said = at >= 0 ? stripped.slice(at + USER_SAID.length) : stripped;
+  return said.replace(/\s+/g, ' ').trim();
+}
+
+/** 上一轮只留用户原话，回复在「上一句回复」里。更早的轮次带上回复短行 */
+function digestLine(turn: SpokenTurn, includeReply: boolean): string | undefined {
+  const user = clip(turn.user, DIGEST_USER_MAX);
+  if (!user) return undefined;
+  if (!includeReply) return `用户：${user}`;
+  const reply = turn.reply ? clip(turn.reply, DIGEST_REPLY_MAX) : '';
+  return reply ? `用户：${user} → ${reply}` : `用户：${user}`;
+}
+
+/** 紧挨着这句请求的上一条助手回复。短上下文里，再往前的用户轮不带 */
+function previousReply(messages: readonly AgentMessage[], turnAt: number): string | undefined {
+  for (let i = turnAt - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (!message || message.role === 'user') return undefined;
+    if (message.role !== 'assistant') continue;
+    const text = message.text.trim();
+    if (!text) continue;
+    return clipTail(text, PREVIOUS_REPLY_MAX);
+  }
+  return undefined;
+}
+
+interface ResultRound {
+  index: number;
+  results: ToolCallResult[];
+}
+
+function resultRounds(messages: readonly AgentMessage[], turnAt: number): ResultRound[] {
+  const rounds: ResultRound[] = [];
+  for (let i = turnAt + 1; i < messages.length; i++) {
+    const message = messages[i];
+    if (message?.role === 'tool-results') rounds.push({ index: i, results: message.results });
+  }
+  return rounds;
+}
+
+/**
+ * 这份 tools.load 说明下一跳还用得着吗。
+ * 该组已经被成功调用过，说明就已经用上，任务框里不再带全文。
+ */
+function isPendingLoad(messages: readonly AgentMessage[], index: number, result: ToolCallResult): boolean {
+  if (!result.ok || result.toolId !== TOOLS_LOAD_ID) return false;
   const group = groupOf(result.payload);
-  if (!group) return true;
+  if (!group) return false;
   for (let i = index; i < messages.length; i++) {
     const message = messages[i];
     if (message?.role !== 'tool-results') continue;
-    const used = message.results.some(
+    const after = i === index ? message.results.slice(message.results.indexOf(result) + 1) : message.results;
+    const used = after.some(
       (item) => item.ok && item.toolId !== TOOLS_LOAD_ID && toolGroup(item.toolId) === group,
     );
     if (used) return false;
@@ -81,30 +226,60 @@ function loadStillNeeded(messages: readonly AgentMessage[], index: number, resul
   return true;
 }
 
-function shapeResult(
-  messages: readonly AgentMessage[],
-  index: number,
-  result: ToolCallResult,
-  recent: boolean,
-): ToolCallResult {
-  if (!recent) return summarizeResult(result);
-  if (result.ok && result.toolId === TOOLS_LOAD_ID && !loadStillNeeded(messages, index, result)) {
-    return foldLoad(result);
-  }
-  return capResult(result);
+function docsText(result: ToolCallResult): string | undefined {
+  if (!result.payload || typeof result.payload !== 'object') return undefined;
+  const docs = (result.payload as { docs?: unknown }).docs;
+  if (typeof docs !== 'string' || !docs.trim()) return undefined;
+  if (docs.length <= TOOLS_LOAD_CHAR_BUDGET) return docs;
+  return `${docs.slice(0, TOOLS_LOAD_CHAR_BUDGET)}\n…说明过长已截断。需要其余时再 tools.load。`;
 }
 
-function foldLoad(result: ToolCallResult): ToolCallResult {
-  const group = groupOf(result.payload);
+function renderLatest(messages: readonly AgentMessage[], result: ToolCallResult): string {
+  const status = result.ok ? '成功' : '失败';
+  const lines = [`${result.toolId} ${status}`];
+  const question = askedQuestion(messages, result);
+  if (question) lines.push(`问题：${question}`);
+  const answer = askAnswer(result);
+  if (answer) {
+    lines.push(answer);
+    return lines.join('\n');
+  }
+  lines.push(JSON.stringify(cappedPayload(result)));
+  return lines.join('\n');
+}
+
+function askAnswer(result: ToolCallResult): string | undefined {
+  if (result.toolId !== 'ui.ask' || !result.payload || typeof result.payload !== 'object') return undefined;
+  const record = result.payload as { answer?: unknown; declined?: unknown };
+  if (typeof record.answer === 'string') return `回答：${record.answer}`;
+  if (record.declined === true) return '用户没有回答';
+  return undefined;
+}
+
+function askedQuestion(messages: readonly AgentMessage[], result: ToolCallResult): string | undefined {
+  if (result.toolId !== 'ui.ask') return undefined;
+  for (const message of messages) {
+    if (message.role !== 'tool-calls') continue;
+    const call = message.calls.find((item) => item.callId === result.callId);
+    const question = questionOf(call);
+    if (question) return question;
+  }
+  return undefined;
+}
+
+function questionOf(call: ToolCallRequest | undefined): string | undefined {
+  const question = call?.args.question;
+  return typeof question === 'string' && question.trim() ? question.trim() : undefined;
+}
+
+function cappedPayload(result: ToolCallResult): unknown {
+  const json = payloadJson(result.payload);
+  if (json === undefined) return { truncated: true, note: '结果无法序列化，已省略。需要时重新查询。' };
+  if (json.length <= TOOL_RESULT_CHAR_BUDGET) return result.payload;
   return {
-    ...result,
-    payload: {
-      group,
-      folded: true,
-      note: group
-        ? `【${group}】完整说明已从本轮上下文拿掉。清单里若还有这组工具可以直接调用；没有就重新 tools.load。`
-        : '完整说明已从本轮上下文拿掉。需要时重新 tools.load。',
-    },
+    truncated: true,
+    note: '结果过长，已截断。需要其余部分时用同一工具带 limit 和 offset 再查。',
+    preview: json.slice(0, TOOL_RESULT_CHAR_BUDGET),
   };
 }
 
@@ -112,50 +287,6 @@ function groupOf(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return '';
   const group = (payload as { group?: unknown }).group;
   return typeof group === 'string' ? group : '';
-}
-
-function clipArgs(args: Record<string, unknown>): Record<string, unknown> {
-  const json = payloadJson(args);
-  if (json === undefined || json.length <= OLD_TEXT_MAX) return args;
-  return { omitted: true, keys: Object.keys(args), note: '参数过长，已从较早的上下文拿掉' };
-}
-
-/** 倒数第 turns 条用户消息的下标。不够则从开头保留。 */
-function recentTurnStart(messages: readonly AgentMessage[], turns: number): number {
-  let seen = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role !== 'user') continue;
-    seen += 1;
-    if (seen === turns) return i;
-  }
-  return 0;
-}
-
-function capResult(result: ToolCallResult): ToolCallResult {
-  const json = payloadJson(result.payload);
-  if (json === undefined) {
-    return {
-      ...result,
-      payload: { truncated: true, note: '结果无法序列化，已省略。需要时重新查询。' },
-    };
-  }
-  const isLoad = result.toolId === TOOLS_LOAD_ID;
-  const budget = isLoad ? TOOLS_LOAD_CHAR_BUDGET : TOOL_RESULT_CHAR_BUDGET;
-  if (json.length <= budget) return result;
-  return {
-    ...result,
-    payload: {
-      truncated: true,
-      note: isLoad
-        ? '结果过长，已截断。需要其余说明时再次调用 tools.load。'
-        : '结果过长，已截断。需要其余部分时用同一工具带 limit 和 offset 再查。',
-      preview: json.slice(0, budget),
-    },
-  };
-}
-
-function summarizeResult(result: ToolCallResult): ToolCallResult {
-  return { ...result, payload: { summary: oneLine(result) } };
 }
 
 function oneLine(result: ToolCallResult): string {
@@ -167,9 +298,12 @@ function oneLine(result: ToolCallResult): string {
 function conclusion(payload: unknown): string {
   if (typeof payload === 'string') return payload;
   if (typeof payload === 'number' || typeof payload === 'boolean') return String(payload);
+  if (Array.isArray(payload)) return `${payload.length} 条`;
   if (!payload || typeof payload !== 'object') return '';
   const record = payload as Record<string, unknown>;
   if (typeof record.error === 'string') return record.error;
+  if (typeof record.answer === 'string') return record.answer;
+  if (record.declined === true) return '用户没有回答';
   if (typeof record.group === 'string' && typeof record.docs === 'string') {
     const n = Array.isArray(record.toolIds) ? record.toolIds.length : 0;
     return n > 0 ? `group=${record.group}，${n} 个工具` : `group=${record.group}`;
@@ -192,6 +326,11 @@ function clip(text: string, max: number): string {
   const trimmed = text.replace(/\s+/g, ' ').trim();
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, max)}…`;
+}
+
+function clipTail(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `…${text.slice(text.length - max)}`;
 }
 
 function payloadJson(payload: unknown): string | undefined {

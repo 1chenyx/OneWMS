@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { stripTimeContext, type LlmProvider, type LlmTurnRequest, type LlmTurnResponse } from '@one/ai';
+import { type LlmProvider, type LlmTurnRequest, type LlmTurnResponse } from '@one/ai';
 import { createApp, createAppContext, type AppContext } from '../src/index.js';
 import { createChatThreadStore, mergeTurns, sanitizeTurns, type ChatThreadRecord } from '../src/chat-threads.js';
 
@@ -101,11 +101,11 @@ describe('对话存档', () => {
     const again = setup(scripted([{ text: '是的', toolCalls: [] }], seen), file);
     const second = await post(again, '/api/chat/sessions/s-keep/message', { message: '是这批新到的吗？' });
     expect(parseSse(await second.text()).at(-1)?.event).toBe('turn-done');
-    expect(seen[0]?.messages.map((msg) => msg.role)).toEqual(['user', 'assistant', 'user']);
-    // 用户消息带时间上下文前缀（给模型），剥掉后是用户原话
-    const bare = (m: unknown) => stripTimeContext((m as { text: string }).text);
-    expect(bare(seen[0]?.messages[0])).toBe('A-1 还剩多少？');
-    expect(bare(seen[0]?.messages[2])).toBe('是这批新到的吗？');
+    expect(seen[0]?.messages).toHaveLength(1);
+    const text = seen[0]?.messages[0]?.role === 'user' ? seen[0].messages[0].text : '';
+    expect(text).toContain('上一句回复：\n还有 5 个');
+    expect(text).toContain('是这批新到的吗？');
+    expect(text).not.toContain('A-1 还剩多少？');
   });
 
   it('气泡写回后标题用用户原文；resume 带回气泡，不把整表存进去', async () => {
@@ -141,6 +141,73 @@ describe('对话存档', () => {
     expect(opened.status).toBe(200);
     const thread = ((await opened.json()) as { thread: { turns: Array<{ attachments?: Array<{ rows?: number }> }> } }).thread;
     expect(thread.turns[0]?.attachments?.[0]?.rows).toBe(3);
+  });
+
+  it('同一段再保存不改时间；说了新的话才更新；打开不改时间', async () => {
+    const file = tempFile();
+    const store = createChatThreadStore(file);
+    store.upsert(sample('s-time', 1_700_000_000_000));
+    const app = setup(undefined, file);
+    const same = {
+      agentId: 'general',
+      turns: [
+        {
+          userText: 's-time',
+          invocations: [{ callId: 'c1', toolId: 'wms.order.query', args: { orderNo: 'IN-1' }, ok: true, payload: { ok: true } }],
+          assistantText: '好',
+          stopped: true,
+          done: true,
+          elapsedMs: 12_000,
+        },
+      ],
+    };
+    const first = await app.request('/api/chat/threads/s-time', {
+      method: 'PUT',
+      headers: json,
+      body: JSON.stringify(same),
+    });
+    expect(first.status).toBe(200);
+    const kept = ((await first.json()) as { thread: { updatedAt: number; title: string } }).thread;
+    expect(kept.updatedAt).toBe(1_700_000_000_000);
+    expect(kept.title).toBe('s-time');
+
+    const second = await app.request('/api/chat/threads/s-time', {
+      method: 'PUT',
+      headers: json,
+      body: JSON.stringify(same),
+    });
+    expect(((await second.json()) as { thread: { updatedAt: number } }).thread.updatedAt).toBe(1_700_000_000_000);
+
+    const retimed = await app.request('/api/chat/threads/s-time', {
+      method: 'PUT',
+      headers: json,
+      body: JSON.stringify({
+        agentId: 'general',
+        turns: [{ ...same.turns[0], elapsedMs: 99_000 }],
+      }),
+    });
+    expect(((await retimed.json()) as { thread: { updatedAt: number } }).thread.updatedAt).toBe(1_700_000_000_000);
+    const mid = JSON.parse(readFileSync(file, 'utf8')) as {
+      threads: Array<{ id: string; turns: Array<{ elapsedMs?: number }> }>;
+    };
+    expect(mid.threads.find((item) => item.id === 's-time')?.turns[0]?.elapsedMs).toBe(99_000);
+
+    const changed = await app.request('/api/chat/threads/s-time', {
+      method: 'PUT',
+      headers: json,
+      body: JSON.stringify({
+        agentId: 'general',
+        turns: [{ userText: '新的一句', invocations: [], assistantText: '好', done: true }],
+      }),
+    });
+    const moved = ((await changed.json()) as { thread: { updatedAt: number } }).thread.updatedAt;
+    expect(moved).toBeGreaterThan(1_700_000_000_000);
+
+    const opened = await post(app, '/api/chat/sessions/s-time/resume', {});
+    expect(opened.status).toBe(200);
+    expect(((await opened.json()) as { thread: { updatedAt: number } }).thread.updatedAt).toBe(moved);
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as { threads: Array<{ id: string; updatedAt: number }> };
+    expect(raw.threads.find((item) => item.id === 's-time')?.updatedAt).toBe(moved);
   });
 
   it('删除一条，清空时留下指定的那一段', async () => {
@@ -213,6 +280,7 @@ describe('对话用量', () => {
         assistantText: '5 个',
         done: true,
         usage: { inputTokens: 10.9, outputTokens: 2 },
+        elapsedMs: 12.9,
       },
       {
         userText: '坏的',
@@ -220,10 +288,16 @@ describe('对话用量', () => {
         assistantText: '',
         done: true,
         usage: { inputTokens: -1, outputTokens: 1 },
+        elapsedMs: -5,
       },
     ]);
     expect(turns?.[0]?.usage).toEqual({ inputTokens: 10, outputTokens: 2 });
+    expect(turns?.[0]?.elapsedMs).toBe(12);
     expect(turns?.[1]?.usage).toBeUndefined();
+    expect(turns?.[1]?.elapsedMs).toBeUndefined();
+    expect(
+      sanitizeTurns([{ userText: '久', invocations: [], assistantText: '', done: true, elapsedMs: 9e15 }])?.[0]?.elapsedMs,
+    ).toBe(7 * 24 * 60 * 60 * 1000);
 
     const merged = mergeTurns(
       [
@@ -239,5 +313,6 @@ describe('对话用量', () => {
       { inputTokens: 10, outputTokens: 2 },
       { inputTokens: 20, outputTokens: 3 },
     ]);
+    expect(merged.map((turn) => turn.elapsedMs)).toEqual([12, undefined]);
   });
 });

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { App as AntApp, ConfigProvider } from 'antd';
 import ProposalDetail from '../src/components/ProposalDetail';
 import ChatPage from '../src/pages/ChatPage';
-import { CHAT_OPEN_THREAD_KEY, ChatProvider } from '../src/chat/ChatProvider';
+import { CHAT_CONTEXT_KEY, CHAT_OPEN_THREAD_KEY, CHAT_WINDOWS_KEY, ChatProvider } from '../src/chat/ChatProvider';
 import { AppNavProvider, useAppNav } from '../src/app-nav';
 import { AGENT_DEFS_PATH } from '../src/pages/agent-proposal';
 import { ApiError } from '../src/api/client';
@@ -103,6 +103,9 @@ const wrap = (ui: React.ReactNode) => (
 afterEach(() => {
   cleanup();
   document.body.innerHTML = '';
+  localStorage.removeItem(CHAT_OPEN_THREAD_KEY);
+  localStorage.removeItem(CHAT_WINDOWS_KEY);
+  localStorage.removeItem(CHAT_CONTEXT_KEY);
 });
 
 describe('ProposalDetail：确认流程', () => {
@@ -151,6 +154,8 @@ describe('ProposalDetail：确认流程', () => {
 describe('ChatPage：SSE 流式', () => {
   beforeEach(() => {
     localStorage.removeItem(CHAT_OPEN_THREAD_KEY);
+    localStorage.removeItem(CHAT_WINDOWS_KEY);
+    localStorage.removeItem(CHAT_CONTEXT_KEY);
     streamMock.mockReset();
     answerMock.mockReset();
     listThreadsMock.mockReset();
@@ -194,7 +199,45 @@ describe('ChatPage：SSE 流式', () => {
     expect(screen.queryByText(/skuCode/)).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /创建了商品 A-1 螺丝/ }));
     expect(screen.getByText('成功')).toBeInTheDocument();
-    expect(streamMock).toHaveBeenCalledWith(expect.any(String), '建一个 SKU', 'general', expect.any(Function), undefined);
+    expect(streamMock).toHaveBeenCalledWith(
+      expect.any(String),
+      '建一个 SKU',
+      'general',
+      expect.any(Function),
+      undefined,
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('上下文选标准后，这条消息带上 medium', async () => {
+    streamMock.mockImplementationOnce(async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
+      onEvent({ type: 'text-delta', text: '好。' });
+      onEvent({ type: 'turn-done', steps: 1 });
+    });
+    const user = userEvent.setup();
+    render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+
+    await user.click(screen.getByRole('button', { name: /上下文/ }));
+    await user.click(await screen.findByRole('menuitem', { name: /标准/ }));
+    expect(screen.getByRole('button', { name: '上下文：标准' })).toBeInTheDocument();
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('查一下');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+    expect(await screen.findByText('好。')).toBeInTheDocument();
+    expect(streamMock).toHaveBeenCalledWith(
+      expect.any(String),
+      '查一下',
+      'general',
+      expect.any(Function),
+      undefined,
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+      'medium',
+    );
+    expect(localStorage.getItem(CHAT_CONTEXT_KEY)).toBe('medium');
   });
 
   it('输入框展示本段 token 消耗，下一轮累加', async () => {
@@ -352,8 +395,28 @@ describe('ChatPage：SSE 流式', () => {
     await user.click(screen.getByRole('button', { name: /发送/ }));
     expect(await screen.findByText('好的。')).toBeInTheDocument();
 
-    expect(streamMock).toHaveBeenNthCalledWith(1, sids[0], '查库存', 'general', expect.any(Function), undefined);
-    expect(streamMock).toHaveBeenNthCalledWith(2, sids[1], '再查一次', 'readonly', expect.any(Function), undefined);
+    expect(streamMock).toHaveBeenNthCalledWith(
+      1,
+      sids[0],
+      '查库存',
+      'general',
+      expect.any(Function),
+      undefined,
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+    );
+    expect(streamMock).toHaveBeenNthCalledWith(
+      2,
+      sids[1],
+      '再查一次',
+      'readonly',
+      expect.any(Function),
+      undefined,
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+    );
     expect(sids[0]).not.toBe(sids[1]); // 切换 = 换新会话（历史按助手隔离）
   });
 
@@ -409,6 +472,9 @@ describe('ChatPage：SSE 流式', () => {
       'general',
       expect.any(Function),
       undefined,
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
     );
 
     await user.click(screen.getByRole('button', { name: 'DeepSeek · deepseek-chat' }));
@@ -429,6 +495,8 @@ describe('ChatPage：SSE 流式', () => {
         expect.any(Function),
         undefined,
         'p-ollama',
+        undefined,
+        expect.any(AbortSignal),
       );
     });
 
@@ -451,6 +519,7 @@ describe('ChatPage：SSE 流式', () => {
         undefined,
         'p-ollama',
         'llama3.1:8b',
+        expect.any(AbortSignal),
       );
     });
     expect(screen.getByText('先说一句')).toBeInTheDocument();

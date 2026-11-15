@@ -39,6 +39,7 @@ export function createVercelLlmProvider(model: LanguageModel): LlmProvider {
         messages: toModelMessages(req.messages),
         tools: toToolSet(req.tools),
         stopWhen: isStepCount(1),
+        abortSignal: req.signal,
       });
       const usage = readUsage(result.usage);
       return {
@@ -64,6 +65,7 @@ export function createVercelLlmProvider(model: LanguageModel): LlmProvider {
         messages: toModelMessages(req.messages),
         tools: toToolSet(req.tools),
         stopWhen: isStepCount(1),
+        abortSignal: req.signal,
       });
 
       let text = '';

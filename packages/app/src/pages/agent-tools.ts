@@ -3,8 +3,9 @@ import type { AgentDef } from '../api/client';
 /**
  * 助手管理页的工具分组。
  *
- * 分组键与编排层 toolGroup 一致：wms 工具取第二段（wms.order.conflict.list → order），
- * 其余取第一段。界面上把 ledger 并进库存——流水只有一个工具，单独成组反而不好找。
+ * 按业务域分组，方便勾选授权：wms 工具取第二段（wms.order.* 都在出入库），
+ * 其余取第一段。编排层 tools.load 把单据再拆成 order / order-flow / order-edit，两边不必相同。
+ * 界面上把 ledger 并进库存——流水只有一个工具，单独成组反而不好找。
  * 应用包不依赖 @one/ai，所以这里自备一份，不从编排层引。
  */
 

@@ -151,6 +151,20 @@ describe('module.return', () => {
     expect(ws.orders.byNo(created.orderNo)!.state).toBe('created');
   });
 
+  it('上架之后仍可按原入库单退供', async () => {
+    await receiveIn('IN-PUT', [{ skuCode: 'A-1', quantity: 5, locationCode: 'A-01' }]);
+    await ws.tools.invoke('wms.order.putaway', { orderNo: 'IN-PUT' });
+    expect(ws.orders.byNo('IN-PUT')!.state).toBe('putaway');
+    await ws.tools.invoke('wms.order.create', {
+      direction: 'out',
+      orderNo: 'RT-SUP',
+      returnOf: 'IN-PUT',
+      lines: [{ skuCode: 'A-1', quantity: 2, locationCode: 'A-01' }],
+    });
+    expect(ws.orders.byNo('RT-SUP')!.returnOfOrderId).toBe(ws.orders.byNo('IN-PUT')!.id);
+    expect(getReturnable(ws, 'IN-PUT').lines[0]).toMatchObject({ remaining: 3 });
+  });
+
   it('退供发货扣库存；原单未收货、库位没货、超额都被拦住', async () => {
     await ws.tools.invoke('wms.order.create', {
       direction: 'in',

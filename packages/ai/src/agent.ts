@@ -6,7 +6,7 @@ import {
   toolGroup,
   touchLoadedGroup,
 } from './tool-catalog.js';
-import { messagesForModel } from './model-history.js';
+import { frameForModel, type ContextLength } from './model-history.js';
 import type {
   AgentMessage,
   AgentToolMeta,
@@ -69,10 +69,9 @@ export interface RunAgentDeps {
   /** 编排步数上限，默认 20 */
   maxSteps?: number;
   /**
-   * 工具目录（createAgentFromDef 开启）。常驻瘦 schema，tools.load 把整组
-   * 完整说明作为该调用的结果返回；说明用过即从进模型的副本里收起。
-   * 已加载的组只在这一轮用户消息里留在清单中，下一条消息重新加载。
-   * 该调用不进 invoke。缺省关闭，编排单测保持原样透传。
+   * 工具目录（createAgentFromDef 开启）。常驻瘦 schema。tools.load 的说明
+   * 放进这一步的任务框，用过就不再带。已加载的组只在这一轮用户消息里留在
+   * 清单中，下一条消息重新加载。该调用不进 invoke。缺省关闭，编排单测保持原样透传。
    */
   catalog?: boolean;
   /**
@@ -101,7 +100,7 @@ export async function runAgent(userText: string, deps: RunAgentDeps): Promise<Ag
 
     const res = await provider.completeTurn({
       system,
-      messages: messagesForModel(messages),
+      messages: frameForModel(messages),
       tools: toolsForTurn(catalog, tools),
     });
 
@@ -110,7 +109,7 @@ export async function runAgent(userText: string, deps: RunAgentDeps): Promise<Ag
       return { text: res.text, steps, messages, invocations };
     }
 
-    // 记录模型的工具调用（保留旁白文本，翻给下一轮请求时模型能看见自己说过什么）
+    // 旁白留在会话记录里，界面气泡读它。下一跳模型只看任务框，不重放这段旁白。
     messages.push({ role: 'tool-calls', text: res.text || undefined, calls: res.toolCalls });
 
     const exec = executeCalls(res.toolCalls, { tools, invoke, catalog, failures, invocations, emit: false });
@@ -149,8 +148,12 @@ export interface AgentTurnResult {
 }
 
 export interface StreamAgentDeps extends RunAgentDeps {
-  /** 会话历史（此前各轮的完整消息序列）——多轮上下文的来源 */
+  /** 会话历史（此前各轮的完整消息序列）。界面和存档用全文；模型看到的多少由 contextLength 决定 */
   history?: AgentMessage[];
+  /** 用户停止或连接断开。当前这次模型调用会被取消，未完成的一轮不提交 */
+  signal?: AbortSignal;
+  /** 短只留上一句回复。标准或长在所选字数里附上更早对话的短行。缺省为短 */
+  contextLength?: ContextLength;
 }
 
 /**
@@ -180,13 +183,15 @@ export async function* streamAgent(
   const catalog = startCatalog(tools, deps.catalog === true, deps.sessionToolIds);
 
   for (;;) {
+    if (deps.signal?.aborted) return { text: '', steps, messages };
     if (++steps > maxSteps) throw new AgentStepLimitError(maxSteps);
 
     // 单轮模型调用：yield 增量文本（直译为 text-delta 事件），return 完整响应
     const turn = streamOneTurn(provider, {
       system,
-      messages: messagesForModel(messages),
+      messages: frameForModel(messages, deps.contextLength),
       tools: toolsForTurn(catalog, tools),
+      signal: deps.signal,
     });
     let res: LlmTurnResponse;
     for (;;) {
@@ -440,7 +445,7 @@ function isAskReply(v: unknown): v is AskReply {
   return (v as { declined?: unknown }).declined === true;
 }
 
-/** 同一次用户消息里，每次模型调用的用量相加。工具来回会把历史再送一遍，所以输入会重复计入 */
+/** 同一次用户消息里，每次模型调用的用量相加。每次只带任务框，系统提示和工具清单仍按步数计 */
 function addUsage(current: LlmUsage | undefined, next: LlmUsage): LlmUsage {
   if (!current) return { inputTokens: next.inputTokens, outputTokens: next.outputTokens };
   return {
@@ -456,7 +461,7 @@ function addUsage(current: LlmUsage | undefined, next: LlmUsage): LlmUsage {
  */
 async function* streamOneTurn(
   provider: LlmProvider,
-  req: { system: string; messages: AgentMessage[]; tools: AgentToolMeta[] },
+  req: { system: string; messages: AgentMessage[]; tools: AgentToolMeta[]; signal?: AbortSignal },
 ): AsyncGenerator<string, LlmTurnResponse> {
   if (provider.streamTurn) {
     let text = '';

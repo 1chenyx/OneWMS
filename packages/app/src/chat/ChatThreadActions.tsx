@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { DeleteOutlined, HistoryOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, HistoryOutlined, PlusOutlined, PlusSquareOutlined } from '@ant-design/icons';
 import { App as AntApp, Button, Input, Popconfirm, Popover, Space, Typography } from 'antd';
-import { useChatSession } from './ChatProvider';
+import { MAX_CHAT_WINDOWS, useChatScope } from './ChatProvider';
 
 /**
- * 新对话和历史。整页放在标题右侧；浮窗放在输入框底栏，只留图标。
+ * 新对话和历史。整页放在标题右侧；浮窗放在面板顶上，和收起分开。
  * 历史按标题筛选。点开一段可以接着聊。清空时正在看的这一段留下。
  */
 
@@ -23,7 +23,7 @@ export default function ChatThreadActions({
   variant: 'page' | 'dock';
   agents: readonly { id: string; name: string }[];
 }) {
-  const chat = useChatSession();
+  const chat = useChatScope();
   const { modal } = AntApp.useApp();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -64,7 +64,6 @@ export default function ChatThreadActions({
               <div key={thread.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <button
                   type="button"
-                  disabled={chat.isStreaming}
                   onClick={() => {
                     setOpen(false);
                     void chat.openThread(thread.id);
@@ -78,7 +77,7 @@ export default function ChatThreadActions({
                     boxShadow: current ? 'inset 3px 0 0 #e6b325' : 'none',
                     borderRadius: 8,
                     padding: '8px',
-                    cursor: chat.isStreaming ? 'not-allowed' : 'pointer',
+                    cursor: 'pointer',
                     font: 'inherit',
                     color: 'inherit',
                   }}
@@ -102,7 +101,7 @@ export default function ChatThreadActions({
                     size="small"
                     aria-label={`删除 ${thread.title}`}
                     icon={<DeleteOutlined aria-hidden />}
-                    disabled={chat.isStreaming && current}
+                    disabled={chat.windows.some((win) => win.threadId === thread.id && win.streaming)}
                   />
                 </Popconfirm>
               </div>
@@ -111,7 +110,7 @@ export default function ChatThreadActions({
         )}
       </div>
       <div style={{ borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 4, textAlign: 'right' }}>
-        <Button type="link" size="small" danger disabled={!canClear || chat.isStreaming} onClick={confirmClear}>
+        <Button type="link" size="small" danger disabled={!canClear || chat.anyStreaming} onClick={confirmClear}>
           清空历史
         </Button>
       </div>
@@ -127,7 +126,7 @@ export default function ChatThreadActions({
         if (next) void chat.refreshThreads();
         else setQuery('');
       }}
-      placement={dock ? 'topLeft' : 'bottomRight'}
+      placement="bottomRight"
       content={history}
     >
       <Button
@@ -138,7 +137,7 @@ export default function ChatThreadActions({
         icon={<HistoryOutlined aria-hidden />}
         style={dock ? { flex: 'none' } : undefined}
       >
-        {dock ? null : '历史'}
+        历史
       </Button>
     </Popover>
   );
@@ -154,7 +153,22 @@ export default function ChatThreadActions({
       onClick={() => chat.newChat()}
       style={dock ? { flex: 'none' } : undefined}
     >
-      {dock ? null : '新对话'}
+      新对话
+    </Button>
+  );
+
+  const another = (
+    <Button
+      type={dock ? 'text' : 'default'}
+      size={dock ? 'small' : 'middle'}
+      aria-label="新窗口"
+      title="新窗口"
+      icon={<PlusSquareOutlined aria-hidden />}
+      disabled={chat.windowCount >= MAX_CHAT_WINDOWS}
+      onClick={() => chat.openWindow()}
+      style={dock ? { flex: 'none' } : undefined}
+    >
+      新窗口
     </Button>
   );
 
@@ -163,6 +177,7 @@ export default function ChatThreadActions({
       <>
         {historyButton}
         {fresh}
+        {another}
       </>
     );
   }
@@ -170,6 +185,7 @@ export default function ChatThreadActions({
     <Space>
       {historyButton}
       {fresh}
+      {another}
     </Space>
   );
 }

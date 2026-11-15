@@ -2,11 +2,18 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { OneCore } from '@one/core';
 import {
   InsufficientStockError,
+  OrderNotFoundError,
   WaveBatchPickError,
   WaveBatchRequiredError,
   WaveDisabledError,
+  WaveExistsError,
   WaveMembersMovedError,
+  WaveNoOrdersError,
+  WaveNotFoundError,
+  WaveNotOpenError,
+  WaveOrderStateError,
   WaveOrderTakenError,
+  WavePickUnavailableError,
   WmsDomain,
   getWave,
 } from '../src/index.js';
@@ -126,6 +133,42 @@ describe('组波', () => {
     setModule('module.wave', false);
     await expect(ws.tools.invoke('wms.wave.create', { orderNos: [orderNo] })).rejects.toBeInstanceOf(WaveDisabledError);
   });
+
+  it('空单、入库单、已取消的出库单和找不到的单都不能组，单号也不能重复', async () => {
+    await stock('A-1', 10, 'A-01');
+    const before = countEvents();
+    await expect(ws.tools.invoke('wms.wave.create', { orderNos: [] })).rejects.toBeInstanceOf(WaveNoOrdersError);
+    await expect(ws.tools.invoke('wms.wave.create', { orderNos: ['  '] })).rejects.toBeInstanceOf(WaveNoOrdersError);
+
+    const inbound = (await ws.tools.invoke('wms.order.create', {
+      direction: 'in',
+      lines: [{ skuCode: 'A-1', quantity: 1, locationCode: 'A-01' }],
+    })) as { orderNo: string };
+    await expect(ws.tools.invoke('wms.wave.create', { orderNos: [inbound.orderNo] })).rejects.toBeInstanceOf(
+      WaveOrderStateError,
+    );
+
+    const canceled = await outbound('A-1', 1, 'A-01');
+    await ws.tools.invoke('wms.order.transition', { orderNo: canceled, to: 'canceled' });
+    await expect(ws.tools.invoke('wms.wave.create', { orderNos: [canceled] })).rejects.toBeInstanceOf(
+      WaveOrderStateError,
+    );
+    await expect(ws.tools.invoke('wms.wave.create', { orderNos: ['NO-SUCH'] })).rejects.toBeInstanceOf(
+      OrderNotFoundError,
+    );
+
+    const first = await outbound('A-1', 1, 'A-01');
+    await ws.tools.invoke('wms.wave.create', { waveNo: 'WV-FIXED', orderNos: [first] });
+    const second = await outbound('A-1', 1, 'A-01');
+    const beforeDuplicate = countEvents();
+    await expect(ws.tools.invoke('wms.wave.create', { waveNo: 'WV-FIXED', orderNos: [second] })).rejects.toBeInstanceOf(
+      WaveExistsError,
+    );
+    expect(countEvents()).toBe(beforeDuplicate);
+    expect(ws.orders.byNo(second)!.state).toBe('created');
+    expect(ws.waves.list().filter((wave) => wave.state === 'open')).toHaveLength(1);
+    expect(countEvents()).toBeGreaterThan(before);
+  });
 });
 
 describe('按波次拣货', () => {
@@ -174,6 +217,44 @@ describe('按波次拣货', () => {
       WaveMembersMovedError,
     );
     expect(ws.orders.byNo(first)!.state).toBe('waved');
+  });
+
+  it('找不到的波次不能拣、不能取消、也不能单查；拣过之后不能再拣或取消', async () => {
+    await stock('A-1', 10, 'A-01');
+    const orderNo = await outbound('A-1', 2, 'A-01');
+    const created = (await ws.tools.invoke('wms.wave.create', { orderNos: [orderNo] })) as { waveNo: string };
+    await expect(ws.tools.invoke('wms.wave.pick', { waveNo: 'NO-WAVE' })).rejects.toBeInstanceOf(WaveNotFoundError);
+    await expect(ws.tools.invoke('wms.wave.cancel', { waveNo: 'NO-WAVE' })).rejects.toBeInstanceOf(WaveNotFoundError);
+    await expect(ws.tools.invoke('wms.wave.query', { waveNo: 'NO-WAVE' })).rejects.toBeInstanceOf(WaveNotFoundError);
+
+    const listed = (await ws.tools.invoke('wms.wave.query', {})) as { waves: { waveNo: string }[] };
+    expect(listed.waves.map((wave) => wave.waveNo)).toContain(created.waveNo);
+    const one = (await ws.tools.invoke('wms.wave.query', { waveNo: created.waveNo })) as {
+      wave: { walk: { skuCode: string; quantity: number }[] };
+    };
+    expect(one.wave.walk).toEqual([expect.objectContaining({ skuCode: 'A-1', quantity: 2 })]);
+
+    await ws.tools.invoke('wms.wave.pick', { waveNo: created.waveNo });
+    await expect(ws.tools.invoke('wms.wave.pick', { waveNo: created.waveNo })).rejects.toBeInstanceOf(WaveNotOpenError);
+    await expect(ws.tools.invoke('wms.wave.cancel', { waveNo: created.waveNo })).rejects.toBeInstanceOf(
+      WaveNotOpenError,
+    );
+    expect(ws.orders.byNo(orderNo)!.state).toBe('picking');
+  });
+
+  it('拣货关掉后，波次页不再生成拣货单', async () => {
+    await stock('A-1', 10, 'A-01');
+    const orderNo = await outbound('A-1', 2, 'A-01');
+    const created = (await ws.tools.invoke('wms.wave.create', { orderNos: [orderNo] })) as { waveNo: string };
+    setModule('module.picking', false);
+    const before = countEvents();
+    await expect(ws.tools.invoke('wms.wave.pick', { waveNo: created.waveNo })).rejects.toBeInstanceOf(
+      WavePickUnavailableError,
+    );
+    expect(countEvents()).toBe(before);
+    expect(ws.waves.byNo(created.waveNo)!.state).toBe('open');
+    expect(ws.orders.byNo(orderNo)!.state).toBe('waved');
+    expect(ws.pickings.list()).toHaveLength(0);
   });
 
   it('replay 后波次和已组波状态还在', async () => {

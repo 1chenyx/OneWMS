@@ -73,7 +73,7 @@ describe('工具调用人话', () => {
         payload: { group: 'order', toolIds: ['wms.order.create'] },
       }),
     );
-    expect(spoken.title).toBe('加载了 order 的完整说明');
+    expect(spoken.title).toBe('加载了开单的完整说明');
     expect(spoken.title).not.toContain('wms.');
   });
 

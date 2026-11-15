@@ -1,5 +1,6 @@
 import type { WmsWorkspace } from '@one/wms';
 import { runAgent, streamAgent, type AgentRunResult, type AgentStreamEvent, type AgentTurnResult, type AskReply } from './agent.js';
+import type { ContextLength } from './model-history.js';
 import { AI_ATTACHMENT_RULE, UI_ASK_DESCRIPTION, UI_ASK_PARAM_DESCRIPTION } from './prompts.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import type { AgentDefinition } from './agent-defs.js';
@@ -55,6 +56,8 @@ export interface WmsAgent {
   stream(
     userText: string,
     history?: AgentMessage[],
+    signal?: AbortSignal,
+    contextLength?: ContextLength,
   ): AsyncGenerator<AgentStreamEvent, AgentTurnResult, AskReply>;
 }
 
@@ -156,10 +159,12 @@ export function createAgentFromDef(
         // 常驻瘦 schema；整组完整说明随 tools.load 的结果返回
         catalog: true,
       }),
-    stream: (userText, history) =>
+    stream: (userText, history, signal, contextLength) =>
       streamAgent(withTimeContext(userText), {
         provider,
         system: streamSystem,
+        signal,
+        contextLength,
         // 会话通道附加 ui.ask（分流：编排层拦截挂起，不进工具总线）和本轮附件工具
         tools: [...tools, UI_ASK_TOOL, ...sessionTools.map((tool) => tool.meta)],
         invoke: (toolId, args, callId) => {

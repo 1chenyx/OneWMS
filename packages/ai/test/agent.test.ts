@@ -16,6 +16,13 @@ import type {
  * 验证：多轮循环、结果回传格式、错误不中断、maxSteps 保护、旁白保留。
  */
 
+function frameText(messages: LlmTurnRequest['messages']): string {
+  expect(messages).toHaveLength(1);
+  const message = messages[0];
+  if (!message || message.role !== 'user') throw new Error('expected task frame');
+  return message.text;
+}
+
 const demoTools: AgentToolMeta[] = [
   {
     id: 'wms.inventory.adjust',
@@ -94,15 +101,20 @@ describe('runAgent：循环与终态', () => {
       { toolId: 'wms.inventory.query', args: {}, ok: true, payload: { skuCode: 'A-1', quantity: 5 } },
     ]);
 
-    // 第二轮请求必须携带完整历史：user → tool-calls（含旁白）→ tool-results
+    // 第二轮只带任务框：请求 + 最新结果。会话记录仍留着旁白和全文
     const second = requests[1].messages;
-    expect(second).toHaveLength(3);
-    expect(second[1]).toEqual({
+    expect(second).toHaveLength(1);
+    const sent = frameText(second);
+    expect(sent).toContain('A-1 还剩多少？');
+    expect(sent).toContain('"skuCode":"A-1"');
+    expect(sent).toContain('"quantity":5');
+    expect(sent).not.toContain('好的，我查一下');
+    expect(result.messages[1]).toEqual({
       role: 'tool-calls',
       text: '好的，我查一下',
       calls: [{ callId: 'c1', toolId: 'wms.inventory.query', args: {} }],
     });
-    expect(second[2]).toEqual({
+    expect(result.messages[2]).toEqual({
       role: 'tool-results',
       results: [{ callId: 'c1', toolId: 'wms.inventory.query', ok: true, payload: { skuCode: 'A-1', quantity: 5 } }],
     });
@@ -128,8 +140,10 @@ describe('runAgent：循环与终态', () => {
     });
 
     expect(result.invocations.map((i) => i.toolId)).toEqual(['wms.inventory.query', 'wms.inventory.adjust']);
-    const results = (requests[1].messages[2] as { results: Array<{ callId: string }> }).results;
-    expect(results.map((r) => r.callId)).toEqual(['c1', 'c2']);
+    const sent = frameText(requests[1].messages);
+    expect(sent).toContain('wms.inventory.query');
+    expect(sent).toContain('wms.inventory.adjust');
+    expect(sent).toContain('"quantity":10');
   });
 
   it('连续多轮工具调用：历史逐轮累积', async () => {
@@ -147,7 +161,14 @@ describe('runAgent：循环与终态', () => {
     });
 
     expect(result.steps).toBe(3);
-    expect(requests[2].messages).toHaveLength(5);
+    // 会话逐轮累积；进模型的仍是一份任务框，不把前一步的原文再叠上去
+    expect(result.messages).toHaveLength(5);
+    expect(requests[2].messages).toHaveLength(1);
+    const sent = frameText(requests[2].messages);
+    expect(sent).toContain('这一轮已完成');
+    expect(sent).toContain('wms.inventory.query');
+    expect(sent).toContain('最新结果');
+    expect(sent).toContain('wms.inventory.adjust');
     expect(result.invocations).toHaveLength(2);
   });
 });
@@ -172,11 +193,9 @@ describe('runAgent：错误回传（§4.2 规则即护栏）', () => {
     expect(result.text).toBe('库存不足，无法出库 999 个');
     expect(result.invocations[0].ok).toBe(false);
 
-    const results = requests[1].messages[2] as {
-      results: Array<{ ok: boolean; payload: { error: string } }>;
-    };
-    expect(results.results[0].ok).toBe(false);
-    expect(results.results[0].payload.error).toContain('库存不足');
+    const sent = frameText(requests[1].messages);
+    expect(sent).toContain('库存不足');
+    expect(sent).toContain('wms.inventory.adjust 失败');
   });
 
   it('非 Error 异常也被兜住（String 化）', async () => {
@@ -194,8 +213,7 @@ describe('runAgent：错误回传（§4.2 规则即护栏）', () => {
       },
     });
 
-    const results = requests[1].messages[2] as { results: Array<{ payload: { error: string } }> };
-    expect(results.results[0].payload.error).toBe('原始字符串错误');
+    expect(frameText(requests[1].messages)).toContain('原始字符串错误');
   });
 
   it('同一工具同一参数失败过就不再执行，键序不同也算同一参数', async () => {
@@ -220,11 +238,9 @@ describe('runAgent：错误回传（§4.2 规则即护栏）', () => {
     expect(result.text).toBe('库存不足');
     expect(result.invocations).toHaveLength(2);
     expect(result.invocations[1].ok).toBe(false);
-    const second = requests[2].messages[4];
-    expect(second.role).toBe('tool-results');
-    if (second.role !== 'tool-results') return;
-    expect(second.results[0].payload).toMatchObject({ repeated: true });
-    expect(JSON.stringify(second.results[0].payload)).toContain('库存不足');
+    const sent = frameText(requests[2].messages);
+    expect(sent).toContain('"repeated":true');
+    expect(sent).toContain('库存不足');
   });
 
   it('参数不同，或上次已经成功，都会再执行', async () => {
@@ -287,10 +303,9 @@ describe('runAgent：错误回传（§4.2 规则即护栏）', () => {
 
     expect(adjustAttempts).toBe(2); // 重试真正执行了，不是缓存重放
     expect(result.invocations[2]).toMatchObject({ toolId: 'wms.inventory.adjust', ok: true });
-    // 第四次模型调用收到重试的成功结果（messages[6] = c3 的 tool-results）
-    const retried = requests[3].messages[6];
-    if (retried.role !== 'tool-results') throw new Error('expected tool-results');
-    expect(retried.results[0].payload).toEqual({ quantity: 1 });
+    // 第四次模型调用的任务框里是这次重试的成功结果，不是整段工具原文
+    expect(requests[3].messages).toHaveLength(1);
+    expect(frameText(requests[3].messages)).toContain('"quantity":1');
     expect(result.text).toBe('好了');
   });
 });
@@ -490,16 +505,16 @@ describe('streamAgent：事件序与终态', () => {
     expect((result.messages[1] as { text?: string }).text).toBe('好的，我查一下');
   });
 
-  it('历史参数：messages 以 history 为前缀（多轮会话上下文）', async () => {
+  it('历史参数：模型只看到上一句回复和这句请求，会话记录仍是全文', async () => {
     const history = [
       { role: 'user' as const, text: 'A-1 还剩多少？' },
       { role: 'assistant' as const, text: '5 个' },
     ];
-    // 快照调用时的消息角色序列（messages 数组会被编排层继续追加，不能存引用）
-    const seenRoles: string[][] = [];
+    const seen: string[] = [];
     const provider: LlmProvider = {
       async completeTurn(req) {
-        seenRoles.push(req.messages.map((m) => m.role));
+        const message = req.messages[0];
+        seen.push(message?.role === 'user' ? message.text : '');
         return { text: '还是同一批', toolCalls: [] };
       },
     };
@@ -514,8 +529,41 @@ describe('streamAgent：事件序与终态', () => {
       }),
     );
 
-    expect(seenRoles).toEqual([['user', 'assistant', 'user']]);
+    expect(seen).toEqual(['上一句回复：\n5 个\n\n用户请求：\n是这批新到的吗？']);
     expect(result.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+  });
+
+  it('标准长度把更早的对话压进任务框，会话记录仍是全文', async () => {
+    const history = [
+      { role: 'user' as const, text: '第一问' },
+      { role: 'assistant' as const, text: '第一答' },
+      { role: 'user' as const, text: '第二问' },
+      { role: 'assistant' as const, text: '第二答' },
+    ];
+    const seen: string[] = [];
+    const provider: LlmProvider = {
+      async completeTurn(req) {
+        const message = req.messages[0];
+        seen.push(message?.role === 'user' ? message.text : '');
+        return { text: '接着办', toolCalls: [] };
+      },
+    };
+
+    const { result } = await collect(
+      streamAgent('第三问', {
+        provider,
+        system: 'SYS',
+        tools: demoTools,
+        invoke: noopInvoke,
+        history,
+        contextLength: 'medium',
+      }),
+    );
+
+    expect(seen[0]).toContain('更早的对话：\n用户：第二问\n用户：第一问 → 第一答');
+    expect(seen[0]).toContain('上一句回复：\n第二答');
+    expect(seen[0]).toContain('用户请求：\n第三问');
+    expect(result.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
   });
 
   it('工具抛错 → ok=false 的 tool-result 事件（循环不中断）', async () => {
@@ -630,13 +678,11 @@ describe('streamAgent：事件序与终态', () => {
         ],
       }),
     );
-    const sent = requests[0].messages[2];
-    expect(sent.role).toBe('tool-results');
-    if (sent.role !== 'tool-results') return;
-    expect(sent.results[0].payload).toEqual({
-      summary: 'wms.inventory.query 成功。共 1 条，本页 1 条',
-    });
-    expect(JSON.stringify(sent)).not.toContain('OLD');
+    const sent = frameText(requests[0].messages);
+    expect(sent).toContain('上一句回复：\n第二答');
+    expect(sent).toContain('第三问');
+    expect(sent).not.toContain('OLD');
+    expect(sent).not.toContain('第一问');
     const stored = result.messages[2];
     expect(stored.role).toBe('tool-results');
     if (stored.role !== 'tool-results') return;
@@ -682,9 +728,10 @@ describe('streamAgent：ui.ask 挂起/唤醒', () => {
     const e5 = await gen.next();
     expect(e5.done).toBe(true);
 
-    // 回答回传模型：第二轮请求的 tool-results 携带 answer
-    const results = (requests[1].messages[2] as { results: Array<{ payload: unknown }> }).results;
-    expect(results[0].payload).toEqual({ answer: '20 个' });
+    // 回答回传模型：任务框带上问题和回答
+    const sent = frameText(requests[1].messages);
+    expect(sent).toContain('要入多少个？');
+    expect(sent).toContain('20 个');
   });
 
   it('declined 注入（跳过/超时）→ payload { declined: true } 回传模型', async () => {
@@ -700,8 +747,7 @@ describe('streamAgent：ui.ask 挂起/唤醒', () => {
     await gen.next(); // text-delta
     await gen.next(); // turn-done
 
-    const results = (requests[1].messages[2] as { results: Array<{ payload: unknown }> }).results;
-    expect(results[0].payload).toEqual({ declined: true });
+    expect(frameText(requests[1].messages)).toContain('用户没有回答');
   });
 
   it('普通 next() 恢复（未注入回答）→ 兜底按 declined 处理', async () => {
@@ -791,11 +837,11 @@ describe('工具目录：瘦 schema 与 tools.load', () => {
     expect(requests[1].tools).toEqual(requests[0].tools);
     expect(result.invocations[0]).toMatchObject({ toolId: 'tools.load', ok: true });
     expect(JSON.stringify(result.invocations[0].payload)).toContain('分配策略');
-    const loadResult = requests[1].messages[2] as { results: Array<{ payload: unknown }> };
-    expect(JSON.stringify(loadResult.results[0].payload)).toContain('分配策略');
-    // 工具已经调用成功，回复这一步不再带整组说明
-    expect(JSON.stringify(requests[2].messages)).not.toContain('分配策略');
-    expect(JSON.stringify(requests[2].messages)).toContain('完整说明已从本轮上下文拿掉');
+    expect(frameText(requests[1].messages)).toContain('分配策略');
+    // 工具已经调用成功，回复这一步不再带整组说明，只留一行
+    expect(frameText(requests[2].messages)).not.toContain('分配策略');
+    expect(frameText(requests[2].messages)).toContain('group=order');
+    expect(frameText(requests[2].messages)).toContain('IN-1');
     expect(result.text).toBe('开好了');
   });
 
@@ -841,8 +887,9 @@ describe('工具目录：瘦 schema 与 tools.load', () => {
     await gen.next();
     // 工具数没过延迟线，摘要仍在清单里；上一轮的整组说明不进这一轮
     expect(requests[0].tools.find((t) => t.id === 'wms.order.create')?.description).toBe('创建一张入库单或出库单');
-    expect(JSON.stringify(requests[0].messages)).not.toContain('分配策略');
-    expect(JSON.stringify(requests[0].messages)).toContain('group=order');
+    expect(frameText(requests[0].messages)).not.toContain('分配策略');
+    expect(frameText(requests[0].messages)).toContain('要开哪种？');
+    expect(frameText(requests[0].messages)).not.toContain('group=order');
     expect(requests[0].tools.map((t) => t.id)).toContain('ui.ask');
   });
 
@@ -937,7 +984,8 @@ describe('工具目录：瘦 schema 与 tools.load', () => {
     });
     await gen.next();
     expect(next.requests[0].tools.some((tool) => tool.id === 'wms.extra.t0')).toBe(false);
-    expect(JSON.stringify(next.requests[0].messages)).not.toContain('整组说明很长');
-    expect(JSON.stringify(next.requests[0].messages)).toContain('group=extra');
+    expect(frameText(next.requests[0].messages)).not.toContain('整组说明很长');
+    expect(frameText(next.requests[0].messages)).not.toContain('group=extra');
+    expect(frameText(next.requests[0].messages)).toContain('上一句回复');
   });
 });

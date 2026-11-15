@@ -35,6 +35,9 @@ export type { AgentDefinition, AgentToolRef } from './agent-defs.js';
 
 export { buildSystemPrompt } from './system-prompt.js';
 
+export { CONTEXT_BUDGET } from './model-history.js';
+export type { ContextLength } from './model-history.js';
+
 export {
   extractMemoryPlan,
   parseMemoryPlan,

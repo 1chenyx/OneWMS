@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { OneCore } from '@one/core';
 import {
+  getReturnable,
   InvalidTransitionError,
   LoadRequiredError,
   PackRequiredError,
   PickingRequiredError,
   QcRequiredError,
+  ReturnNotPostedError,
   ReviewRequiredError,
   WaveBatchPickError,
   WaveRequiredError,
@@ -210,5 +212,132 @@ describe('波次、复核、打包、装车', () => {
     await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' });
     expect(ws.orders.byNo(outNo)!.state).toBe('shipped');
     expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(6);
+  });
+});
+
+async function shelf(qty = 10): Promise<void> {
+  const orderNo = await inbound(qty);
+  await ws.tools.invoke('wms.order.transition', { orderNo, to: 'inspected' });
+  await ws.tools.invoke('wms.order.putaway', { orderNo });
+  await ws.tools.invoke('wms.order.transition', { orderNo, to: 'done' });
+}
+
+async function pickClose(qty = 4): Promise<string> {
+  const outNo = await outbound(qty);
+  const wave = (await ws.tools.invoke('wms.wave.create', { orderNos: [outNo] })) as { waveNo: string };
+  const picking = (await ws.tools.invoke('wms.wave.pick', { waveNo: wave.waveNo })) as { pickingNo: string };
+  await ws.tools.invoke('wms.picking.pick', {
+    pickingNo: picking.pickingNo,
+    orderNo: outNo,
+    skuCode: 'A-1',
+    pickedQty: qty,
+  });
+  await ws.tools.invoke('wms.picking.close', { pickingNo: picking.pickingNo });
+  return outNo;
+}
+
+describe('单步关掉后的绕行', () => {
+  it('质检开着、上架关掉：质检后直接完成，库存停在收货数', async () => {
+    setModule('module.putaway', false);
+    const orderNo = await inbound();
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo, to: 'done' })).rejects.toBeInstanceOf(
+      QcRequiredError,
+    );
+    await ws.tools.invoke('wms.order.transition', { orderNo, to: 'inspected' });
+    await ws.tools.invoke('wms.order.transition', { orderNo, to: 'done' });
+    expect(ws.orders.byNo(orderNo)!.state).toBe('done');
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(10);
+  });
+
+  it('复核关掉：拣完直接打包，再装车发货，不再扣第二次', async () => {
+    await shelf();
+    const outNo = await pickClose();
+    setModule('module.review', false);
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' })).rejects.toBeInstanceOf(
+      PackRequiredError,
+    );
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'packed' });
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' })).rejects.toBeInstanceOf(
+      LoadRequiredError,
+    );
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'loaded' });
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' });
+    expect(ws.orders.byNo(outNo)!.state).toBe('shipped');
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(6);
+  });
+
+  it('打包关掉：复核后直接装车，再发货', async () => {
+    await shelf();
+    const outNo = await pickClose();
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'reviewed' });
+    setModule('module.pack', false);
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'packed' })).rejects.toBeInstanceOf(
+      InvalidTransitionError,
+    );
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' })).rejects.toBeInstanceOf(
+      LoadRequiredError,
+    );
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'loaded' });
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' });
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(6);
+  });
+
+  it('装车关掉：打包后直接发货', async () => {
+    await shelf();
+    const outNo = await pickClose();
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'reviewed' });
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'packed' });
+    setModule('module.load', false);
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'loaded' })).rejects.toBeInstanceOf(
+      InvalidTransitionError,
+    );
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' });
+    expect(ws.orders.byNo(outNo)!.state).toBe('shipped');
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(6);
+  });
+});
+
+describe('客退窗口', () => {
+  it('已拣货可以退；复核、打包、装车还不能退；发货之后又能退', async () => {
+    await shelf();
+    const outNo = await pickClose();
+    expect(getReturnable(ws, outNo).lines[0]).toMatchObject({ skuCode: 'A-1', remaining: 4 });
+    await ws.tools.invoke('wms.order.create', {
+      direction: 'in',
+      orderNo: 'RT-PICKED',
+      returnOf: outNo,
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+    await ws.tools.invoke('wms.order.transition', { orderNo: 'RT-PICKED', to: 'received' });
+    await ws.tools.invoke('wms.order.transition', { orderNo: 'RT-PICKED', to: 'inspected' });
+    await ws.tools.invoke('wms.order.putaway', { orderNo: 'RT-PICKED' });
+    await ws.tools.invoke('wms.order.transition', { orderNo: 'RT-PICKED', to: 'done' });
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(7);
+
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'reviewed' });
+    expect(() => getReturnable(ws, outNo)).toThrow(ReturnNotPostedError);
+    await expect(
+      ws.tools.invoke('wms.order.create', {
+        direction: 'in',
+        returnOf: outNo,
+        lines: [{ skuCode: 'A-1', quantity: 1 }],
+      }),
+    ).rejects.toThrow(ReturnNotPostedError);
+
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'packed' });
+    expect(() => getReturnable(ws, outNo)).toThrow(ReturnNotPostedError);
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'loaded' });
+    expect(() => getReturnable(ws, outNo)).toThrow(ReturnNotPostedError);
+
+    await ws.tools.invoke('wms.order.transition', { orderNo: outNo, to: 'shipped' });
+    expect(getReturnable(ws, outNo).lines[0]!.remaining).toBe(3);
+    await ws.tools.invoke('wms.order.create', {
+      direction: 'in',
+      orderNo: 'RT-SHIP',
+      returnOf: outNo,
+      lines: [{ skuCode: 'A-1', quantity: 3 }],
+    });
+    await ws.tools.invoke('wms.order.transition', { orderNo: 'RT-SHIP', to: 'received' });
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(10);
   });
 });

@@ -1,12 +1,13 @@
 import { forwardRef, useEffect, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { ButtonProps } from 'antd';
-import { DownOutlined, PaperClipOutlined, SendOutlined } from '@ant-design/icons';
+import { CloseOutlined, DownOutlined, PaperClipOutlined, SendOutlined } from '@ant-design/icons';
 import { Alert, App as AntApp, Button, Card, Dropdown, Input, Modal, Space, Spin, Tag, Typography } from 'antd';
 import { api } from '../api/client';
 import type { AgentDef, AiProfilePublic, ChatAttachmentPayload, ChatInvocation } from '../api/client';
 import { useAiConfig, useProposals } from '../api/hooks';
-import { useChatSession } from '../chat/ChatProvider';
-import type { ChatTurn } from '../chat/ChatProvider';
+import { ChatScope, useChatScope } from '../chat/ChatProvider';
+import type { ChatContextLength, ChatTurn } from '../chat/ChatProvider';
 import { ChatMarkdown } from '../chat/render-markdown';
 import { parseChatFile, MAX_CHAT_FILES } from '../chat/parse-attachment';
 import { useAppNav } from '../app-nav';
@@ -27,7 +28,7 @@ import { face } from '../theme';
  *    切换厂商和模型（一个按钮：厂商作子菜单分组，点是这个厂商的模型，
  *    预设加上已经保存过的名字）。地址和密钥跟这个厂商已保存的那一条走。
  *    切换助手 = 当前段先收进历史，再换新会话并清空画面（流式中锁定）；切换厂商或模型不换会话；
- *  - 标题右侧（浮窗则在输入框底栏）有「历史」和「新对话」。历史可按标题搜索，
+ *  - 标题右侧有「历史」「新对话」和「新窗口」。浮窗里这三项在顶栏，输入行留助手、模型、上下文和发送。历史可按标题搜索，
  *    点开一段接着聊。新对话先把当前段收进存档。清空历史时正在看的这一段留下；
  *  - 配置确认：对话里的 profile.propose 和 AI 记忆设置一到就弹窗，
  *    写明将改成什么样、有什么影响；关掉后可从输入框上方再打开。
@@ -36,9 +37,11 @@ import { face } from '../theme';
  *    按 Markdown 排版。模型写来的 HTML 只当文字显示；
  *  - 成功的操作展开后仍可去对应管理页；
  *  - 输入区可以带上 Excel、CSV 或文本，用户说怎么处理，助手就怎么处理。
- *    发送在输入框内的右下角，和助手、模型、导入文件同一行。
+ *    发送在输入框内的右下角，和助手、模型、上下文、导入文件同一行。
+ *    上下文决定送给模型的长度：短只留上一句，标准大约两千字，长大约四千字。气泡和存档仍是全文。
  *    模型回报的 token 显示在底栏上方，是本段各轮的合计。
- *  - variant=dock：右侧浮窗里的同一块面板，不带页头，输入框矮一档。
+ *    每一轮记下用时：回复过程中显示已运行多久，结束后留在这轮气泡下面。
+ *  - variant=dock：右侧浮窗里的面板。顶栏可拖动，多段对话用页签切换，输入框矮一档。
  *    底栏不换行，助手和模型变窄后省略过长的名字。
  */
 
@@ -53,6 +56,18 @@ function configuredVendors(profiles: AiProfilePublic[]): { vendorId: string; nam
   }
   return out;
 }
+
+const CONTEXT_LABEL: Record<ChatContextLength, string> = {
+  short: '短',
+  medium: '标准',
+  long: '长',
+};
+
+const CONTEXT_MENU: { key: ChatContextLength; label: string }[] = [
+  { key: 'short', label: '短 · 只留上一句' },
+  { key: 'medium', label: '标准 · 大约 2000 字' },
+  { key: 'long', label: '长 · 大约 4000 字' },
+];
 
 /** 这个厂商用来带地址和密钥的那一条：模型名对上优先，其次有密钥的，否则第一条。 */
 function credentialFor(profiles: AiProfilePublic[], vendorId: string, modelId: string): AiProfilePublic | undefined {
@@ -121,6 +136,46 @@ function formatTokenCount(value: number): string {
   return String(Math.max(0, Math.floor(value))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+/** 一轮跑了多久。不到 1 秒单独说，满一小时就不再带秒 */
+function formatRunLength(ms: number): string {
+  const totalSeconds = Math.floor((Number.isFinite(ms) ? Math.max(0, ms) : 0) / 1000);
+  if (totalSeconds < 1) return '不足 1 秒';
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return minutes === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes} 分`;
+  if (minutes > 0) return seconds === 0 ? `${minutes} 分` : `${minutes} 分 ${seconds} 秒`;
+  return `${seconds} 秒`;
+}
+
+function useNow(ticking: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!ticking) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [ticking]);
+  return now;
+}
+
+function TurnTiming({ turn, now }: { turn: ChatTurn; now: number }) {
+  const running = !turn.done && typeof turn.startedAt === 'number';
+  const ms = running ? now - (turn.startedAt as number) : turn.elapsedMs;
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return null;
+  const length = formatRunLength(ms);
+  const label = running ? `已运行 ${length}` : `用时 ${length}`;
+  return (
+    <Typography.Text
+      type="secondary"
+      style={{ display: 'block' }}
+      aria-label={running ? `本轮已运行 ${length}` : `本轮用时 ${length}`}
+    >
+      {label}
+    </Typography.Text>
+  );
+}
+
 /** 本段已结束各轮的合计。正在回复的这一轮要等模型回报后才计入 */
 function sessionTokenUse(turns: readonly ChatTurn[]): { inputTokens: number; outputTokens: number; last: number } | null {
   let inputTokens = 0;
@@ -164,9 +219,21 @@ function TokenUse({ turns, streaming }: { turns: readonly ChatTurn[]; streaming:
   );
 }
 
-export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'dock' }) {
+function ChatPageBody({
+  variant = 'page',
+  showStrip = false,
+  onCollapse,
+  onDragHandlePointerDown,
+}: {
+  variant?: 'page' | 'dock';
+  showStrip?: boolean;
+  onCollapse?: () => void;
+  onDragHandlePointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
+}) {
   const { message } = AntApp.useApp();
-  const chat = useChatSession();
+  const chat = useChatScope();
+  const timing = useNow(chat.turns.some((turn) => !turn.done && typeof turn.startedAt === 'number'));
+  const isActiveWindow = chat.windowId === chat.activeWindowId;
   const { navigate } = useAppNav();
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<ChatAttachmentPayload[]>([]);
@@ -201,6 +268,7 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
   // 还没弹过的配置提议马上打开。助手定义不进这个窗口。关掉或拍板后不再自动弹出同一条。
   const configProposals = proposalsForChat(proposals);
   useEffect(() => {
+    if (!isActiveWindow) return;
     const pending = proposalsForChat(proposals);
     if (openProposalId && pending.some((item) => item.proposalId === openProposalId)) return;
     const fresh = pending.find((item) => !promptedRef.current.has(item.proposalId));
@@ -210,7 +278,7 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
       return;
     }
     if (openProposalId) setOpenProposalId(null);
-  }, [proposals, openProposalId]);
+  }, [isActiveWindow, proposals, openProposalId]);
 
   const holdProposal = () => setOpenProposalId(null);
 
@@ -245,6 +313,11 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
   useEffect(() => {
     listRef.current?.scrollTo({ top: 1e9, behavior: 'smooth' });
   }, [chat.turns]);
+
+  useEffect(() => {
+    setInput('');
+    setFiles([]);
+  }, [chat.threadId, chat.windowId]);
 
   const send = () => {
     const text = input.trim();
@@ -305,6 +378,7 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
         display: 'flex',
         flexDirection: 'column',
         gap: dock ? 8 : 16,
+        padding: dock ? '0 12px 12px' : undefined,
         flex: 1,
         height: '100%',
         maxHeight: '100%',
@@ -312,13 +386,118 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
         overflow: 'hidden',
       }}
     >
-      {dock ? null : (
+      {dock ? (
+        <div
+          onPointerDown={onDragHandlePointerDown}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            flex: 'none',
+            minWidth: 0,
+            margin: '0 -12px',
+            padding: '8px 8px 8px 16px',
+            borderBottom: `1px solid ${face.line}`,
+          }}
+        >
+          <div
+            title="按住拖动"
+            style={{
+              flex: '1 1 auto',
+              minWidth: 0,
+              cursor: 'grab',
+              userSelect: 'none',
+              fontWeight: 500,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            AI 对话
+          </div>
+          <ChatThreadActions variant="dock" agents={agents} />
+          {onCollapse ? (
+            <Button
+              type="text"
+              size="small"
+              aria-label="收起 AI 对话"
+              aria-expanded
+              title="收起"
+              icon={<CloseOutlined />}
+              onClick={onCollapse}
+            />
+          ) : null}
+        </div>
+      ) : (
         <PageHeader
           title="AI 对话"
           subtitle="自然语言出入库 / 改配置"
           extra={<ChatThreadActions variant="page" agents={agents} />}
         />
       )}
+      {showStrip && chat.windows.length > 1 ? (
+        <div role="tablist" aria-label="对话窗口" style={{ display: 'flex', gap: 8, overflowX: 'auto', flex: 'none' }}>
+          {chat.windows.map((win) => {
+            const selected = win.id === chat.activeWindowId;
+            return (
+              <div
+                key={win.id}
+                role="tab"
+                aria-selected={selected}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  borderRadius: 8,
+                  padding: '2px 4px 2px 8px',
+                  background: selected ? face.amberWash : 'transparent',
+                  flex: 'none',
+                }}
+              >
+                <button
+                  type="button"
+                  aria-label={`切换到 ${win.title}`}
+                  onClick={() => chat.focusWindow(win.id)}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    font: 'inherit',
+                    cursor: 'pointer',
+                    padding: '4px 0',
+                    maxWidth: 160,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {win.title}
+                </button>
+                {win.streaming ? (
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: 6,
+                      background: face.amberInk,
+                      display: 'inline-block',
+                      flex: 'none',
+                    }}
+                  />
+                ) : null}
+                <button
+                  type="button"
+                  aria-label={`关闭窗口 ${win.title}`}
+                  onClick={() => chat.closeWindow(win.id)}
+                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', font: 'inherit', padding: 4 }}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
       {/* AI 未配置引导卡：配置保存成功后自动消失 */}
       {aiUnconfigured ? (
         <Alert
@@ -333,19 +512,21 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
           }
         />
       ) : null}
-      <Modal
-        title="请确认配置变更"
-        open={openProposalId !== null}
-        onCancel={holdProposal}
-        footer={null}
-        width={640}
-        destroyOnHidden
-        maskClosable={false}
-      >
-        {openProposalId ? (
-          <ProposalDetail proposalId={openProposalId} onDone={holdProposal} onLater={holdProposal} />
-        ) : null}
-      </Modal>
+      {isActiveWindow ? (
+        <Modal
+          title="请确认配置变更"
+          open={openProposalId !== null}
+          onCancel={holdProposal}
+          footer={null}
+          width={640}
+          destroyOnHidden
+          maskClosable={false}
+        >
+          {openProposalId ? (
+            <ProposalDetail proposalId={openProposalId} onDone={holdProposal} onLater={holdProposal} />
+          ) : null}
+        </Modal>
+      ) : null}
       <Card
         style={{
           flex: 1,
@@ -390,6 +571,12 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
                     ) : null}
                   </Typography.Paragraph>
                 ) : null}
+                {turn.stopped ? (
+                  <Typography.Text type="secondary" style={{ display: 'block' }}>
+                    已停止
+                  </Typography.Text>
+                ) : null}
+                <TurnTiming turn={turn} now={timing} />
               </div>
             ))}
             {chat.isStreaming ? <Spin tip="思考中…" /> : null}
@@ -456,7 +643,11 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
                   send();
                 }
               }}
-              placeholder="输入指令，Enter 发送（Shift+Enter 换行）。可以把 Excel、CSV 或文本拖进这里，再说怎么处理"
+              placeholder={
+                dock
+                  ? '说要做什么，Enter 发送。文件可以直接拖进来'
+                  : '输入指令，Enter 发送（Shift+Enter 换行）。可以把 Excel、CSV 或文本拖进这里，再说怎么处理'
+              }
               disabled={chat.isStreaming}
               style={{ padding: '4px 0', resize: 'none' }}
             />
@@ -480,7 +671,6 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
                 minWidth: 0,
               }}
             >
-              {dock ? <ChatThreadActions variant="dock" agents={agents} /> : null}
               <div
                 className="composer-slot"
                 style={{
@@ -559,6 +749,26 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
                   </ComposerChip>
                 </Dropdown>
               </div>
+              <Dropdown
+                trigger={['click']}
+                disabled={chat.isStreaming}
+                menu={{
+                  selectable: true,
+                  selectedKeys: [chat.contextLength],
+                  items: CONTEXT_MENU,
+                  onClick: ({ key }) => {
+                    if (key === 'short' || key === 'medium' || key === 'long') chat.setContextLength(key);
+                  },
+                }}
+              >
+                <ComposerChip
+                  title={`上下文：${CONTEXT_LABEL[chat.contextLength]}`}
+                  style={{ flex: 'none', ...(dock ? { paddingInline: 8 } : {}) }}
+                >
+                  <ChipText>{`上下文：${CONTEXT_LABEL[chat.contextLength]}`}</ChipText>
+                  <DownOutlined aria-hidden style={{ flex: 'none' }} />
+                </ComposerChip>
+              </Dropdown>
               {dock ? null : <div style={{ flex: 1 }} />}
               <ComposerChip
                 icon={<PaperClipOutlined />}
@@ -569,21 +779,47 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
                 <ChipText>导入文件</ChipText>
               </ComposerChip>
               <Button
-                type="primary"
+                type={chat.isStreaming ? 'default' : 'primary'}
+                danger={chat.isStreaming}
                 size="small"
-                icon={<SendOutlined />}
-                aria-label="发送"
-                onClick={send}
-                loading={chat.isStreaming || readingFile}
+                icon={chat.isStreaming ? undefined : <SendOutlined />}
+                aria-label={chat.isStreaming ? '停止' : '发送'}
+                onClick={chat.isStreaming ? () => chat.stop() : send}
+                loading={readingFile}
                 style={{ flex: 'none', borderRadius: 999, paddingInline: dock ? 8 : 12 }}
               >
-                发送
+                {chat.isStreaming ? '停止' : '发送'}
               </Button>
             </div>
           </div>
         </div>
       </Card>
     </div>
+  );
+}
+
+export default function ChatPage({
+  variant = 'page',
+  windowId,
+  showStrip,
+  onCollapse,
+  onDragHandlePointerDown,
+}: {
+  variant?: 'page' | 'dock';
+  windowId?: string;
+  showStrip?: boolean;
+  onCollapse?: () => void;
+  onDragHandlePointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
+}) {
+  return (
+    <ChatScope windowId={windowId}>
+      <ChatPageBody
+        variant={variant}
+        showStrip={showStrip ?? windowId === undefined}
+        onCollapse={onCollapse}
+        onDragHandlePointerDown={onDragHandlePointerDown}
+      />
+    </ChatScope>
   );
 }
 

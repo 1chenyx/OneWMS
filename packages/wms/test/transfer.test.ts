@@ -3,6 +3,7 @@ import { OneCore } from '@one/core';
 import {
   WmsDomain,
   SkuNotFoundError,
+  SerialManagedNotSupportedError,
   TransferExistsError,
   TransferNoLinesError,
   TransferNotFoundError,
@@ -82,6 +83,18 @@ describe('创建与守卫', () => {
         lines: [{ skuCode: 'X-9', fromLocationCode: 'L-1', toLocationCode: 'L-2', quantity: 1 }],
       }),
     ).rejects.toThrow(SkuNotFoundError);
+  });
+
+  it('按序列号管理的商品不能调拨，也不落单', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'S-1', name: '序列件', serialTracked: true });
+    const before = ws.events.count();
+    await expect(
+      ws.tools.invoke('wms.transfer.create', {
+        lines: [{ skuCode: 'S-1', fromLocationCode: 'L-1', toLocationCode: 'L-2', quantity: 1 }],
+      }),
+    ).rejects.toThrow(SerialManagedNotSupportedError);
+    expect(ws.events.count()).toBe(before);
+    expect(ws.transfers.list()).toHaveLength(0);
   });
 
   it('源目标库位相同拒绝（同库位请用移库）', async () => {

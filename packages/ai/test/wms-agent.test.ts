@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { OneCore, type EventEnvelope } from '@one/core';
 import { WmsDomain } from '@one/wms';
 import { createAgentFromDef, readAgentDefs } from '../src/index.js';
+import { applyLoad } from '../src/tool-catalog.js';
 import type { AgentDefinition, LlmProvider, LlmTurnRequest, LlmTurnResponse } from '../src/index.js';
 
 /**
@@ -100,8 +101,8 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     // 模型收到的是结构化错误，且循环未中断
     expect(result.text).toBe('出库失败：A-1 库存不足（当前只有 5 个）');
     expect(result.invocations[1].ok).toBe(false);
-    const results = requests[1].messages[2] as { results: Array<{ payload: { error?: string } }> };
-    expect(results.results[1].payload.error).toContain('InsufficientStockError');
+    const follow = requests[1].messages[0];
+    expect(follow?.role === 'user' ? follow.text : '').toContain('InsufficientStockError');
 
     // 校验失败绝不落事件（§4.3 命令失败 ≠ 事实）
     expect(EVENTS().length).toBe(before);
@@ -142,6 +143,23 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     const loadTool = req.tools.find((t) => t.id === 'tools.load');
     expect(loadTool?.description).toContain('必须先加载');
     expect(loadTool?.description).toMatch(/order（\d+）/);
+    expect(loadTool?.description).toContain('order-flow（');
+    expect(loadTool?.description).toContain('order-edit（');
+    const orderDocs = (applyLoad(agent.tools, { group: 'order' }).payload as { docs: string; toolIds: string[] });
+    expect(orderDocs.toolIds).toEqual(expect.arrayContaining(['wms.order.create', 'wms.order.cancel']));
+    expect(orderDocs.toolIds).not.toContain('wms.order.transition');
+    expect(orderDocs.toolIds).not.toContain('wms.order.revise');
+    expect(orderDocs.docs).toContain('### wms.order.create');
+    expect(orderDocs.docs).not.toContain('### wms.order.transition');
+    expect(orderDocs.docs).not.toContain('参数：');
+    const flowDocs = applyLoad(agent.tools, { group: 'order-flow' }).payload as { docs: string };
+    expect(flowDocs.docs).toContain('### wms.order.transition');
+    expect(flowDocs.docs).not.toContain('### wms.order.create');
+    const editDocs = applyLoad(agent.tools, { group: 'order-edit' }).payload as { docs: string; toolIds: string[] };
+    expect(editDocs.toolIds).toContain('wms.order.query');
+    expect(editDocs.toolIds).toContain('wms.order.revise');
+    expect(editDocs.docs).not.toContain('### wms.order.query');
+    expect(editDocs.docs).toContain('常驻工具的说明已在清单里');
     // 常驻高频工具保持完整说明，常见查询不用先加载
     expect(req.tools.find((t) => t.id === 'wms.inventory.query')?.description).toContain('byLocation');
     // 默认 actor（无 nodeId 后缀）

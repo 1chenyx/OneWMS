@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
-  DIALOGUE_TURNS_FULL,
-  RECENT_USER_TURNS_FULL,
+  CONTEXT_BUDGET,
+  PREVIOUS_REPLY_MAX,
   TOOL_RESULT_CHAR_BUDGET,
   TOOLS_LOAD_CHAR_BUDGET,
-  messagesForModel,
+  frameForModel,
 } from '../src/model-history.js';
+import type { ContextLength } from '../src/model-history.js';
 import type { AgentMessage } from '../src/types.js';
 
 function user(text: string): AgentMessage {
@@ -19,178 +20,196 @@ function results(payload: unknown, toolId = 'wms.inventory.query'): AgentMessage
   };
 }
 
-describe('messagesForModel', () => {
-  it('只保留当前这轮用户消息里的工具结果全文，上一轮收成一句', () => {
-    expect(RECENT_USER_TURNS_FULL).toBe(1);
-    const payload = { skuCode: 'A-1', quantity: 5 };
-    const messages: AgentMessage[] = [
-      user('上一问'),
-      results(payload),
-      { role: 'assistant', text: '好' },
-      user('这一问'),
-      results({ skuCode: 'A-1', quantity: 8 }),
-    ];
-    const out = messagesForModel(messages);
-    expect(out[1]).not.toBe(messages[1]);
-    const older = out[1];
-    if (older.role !== 'tool-results') throw new Error('expected tool-results');
-    expect(older.results[0].payload).toEqual({ summary: 'wms.inventory.query 成功。skuCode=A-1，quantity=5' });
-    expect(out[4]).toBe(messages[4]);
+function frame(messages: AgentMessage[], length?: ContextLength): string {
+  const out = length === undefined ? frameForModel(messages) : frameForModel(messages, length);
+  expect(out).toHaveLength(1);
+  const message = out[0];
+  if (!message || message.role !== 'user') throw new Error('expected user frame');
+  return message.text;
+}
+
+describe('frameForModel', () => {
+  it('还没有工具结果时，原样送出这句请求', () => {
+    const messages = [user('你好')];
+    expect(frameForModel(messages)).toEqual([messages[0]]);
   });
 
-  it('更早的工具结果收成一句，且不改原历史', () => {
-    const payload = { rows: [{ skuCode: 'OLD' }], total: 3 };
-    const old = results(payload);
-    const messages: AgentMessage[] = [
+  it('只带上一句回复和这句请求，更早的对话和工具结果不带', () => {
+    const full = { skuCode: 'OLD', quantity: 9, rows: [{ skuCode: 'OLD' }], total: 1 };
+    const text = frame([
       user('第一问'),
-      old,
+      results(full),
       { role: 'assistant', text: '第一答' },
       user('第二问'),
       { role: 'assistant', text: '第二答' },
       user('第三问'),
-    ];
-    const out = messagesForModel(messages);
-    expect(out[1]).not.toBe(old);
-    expect(out[1]).toEqual({
-      role: 'tool-results',
-      results: [
-        {
-          callId: 'c',
-          toolId: 'wms.inventory.query',
-          ok: true,
-          payload: { summary: 'wms.inventory.query 成功。共 3 条，本页 1 条' },
-        },
-      ],
-    });
-    expect(old).toEqual(results(payload));
+    ]);
+    expect(text).toContain('上一句回复：\n第二答');
+    expect(text).toContain('用户请求：\n第三问');
+    expect(text).not.toContain('第一问');
+    expect(text).not.toContain('第一答');
+    expect(text).not.toContain('OLD');
   });
 
-  it('失败结果的一句结论带上错误', () => {
-    const messages: AgentMessage[] = [
-      user('一'),
+  it('上一句回复超长时留结尾', () => {
+    const tail = '单号 OUT-9';
+    const text = frame([
+      { role: 'assistant', text: `${'甲'.repeat(PREVIOUS_REPLY_MAX)}${tail}` },
+      user('改刚才那单'),
+    ]);
+    expect(text.startsWith('上一句回复：\n…')).toBe(true);
+    expect(text).toContain(tail);
+    expect(text).toContain('改刚才那单');
+  });
+
+  it('这一轮里更早的结果收成一行，最新一批保留全文', () => {
+    const text = frame([
+      user('查一下再入库'),
+      results({ skuCode: 'A-1', quantity: 5 }),
+      results({ orderNo: 'IN-1' }, 'wms.order.create'),
+    ]);
+    expect(text).toContain('这一轮已完成：\n- wms.inventory.query 成功。skuCode=A-1，quantity=5');
+    expect(text).toContain('最新结果：\n');
+    expect(text).toContain('wms.order.create 成功');
+    expect(text).toContain('"orderNo":"IN-1"');
+    expect(text).not.toContain('"quantity":5');
+  });
+
+  it('同一步的多个结果都留在最新一批', () => {
+    const text = frame([
+      user('一起查'),
+      {
+        role: 'tool-results',
+        results: [
+          { callId: 'c1', toolId: 'wms.inventory.query', ok: true, payload: { skuCode: 'A-1' } },
+          { callId: 'c2', toolId: 'wms.order.query', ok: true, payload: { orderNo: 'OUT-1' } },
+        ],
+      },
+    ]);
+    expect(text).toContain('wms.inventory.query 成功');
+    expect(text).toContain('"skuCode":"A-1"');
+    expect(text).toContain('wms.order.query 成功');
+    expect(text).toContain('"orderNo":"OUT-1"');
+    expect(text).not.toContain('这一轮已完成');
+  });
+
+  it('失败的最新结果带上错误全文', () => {
+    const text = frame([
+      user('出库'),
       {
         role: 'tool-results',
         results: [{ callId: 'c', toolId: 'wms.order.create', ok: false, payload: { error: '库存不足' } }],
       },
-      { role: 'assistant', text: '没做成' },
-      user('二'),
-      { role: 'assistant', text: '好' },
-      user('三'),
-    ];
-    const out = messagesForModel(messages);
-    const first = out[1];
-    if (first.role !== 'tool-results') throw new Error('expected tool-results');
-    expect(first.results[0].payload).toEqual({ summary: 'wms.order.create 失败。库存不足' });
+    ]);
+    expect(text).toContain('wms.order.create 失败');
+    expect(text).toContain('库存不足');
   });
 
-  it('近处的单次结果超过上限就截断，并提示翻页', () => {
+  it('近处的单次结果超过上限就截断', () => {
     const payload = { note: 'x'.repeat(TOOL_RESULT_CHAR_BUDGET) };
-    const messages: AgentMessage[] = [user('只这一问'), results(payload)];
-    const out = messagesForModel(messages);
-    const sent = out[1];
-    if (sent.role !== 'tool-results') throw new Error('expected tool-results');
-    const body = sent.results[0].payload as { truncated: boolean; note: string; preview: string };
-    expect(body.truncated).toBe(true);
-    expect(body.note).toContain('limit');
-    expect(body.preview.length).toBe(TOOL_RESULT_CHAR_BUDGET);
-    expect(JSON.stringify(body)).not.toContain('x'.repeat(TOOL_RESULT_CHAR_BUDGET));
-    expect(messages[1]).toEqual(results(payload));
+    const text = frame([user('只这一问'), results(payload)]);
+    expect(text).toContain('已截断');
+    expect(text).not.toContain('x'.repeat(TOOL_RESULT_CHAR_BUDGET));
   });
 
-  it('tools.load 的说明结果用更大预算：超过普通上限不截，超过自己的上限才截', () => {
-    const fits = { group: 'order', toolIds: [], docs: 'x'.repeat(TOOL_RESULT_CHAR_BUDGET + 500) };
-    const intact = messagesForModel([user('只这一问'), results(fits, 'tools.load')]);
-    const kept = intact[1];
-    if (kept.role !== 'tool-results') throw new Error('expected tool-results');
-    expect(kept.results[0].payload).toBe(fits);
-
-    const huge = { group: 'order', toolIds: [], docs: 'y'.repeat(TOOLS_LOAD_CHAR_BUDGET) };
-    const clipped = messagesForModel([user('只这一问'), results(huge, 'tools.load')]);
-    const sent = clipped[1];
-    if (sent.role !== 'tool-results') throw new Error('expected tool-results');
-    const body = sent.results[0].payload as { truncated: boolean; note: string; preview: string };
-    expect(body.truncated).toBe(true);
-    expect(body.note).toContain('tools.load');
-    expect(body.preview.length).toBe(TOOLS_LOAD_CHAR_BUDGET);
-  });
-
-  it('本组工具已经调用成功后，tools.load 的说明收成一句；没调用前保留', () => {
+  it('还没用过的说明留在任务框里，调用成功后只留一行', () => {
     const docs = { group: 'order', toolIds: ['wms.order.create'], docs: '分配策略的完整规则' };
-    const pending = messagesForModel([user('开单'), results(docs, 'tools.load')]);
-    const kept = pending[1];
-    if (kept.role !== 'tool-results') throw new Error('expected tool-results');
-    expect(kept.results[0].payload).toBe(docs);
+    const pending = frame([user('开单'), results(docs, 'tools.load')]);
+    expect(pending).toContain('分配策略的完整规则');
+    expect(pending).not.toContain('最新结果');
 
-    const used = messagesForModel([
+    const used = frame([
       user('开单'),
       results(docs, 'tools.load'),
       results({ orderNo: 'IN-1' }, 'wms.order.create'),
     ]);
-    const folded = used[1];
-    if (folded.role !== 'tool-results') throw new Error('expected tool-results');
-    expect(JSON.stringify(folded.results[0].payload)).not.toContain('分配策略');
-    expect(folded.results[0].payload).toMatchObject({ group: 'order', folded: true });
-    // 别的组先跑，order 的说明还留着
-    const other = messagesForModel([
+    expect(used).not.toContain('分配策略');
+    expect(used).toContain('group=order，1 个工具');
+    expect(used).toContain('"orderNo":"IN-1"');
+
+    const other = frame([
       user('开单'),
       results(docs, 'tools.load'),
       results({ skuCode: 'A-1' }, 'wms.inventory.query'),
     ]);
-    const still = other[1];
-    if (still.role !== 'tool-results') throw new Error('expected tool-results');
-    expect(still.results[0].payload).toBe(docs);
+    expect(other).toContain('分配策略的完整规则');
+    expect(other).toContain('"skuCode":"A-1"');
   });
 
-  it('上一轮的 tools.load 只留组名，不带整组说明', () => {
+  it('说明超过自己的上限才截断', () => {
+    const huge = { group: 'order', toolIds: [], docs: 'y'.repeat(TOOLS_LOAD_CHAR_BUDGET + 20) };
+    const text = frame([user('开单'), results(huge, 'tools.load')]);
+    expect(text).toContain('说明过长已截断');
+    expect(text).not.toContain('y'.repeat(TOOLS_LOAD_CHAR_BUDGET + 20));
+  });
+
+  it('上一轮加载过的说明不进下一句', () => {
     const docs = { group: 'order', toolIds: ['wms.order.create'], docs: '分配策略的完整规则' };
-    const out = messagesForModel([
+    const text = frame([
       user('开单'),
       results(docs, 'tools.load'),
       { role: 'assistant', text: '开好了 IN-1' },
       user('再看看'),
     ]);
-    const sent = out[1];
-    if (sent.role !== 'tool-results') throw new Error('expected tool-results');
-    expect(sent.results[0].payload).toEqual({ summary: 'tools.load 成功。group=order，1 个工具' });
-    expect(JSON.stringify(sent)).not.toContain('分配策略');
+    expect(text).toContain('上一句回复：\n开好了 IN-1');
+    expect(text).toContain('用户请求：\n再看看');
+    expect(text).not.toContain('分配策略');
+    expect(text).not.toContain('group=order');
   });
 
-  it('更早的对话原文和工具参数被截断，近四轮原文保留', () => {
-    expect(DIALOGUE_TURNS_FULL).toBe(4);
-    const long = '甲'.repeat(400);
-    const fat = { lines: '乙'.repeat(400) };
-    const messages: AgentMessage[] = [
-      user(long),
+  it('向用户提问的回答带上原来的问题', () => {
+    const text = frame([
+      user('入库'),
+      { role: 'tool-calls', calls: [{ callId: 'c', toolId: 'ui.ask', args: { question: '要入多少个？' } }] },
       {
-        role: 'tool-calls',
-        text: long,
-        calls: [{ callId: 'c', toolId: 'wms.order.create', args: fat }],
+        role: 'tool-results',
+        results: [{ callId: 'c', toolId: 'ui.ask', ok: true, payload: { answer: '20 个' } }],
       },
-      { role: 'assistant', text: long },
-      user('二'),
-      { role: 'assistant', text: '二答' },
-      user('三'),
-      { role: 'assistant', text: '三答' },
-      user('四'),
-      { role: 'assistant', text: '四答' },
-      user('五'),
+    ]);
+    expect(text).toContain('问题：要入多少个？');
+    expect(text).toContain('回答：20 个');
+  });
+
+  it('标准和长把更早的对话压成短行，工具原文和时间前缀不带', () => {
+    const earlier = [
+      user('当前时间：2026-01-01T00:00:00.000Z\n【附件 a】表.xlsx\n\n用户说：第一问'),
+      results({ skuCode: 'SECRET-SKU', rows: [{ skuCode: 'SECRET-SKU' }] }),
+      { role: 'assistant' as const, text: '第一答' },
+      user('当前时间：2026-01-01T00:00:01.000Z\n第二问'),
+      { role: 'assistant' as const, text: '第二答' },
+      user('第三问'),
     ];
-    const out = messagesForModel(messages);
-    const first = out[0];
-    if (first.role !== 'user') throw new Error('expected user');
-    expect(first.text.endsWith('…')).toBe(true);
-    expect(first.text.length).toBeLessThan(long.length);
-    const calls = out[1];
-    if (calls.role !== 'tool-calls') throw new Error('expected tool-calls');
-    expect(calls.calls[0].args).toEqual({
-      omitted: true,
-      keys: ['lines'],
-      note: '参数过长，已从较早的上下文拿掉',
-    });
-    expect(JSON.stringify(calls)).not.toContain('乙乙');
-    const recent = out[3];
-    if (recent.role !== 'user') throw new Error('expected user');
-    expect(recent.text).toBe('二');
-    expect(messages[0]).toEqual(user(long));
+    const text = frame(earlier, 'medium');
+    expect(text).toContain('更早的对话：\n用户：第二问\n用户：第一问 → 第一答');
+    expect(text).toContain('上一句回复：\n第二答');
+    expect(text).toContain('用户请求：\n第三问');
+    expect(text).not.toContain('SECRET-SKU');
+    expect(text).not.toContain('当前时间');
+    expect(text).not.toContain('表.xlsx');
+    expect(frame(earlier, 'long')).toContain('用户：第一问 → 第一答');
+    expect(frame(earlier)).not.toContain('第一问');
+  });
+
+  it('超出所选字数时丢掉最旧的短行，上一句回复仍单独占上限', () => {
+    const messages: AgentMessage[] = [];
+    for (let i = 0; i < 30; i++) {
+      const n = String(i).padStart(2, '0');
+      messages.push(user(`旧问题${n}${'甲'.repeat(80)}`));
+      messages.push({ role: 'assistant', text: `旧回答${n}${'乙'.repeat(100)}` });
+    }
+    messages.push(user('现在问'));
+    const medium = frame(messages, 'medium');
+    const long = frame(messages, 'long');
+    expect(medium).toContain('旧问题28');
+    expect(medium).not.toContain('旧问题00');
+    expect(long).toContain('旧问题00');
+    expect(sectionLengths(medium).total).toBeLessThanOrEqual(CONTEXT_BUDGET.medium);
+    expect(sectionLengths(long).total).toBeLessThanOrEqual(CONTEXT_BUDGET.long);
   });
 });
+
+function sectionLengths(text: string): { total: number } {
+  const earlier = text.split('更早的对话：\n')[1]?.split('\n\n上一句回复：')[0] ?? '';
+  const reply = text.split('上一句回复：\n')[1]?.split('\n\n用户请求：')[0] ?? '';
+  return { total: earlier.length + reply.length };
+}

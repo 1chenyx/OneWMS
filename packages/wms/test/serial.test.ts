@@ -7,6 +7,7 @@ import {
   SerialAlreadyInStockError,
   SerialCountError,
   SerialDisabledError,
+  SerialDuplicateError,
   SerialNotTrackedError,
   SerialRequiredError,
   SerialStockError,
@@ -111,6 +112,28 @@ describe('module.serial', () => {
     expect(qty('A-1', 'A-01')).toBe(1);
     expect(querySerial(ws, 'S-1').status).toBe('out');
     expect(querySerial(ws, 'S-2').status).toBe('in');
+  });
+
+  it('个数比件数多一个或少一个都拒绝；空号和重复号拒绝；两端空白会去掉', async () => {
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'A-1', serialTracked: true });
+    const before = ws.events.count();
+    await expect(
+      ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 2, serials: ['S-1'], reason: '期初' }),
+    ).rejects.toThrow(SerialCountError);
+    await expect(
+      ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 1, serials: ['S-1', 'S-2'], reason: '期初' }),
+    ).rejects.toThrow(SerialCountError);
+    await expect(
+      ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 1, serials: [' '], reason: '期初' }),
+    ).rejects.toThrow(/序列号不能为空/);
+    await expect(
+      ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 2, serials: ['S-1', ' S-1 '], reason: '期初' }),
+    ).rejects.toThrow(SerialDuplicateError);
+    expect(ws.events.count()).toBe(before);
+
+    await ws.tools.invoke('wms.inventory.adjust', { skuCode: 'A-1', delta: 1, serials: [' S-1 '], reason: '期初' });
+    expect(querySerial(ws, 'S-1').status).toBe('in');
+    expect(qty()).toBe(1);
   });
 
   it('入库单先占号，收货才入库；别人不能再占同一个在库号；取消收货把号退出', async () => {

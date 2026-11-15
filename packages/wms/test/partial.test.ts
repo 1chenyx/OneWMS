@@ -4,6 +4,7 @@ import {
   PartialDisabledError,
   PartialNotOnPostError,
   PartialQtyExceededError,
+  PartialUnwindError,
   WmsDomain,
 } from '../src/index.js';
 import { allowDirectShip } from './direct-ship.js';
@@ -75,8 +76,18 @@ describe('module.partial', () => {
       to: 'received',
       lines: [{ skuCode: 'A-1', quantity: 6 }],
     });
-    await ws.tools.invoke('wms.order.transition', { orderNo: created.orderNo, to: 'canceled' });
+    await expect(
+      ws.tools.invoke('wms.order.transition', {
+        orderNo: created.orderNo,
+        to: 'canceled',
+        lines: [{ skuCode: 'A-1', quantity: 4 }],
+      }),
+    ).rejects.toThrow(PartialUnwindError);
     const sku = ws.skus.byCode('A-1')!;
+    expect(ws.orders.byNo(created.orderNo)!.state).toBe('received');
+    expect(ws.inventory.quantityOf(sku.id)).toBe(6);
+
+    await ws.tools.invoke('wms.order.transition', { orderNo: created.orderNo, to: 'canceled' });
     expect(ws.inventory.quantityOf(sku.id)).toBe(0);
     expect(ws.orders.lines(ws.orders.byNo(created.orderNo)!.id)[0]!.fulfilledQty).toBe(0);
   });

@@ -18,7 +18,7 @@ export const AI_IDENTITY =
  */
 export const AI_BEHAVIOR_RULES: string[] = [
   '对业务数据的任何读写都必须通过工具调用完成，不要凭空编造数据。',
-  '清单外的工具先调 tools.load 再调用。group 取工具 id 的域，例如 wms.order.create 的组是 order；可选组写在 tools.load 的说明里。完整说明只跟这次加载的结果走，下一条用户消息不再保留，要再用就重新加载。',
+  '清单外的工具先调 tools.load 再调用。可选组在 tools.load 的说明里。单据分三组：order 是开单和取消，order-flow 是推进状态和上架，order-edit 是改单和状态冲突。完整说明只跟这次加载的结果走，下一条用户消息不再保留，要再用就重新加载。',
   '相互独立的查询在同一步里一起发出，系统会并行执行。后一个调用要用前一个结果时才分步。',
   '取消出入库单用 wms.order.cancel，先加载 order。盘点、拣货、波次、调拨、报损用各自的取消工具。流程不允许时说明原因，不要改别的状态假装删掉。',
   '工具返回 error 时如实转述原因，不要用相同参数再试，更不要虚构成功。',

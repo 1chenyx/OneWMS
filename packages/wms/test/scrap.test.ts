@@ -7,6 +7,7 @@ import {
   ScrapNoLinesError,
   ScrapNotFoundError,
   ScrapStateError,
+  SerialManagedNotSupportedError,
   SkuNotFoundError,
   DEFAULT_LOCATION_ID,
   DEFAULT_BATCH_NO,
@@ -75,6 +76,18 @@ describe('创建与确认', () => {
     await expect(ws.tools.invoke('wms.scrap.create', { lines: [{ skuCode: 'X-9', quantity: 1 }] })).rejects.toThrow(
       SkuNotFoundError,
     );
+  });
+
+  it('按序列号管理的商品不能报损，也不落单', async () => {
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'S-1', name: '序列件', serialTracked: true });
+    const before = ws.events.count();
+    await expect(
+      ws.tools.invoke('wms.scrap.create', {
+        lines: [{ skuCode: 'S-1', locationCode: 'L-1', quantity: 1 }],
+      }),
+    ).rejects.toThrow(SerialManagedNotSupportedError);
+    expect(ws.events.count()).toBe(before);
+    expect(ws.scraps.list()).toHaveLength(0);
   });
 
   it('余量不足整单拒绝（另一行也不落流水）', async () => {

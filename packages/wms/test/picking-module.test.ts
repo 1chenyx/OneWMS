@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OneCore, type PatchOp } from '@one/core';
-import { InsufficientStockError, InvalidTransitionError, PickingRequiredError, WmsDomain } from '../src/index.js';
+import {
+  InsufficientStockError,
+  InvalidTransitionError,
+  PickingRequiredError,
+  PickingStillOpenError,
+  WmsDomain,
+} from '../src/index.js';
 
 /**
  * module.picking：出库拣货步骤可关。
@@ -101,6 +107,25 @@ describe('module.picking', () => {
     expect(ws.orders.byNo(cancel)!.state).toBe('canceled');
     expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(7);
     expect(ws.inventory.reservedOfSku(ws.skus.byCode('A-1')!.id)).toBe(0);
+  });
+
+  it('关掉拣货后，没关的拣货单挡住直接发货；取消拣货单后才能发', async () => {
+    const orderNo = await outbound(4, 'OUT-OPEN');
+    await ws.tools.invoke('wms.order.transition', { orderNo, to: 'picking' });
+    const picking = (await ws.tools.invoke('wms.picking.create', { orderNos: [orderNo] })) as { pickingNo: string };
+    setEnabled('module.picking', false);
+    const before = ws.events.count();
+    await expect(ws.tools.invoke('wms.order.transition', { orderNo, to: 'shipped' })).rejects.toThrow(
+      PickingStillOpenError,
+    );
+    expect(ws.events.count()).toBe(before);
+    expect(ws.orders.byNo(orderNo)!.state).toBe('picking');
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(10);
+
+    await ws.tools.invoke('wms.picking.cancel', { pickingNo: picking.pickingNo });
+    await ws.tools.invoke('wms.order.transition', { orderNo, to: 'shipped' });
+    expect(ws.orders.byNo(orderNo)!.state).toBe('shipped');
+    expect(ws.inventory.quantityOf(ws.skus.byCode('A-1')!.id)).toBe(6);
   });
 
   it('老库打开时补上拣货开关，再开一次不再改版本', () => {

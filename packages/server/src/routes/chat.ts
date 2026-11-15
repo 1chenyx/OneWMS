@@ -9,6 +9,7 @@ import {
   type AgentMessage,
   type AiProviderConfig,
   type AskReply,
+  type ContextLength,
   type LlmProvider,
 } from '@one/ai';
 import type { AiModelProfile } from '../ai-config-store.js';
@@ -81,6 +82,8 @@ interface ChatSession {
   /** streaming = 有一条消息正在处理（含 ask 挂起中；同一会话串行，防止历史交错） */
   status: 'idle' | 'streaming';
   updatedAt: number;
+  /** 新的一条消息或一次中断会加一。旧的那一轮结束后不准再改会话 */
+  generation: number;
   pendingAsk?: PendingAsk;
 }
 
@@ -89,12 +92,27 @@ const MODEL_NAME = /^[\w.:/+@-]{1,80}$/;
 /** 已保存模型的 id（随机十六进制，或旧文件升级来的 legacy） */
 const PROFILE_ID = /^[\w-]{1,64}$/;
 
+/** 这段对话说过的话。用时、工具结果和是否停止都不算新的一句，历史时间保持不动 */
+function talkKey(turns: readonly { userText: string; assistantText: string; attachments?: readonly { name: string }[] }[]): string {
+  return turns
+    .map((turn) => `${turn.userText}\0${turn.attachments?.map((file) => file.name).join(',') ?? ''}\0${turn.assistantText}`)
+    .join('\n');
+}
+
 function readRequestedModel(raw: unknown): { ok: true; model?: string } | { ok: false; message: string } {
   if (raw === undefined || raw === null || raw === '') return { ok: true };
   if (typeof raw !== 'string' || !MODEL_NAME.test(raw.trim())) {
     return { ok: false, message: '模型名无效' };
   }
   return { ok: true, model: raw.trim() };
+}
+
+function readContextLength(
+  raw: unknown,
+): { ok: true; context?: Exclude<ContextLength, 'short'> } | { ok: false; message: string } {
+  if (raw === undefined || raw === null || raw === '' || raw === 'short') return { ok: true };
+  if (raw === 'medium' || raw === 'long') return { ok: true, context: raw };
+  return { ok: false, message: '上下文长度无效' };
 }
 
 function readProfileId(raw: unknown): { ok: true; profileId?: string } | { ok: false; message: string } {
@@ -169,6 +187,7 @@ export function chatRoutes(ctx: AppContext): Hono {
       attachments: [],
       status: 'idle',
       updatedAt: now,
+      generation: 0,
     };
     sessions.set(id, session);
     return session;
@@ -224,12 +243,14 @@ export function chatRoutes(ctx: AppContext): Hono {
       const prev = ctx.chatThreads.get(id);
       const history = live && live.history.length > 0 ? live.history : (prev?.history ?? []);
       const now = Date.now();
+      // 点开、切换时会把同一段气泡再写一遍。时间只在说了新的话时往前走。
+      const sameTalk = prev ? talkKey(prev.turns) === talkKey(turns) : false;
       const saved = ctx.chatThreads.upsert({
         id,
         agentId,
         title: titleFromTurns(turns),
         createdAt: prev?.createdAt ?? now,
-        updatedAt: now,
+        updatedAt: sameTalk ? prev!.updatedAt : now,
         turns,
         history,
       });
@@ -254,7 +275,14 @@ export function chatRoutes(ctx: AppContext): Hono {
       const exceptRaw = typeof body.exceptId === 'string' ? body.exceptId.trim() : '';
       const exceptId = exceptRaw ? readThreadId(exceptRaw) : undefined;
       if (exceptRaw && !exceptId) return c.json({ code: 'BAD_REQUEST', message: '会话无效' }, 400);
+      const preserved: ChatThreadRecord[] = [];
+      for (const [sid, session] of sessions) {
+        if (session.status !== 'streaming' || sid === exceptId) continue;
+        const row = ctx.chatThreads.get(sid);
+        if (row) preserved.push(row);
+      }
       ctx.chatThreads.clearExcept(exceptId);
+      for (const row of preserved) ctx.chatThreads.upsert(row);
       for (const [sid, session] of sessions) {
         if (sid === exceptId || session.status === 'streaming') continue;
         sessions.delete(sid);
@@ -300,8 +328,13 @@ export function chatRoutes(ctx: AppContext): Hono {
         attachments?: unknown;
         model?: unknown;
         profileId?: unknown;
+        context?: unknown;
       });
       const message = typeof body.message === 'string' ? body.message.trim() : '';
+      const contextLength = readContextLength(body.context);
+      if (!contextLength.ok) {
+        return c.json({ code: 'BAD_REQUEST', message: contextLength.message }, 400);
+      }
       const picked = readProfileId(body.profileId);
       if (!picked.ok) {
         return c.json({ code: 'BAD_REQUEST', message: picked.message }, 400);
@@ -338,6 +371,7 @@ export function chatRoutes(ctx: AppContext): Hono {
           409,
         );
       }
+      const generation = ++session.generation;
       session.status = 'streaming';
       session.attachments = rememberAttachments(session.attachments, taken.items);
       const userText = composeUserText(message, taken.items, session.attachments);
@@ -374,17 +408,32 @@ export function chatRoutes(ctx: AppContext): Hono {
             : undefined,
       });
 
+      const controller = new AbortController();
+      const stopThisRun = () => {
+        controller.abort();
+        // 马上让出这个会话，同一个窗口可以接着发；旧的一轮不准再提交
+        if (session.generation === generation) session.status = 'idle';
+        settleAsk(session, { declined: true });
+      };
+      if (c.req.raw.signal.aborted) stopThisRun();
+      else c.req.raw.signal.addEventListener('abort', stopThisRun, { once: true });
+
       return streamSSE(c, async (stream) => {
+        stream.onAbort(stopThisRun);
         // ask 挂起时收到的用户回答：经 next(reply) 注入生成器（普通恢复时为 undefined）
         let reply: AskReply | undefined;
         try {
           // 手动驱动生成器：yield 的事件推 SSE；return 值是完整历史（turn-done 后提交）
-          const run = agent.stream(userText, session.history)[Symbol.asyncIterator]();
+          const run = agent.stream(userText, session.history, controller.signal, contextLength.context)[
+            Symbol.asyncIterator
+          ]();
           let turnUsage: { inputTokens: number; outputTokens: number } | undefined;
           for (;;) {
             const { value, done } = reply === undefined ? await run.next() : await run.next(reply);
             reply = undefined;
             if (done) {
+              // 用户停止或连接断开：这一轮不进模型上下文
+              if (session.generation !== generation || controller.signal.aborted || stream.aborted) break;
               session.history = value.messages;
               archiveCommitted(session, agentId, turnUsage);
               // 自动记忆（fire-and-forget）：turn-done 历史提交后排队提取，
@@ -392,7 +441,7 @@ export function chatRoutes(ctx: AppContext): Hono {
               void scheduleMemoryExtraction(ctx, agentProvider, value.messages);
               break;
             }
-            if (stream.aborted) break; // 客户端断开：停止消费（本轮历史不提交）
+            if (controller.signal.aborted || stream.aborted) break;
             if (value.type === 'turn-done' && value.usage) turnUsage = value.usage;
             await stream.writeSSE({ event: value.type, data: JSON.stringify(value) });
             if (value.type === 'ask') {
@@ -407,6 +456,7 @@ export function chatRoutes(ctx: AppContext): Hono {
             }
           }
         } catch (err) {
+          if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) return;
           const text = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
           try {
             await stream.writeSSE({
@@ -417,9 +467,11 @@ export function chatRoutes(ctx: AppContext): Hono {
             // 客户端已断开——错误事件无处可送，本轮不提交历史
           }
         } finally {
-          session.status = 'idle';
-          session.updatedAt = Date.now();
-          settleAsk(session, { declined: true }); // 兜底：异常退出时释放挂起
+          if (session.generation === generation) {
+            session.status = 'idle';
+            session.updatedAt = Date.now();
+            settleAsk(session, { declined: true }); // 兜底：异常退出时释放挂起
+          }
         }
       });
     })

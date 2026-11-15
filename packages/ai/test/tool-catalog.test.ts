@@ -27,8 +27,15 @@ function tool(id: string, description = `${id} 的完整说明。后半句不进
 }
 
 describe('tool-catalog', () => {
-  it('组 id 取 wms 的第二段，其它取第一段', () => {
-    expect(toolGroup('wms.order.conflict.list')).toBe('order');
+  it('组 id 取 wms 的第二段，单据按任务拆开，其它取第一段', () => {
+    expect(toolGroup('wms.order.create')).toBe('order');
+    expect(toolGroup('wms.order.cancel')).toBe('order');
+    expect(toolGroup('wms.order.transition')).toBe('order-flow');
+    expect(toolGroup('wms.order.putaway')).toBe('order-flow');
+    expect(toolGroup('wms.order.revise')).toBe('order-edit');
+    expect(toolGroup('wms.order.query')).toBe('order-edit');
+    expect(toolGroup('wms.order.conflict.list')).toBe('order-edit');
+    expect(toolGroup('wms.inventory.query')).toBe('inventory');
     expect(toolGroup('memory.list')).toBe('memory');
     expect(toolGroup('profile.propose')).toBe('profile');
   });
@@ -78,7 +85,17 @@ describe('tool-catalog', () => {
     const ok = applyLoad(domain, { group: 'order' });
     expect(ok).toMatchObject({ ok: true, group: 'order', payload: { toolIds: ['wms.order.create'] } });
     expect(ok).toMatchObject({ payload: { docs: expect.stringContaining('### wms.order.create') } });
+    const docs = (ok.payload as { docs: string }).docs;
+    // 类型、必填不进说明；正文没写过的参数说明留一句
+    expect(docs).not.toContain('参数：');
+    expect(docs).not.toContain('必填');
+    expect(docs).toContain('name：名称');
     expect(ok.payload).not.toHaveProperty('error');
+
+    const covered = tool('wms.order.cancel', '取消单据。名称已经写在正文里。');
+    const again = applyLoad([covered], { group: 'order' });
+    const againDocs = (again.payload as { docs: string }).docs;
+    expect(againDocs).not.toContain('name：名称');
 
     const groups = expandedGroupsFromHistory([
       { role: 'tool-results', results: [{ callId: 'c', toolId: 'tools.load', ok: true, payload: { group: 'order', toolIds: [] } }] },

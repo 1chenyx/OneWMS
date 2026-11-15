@@ -92,6 +92,8 @@ export interface LlmTurnRequest {
   system: string;
   messages: AgentMessage[];
   tools: AgentToolMeta[];
+  /** 用户停止或连接断开时取消这一次模型调用 */
+  signal?: AbortSignal;
 }
 
 /**

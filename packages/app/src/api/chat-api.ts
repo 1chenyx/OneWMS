@@ -43,6 +43,7 @@ export interface ChatAttachmentChip {
  * 发送一条消息并逐事件消费 SSE 流（agentId 选助手，缺省 'general'）。
  * profileId 有值时用用户保存的那一条接入点（地址和密钥）。
  * model 只在同一条上改模型名时才传；不传 profileId 则由服务端用当前配置。
+ * context 只在用户选了标准或长时传入。不传时服务端按短处理，只把上一句回复送给模型。
  * 非流式错误（503/400/404/409 等 JSON 响应）统一抛 ApiError——UI 按 code 分支提示。
  */
 export async function streamChatMessage(
@@ -53,16 +54,20 @@ export async function streamChatMessage(
   attachments?: ChatAttachmentPayload[],
   profileId?: string,
   model?: string,
+  signal?: AbortSignal,
+  context?: 'medium' | 'long',
 ): Promise<void> {
   const res = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/message`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
+    signal,
     body: JSON.stringify({
       message,
       agentId,
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
       ...(profileId ? { profileId } : {}),
       ...(model ? { model } : {}),
+      ...(context ? { context } : {}),
     }),
   });
   if (!res.ok || !res.body) {
@@ -94,9 +99,13 @@ export interface ChatThreadTurn {
   assistantText: string;
   failed?: string;
   failedCode?: string;
+  /** 用户点了停止。已经生成的文字留在气泡里 */
+  stopped?: boolean;
   done: boolean;
   /** 这一轮的 token。旧存档和没回报用量的模型没有 */
   usage?: { inputTokens: number; outputTokens: number };
+  /** 从发出到这一轮结束的毫秒数。旧存档没有 */
+  elapsedMs?: number;
 }
 
 export async function listChatThreads(): Promise<ChatThreadSummary[]> {

@@ -31,6 +31,8 @@ function setup(): ReturnType<typeof createApp> {
 const json = { 'content-type': 'application/json' };
 const post = (app: ReturnType<typeof createApp>, url: string, body: unknown) =>
   app.request(url, { method: 'POST', body: JSON.stringify(body), headers: json });
+const put = (app: ReturnType<typeof createApp>, url: string, body: unknown) =>
+  app.request(url, { method: 'PUT', body: JSON.stringify(body), headers: json });
 
 describe('SKU 端点', () => {
   it('POST 建SKU（含扩展字段）→ GET 列表直查投影', async () => {
@@ -1235,5 +1237,250 @@ describe('编号', () => {
     expect(order.status).toBe(201);
     const orderBody = (await order.json()) as { orderNo: string };
     expect(orderBody.orderNo).toMatch(/^IN-\d{8}-0001$/);
+  });
+});
+
+function setModule(id: string, enabled: boolean): void {
+  const proposed = ctx!.ws.profile.propose(
+    'user:tester',
+    [{ op: 'replace', path: `/modules/${id}/enabled`, value: enabled }],
+    '测试开关',
+  );
+  ctx!.ws.profile.confirm(proposed.proposalId, 'user:tester');
+}
+
+describe('往来单位端点', () => {
+  it('新建供应商，按种类列出，改名后仍是供应商', async () => {
+    const app = setup();
+    const created = await post(app, '/api/partners', {
+      partnerCode: 'SUP-1',
+      kind: 'supplier',
+      name: '华东供应商',
+    });
+    expect(created.status).toBe(201);
+
+    const duplicate = await post(app, '/api/partners', {
+      partnerCode: 'SUP-1',
+      kind: 'customer',
+      name: '另一个',
+    });
+    expect(duplicate.status).toBe(400);
+
+    const listed = (await (await app.request('/api/partners?kind=supplier')).json()) as { partnerCode: string; name: string }[];
+    expect(listed.map((row) => row.partnerCode)).toEqual(['SUP-1']);
+
+    const renamed = await put(app, '/api/partners/SUP-1', { name: '华东五金' });
+    expect(renamed.status).toBe(200);
+    const again = (await (await app.request('/api/partners?q=五金')).json()) as { name: string; kind: string }[];
+    expect(again[0]).toMatchObject({ name: '华东五金', kind: 'supplier' });
+  });
+});
+
+describe('拣货端点', () => {
+  it('建拣货单、没拣完不能关、拣满关单后出库单已拣货并扣库存', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 10 });
+    await post(app, '/api/orders', {
+      direction: 'out',
+      orderNo: 'OUT-1',
+      lines: [{ skuCode: 'A-1', quantity: 4 }],
+    });
+    await post(app, '/api/orders/OUT-1/transition', { to: 'picking' });
+
+    const created = await post(app, '/api/pickings', { orderNos: ['OUT-1'] });
+    expect(created.status).toBe(201);
+    const { pickingNo } = (await created.json()) as { pickingNo: string };
+
+    const missing = await app.request('/api/pickings/NO-PICK');
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { code: string }).code).toBe('WMS_PICKING_NOT_FOUND');
+
+    const early = await post(app, `/api/pickings/${pickingNo}/close`, {});
+    expect(early.status).toBe(400);
+    expect(((await early.json()) as { code: string }).code).toBe('WMS_PICKING_INCOMPLETE');
+
+    const picked = await post(app, `/api/pickings/${pickingNo}/pick`, {
+      orderNo: 'OUT-1',
+      skuCode: 'A-1',
+      pickedQty: 4,
+    });
+    expect(picked.status).toBe(200);
+    const closed = await post(app, `/api/pickings/${pickingNo}/close`, {});
+    expect(closed.status).toBe(200);
+
+    const orders = (await (await app.request('/api/orders?direction=out')).json()) as { orderNo: string; state: string }[];
+    expect(orders.find((order) => order.orderNo === 'OUT-1')!.state).toBe('picked');
+    const stock = (await (await app.request('/api/inventory')).json()) as { quantity: number }[];
+    expect(stock[0]!.quantity).toBe(6);
+  });
+});
+
+describe('波次端点', () => {
+  it('组波后按整波生成拣货单；空单和找不到的波次拒绝', async () => {
+    const app = setup();
+    setModule('module.wave', true);
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/locations', { locationCode: 'A-01', name: '一号架' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 10, locationCode: 'A-01' });
+    await post(app, '/api/orders', {
+      direction: 'out',
+      orderNo: 'OUT-1',
+      lines: [{ skuCode: 'A-1', quantity: 4, locationCode: 'A-01' }],
+    });
+
+    const empty = await post(app, '/api/waves', { orderNos: [] });
+    expect(empty.status).toBe(400);
+    expect(((await empty.json()) as { code: string }).code).toBe('WMS_WAVE_NO_ORDERS');
+
+    const created = await post(app, '/api/waves', { orderNos: ['OUT-1'] });
+    expect(created.status).toBe(201);
+    const { waveNo } = (await created.json()) as { waveNo: string };
+
+    const detail = (await (await app.request(`/api/waves/${waveNo}`)).json()) as {
+      waveNo: string;
+      walk: { locationCode: string; quantity: number }[];
+    };
+    expect(detail.waveNo).toBe(waveNo);
+    expect(detail.walk[0]).toMatchObject({ locationCode: 'A-01', quantity: 4 });
+
+    const missing = await app.request('/api/waves/NO-WAVE');
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { code: string }).code).toBe('WMS_WAVE_NOT_FOUND');
+
+    const released = await post(app, `/api/waves/${waveNo}/pick`, {});
+    expect(released.status).toBe(200);
+    const body = (await released.json()) as { pickingNo: string };
+    expect(body.pickingNo).toMatch(/^PK-/);
+    const orders = (await (await app.request('/api/orders?direction=out')).json()) as { state: string }[];
+    expect(orders[0]!.state).toBe('picking');
+  });
+});
+
+describe('调拨端点', () => {
+  it('发货扣源库位，收货加目标库位；新建的单可以取消', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/locations', { locationCode: 'L-1', name: '一号架' });
+    await post(app, '/api/locations', { locationCode: 'L-2', name: '二号架' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 10, locationCode: 'L-1' });
+
+    const created = await post(app, '/api/transfers', {
+      lines: [{ skuCode: 'A-1', fromLocationCode: 'L-1', toLocationCode: 'L-2', quantity: 4 }],
+    });
+    expect(created.status).toBe(201);
+    const { transferNo } = (await created.json()) as { transferNo: string };
+
+    const shipped = await post(app, `/api/transfers/${transferNo}/ship`, {});
+    expect(shipped.status).toBe(200);
+    expect(((await shipped.json()) as { state: string }).state).toBe('inTransit');
+
+    const received = await post(app, `/api/transfers/${transferNo}/receive`, {});
+    expect(received.status).toBe(200);
+    expect(((await received.json()) as { state: string }).state).toBe('completed');
+
+    const buckets = (await (await app.request('/api/inventory/buckets')).json()) as {
+      locationCode: string;
+      quantity: number;
+    }[];
+    expect(buckets.find((row) => row.locationCode === 'L-1')!.quantity).toBe(6);
+    expect(buckets.find((row) => row.locationCode === 'L-2')!.quantity).toBe(4);
+
+    const other = await post(app, '/api/transfers', {
+      transferNo: 'TR-CANCEL',
+      lines: [{ skuCode: 'A-1', fromLocationCode: 'L-1', toLocationCode: 'L-2', quantity: 1 }],
+    });
+    expect(other.status).toBe(201);
+    const canceled = await post(app, '/api/transfers/TR-CANCEL/cancel', {});
+    expect(canceled.status).toBe(200);
+    expect(((await canceled.json()) as { state: string }).state).toBe('canceled');
+    const after = (await (await app.request('/api/inventory/buckets')).json()) as {
+      locationCode: string;
+      quantity: number;
+    }[];
+    expect(after.find((row) => row.locationCode === 'L-1')!.quantity).toBe(6);
+  });
+});
+
+describe('报损端点', () => {
+  it('确认后按行扣库存；待确认的单可以取消', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/locations', { locationCode: 'L-1', name: '一号架' });
+    await post(app, '/api/inventory/adjust', { skuCode: 'A-1', delta: 10, locationCode: 'L-1' });
+
+    const created = await post(app, '/api/scraps', {
+      lines: [{ skuCode: 'A-1', locationCode: 'L-1', quantity: 3 }],
+    });
+    expect(created.status).toBe(201);
+    const { scrapNo } = (await created.json()) as { scrapNo: string };
+    const confirmed = await post(app, `/api/scraps/${scrapNo}/confirm`, {});
+    expect(confirmed.status).toBe(200);
+    const buckets = (await (await app.request('/api/inventory/buckets')).json()) as { quantity: number }[];
+    expect(buckets[0]!.quantity).toBe(7);
+
+    const pending = await post(app, '/api/scraps', {
+      scrapNo: 'SC-CANCEL',
+      lines: [{ skuCode: 'A-1', locationCode: 'L-1', quantity: 1 }],
+    });
+    expect(pending.status).toBe(201);
+    const canceled = await post(app, '/api/scraps/SC-CANCEL/cancel', {});
+    expect(canceled.status).toBe(200);
+    const again = (await (await app.request('/api/inventory/buckets')).json()) as { quantity: number }[];
+    expect(again[0]!.quantity).toBe(7);
+
+    const missing = await app.request('/api/scraps/NO-SCRAP');
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { code: string }).code).toBe('WMS_SCRAP_NOT_FOUND');
+  });
+});
+
+describe('报表端点', () => {
+  it('保存一张收窄过的单据行报表，跑出来，再删掉；流水不收窄会被拒绝', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/partners', { partnerCode: 'SUP-1', kind: 'supplier', name: '华东供应商' });
+    await post(app, '/api/orders', {
+      direction: 'in',
+      orderNo: 'IN-1',
+      partnerCode: 'SUP-1',
+      lines: [{ skuCode: 'A-1', quantity: 2 }],
+    });
+
+    const catalog = (await (await app.request('/api/reports/catalog')).json()) as { grains: unknown[] };
+    expect(catalog.grains.length).toBeGreaterThan(0);
+
+    const saved = await post(app, '/api/reports', {
+      title: '华东入库',
+      sections: [
+        {
+          id: 'lines',
+          title: '明细',
+          grain: 'order_line',
+          columns: ['order.orderNo', 'partner.name', 'sku.name', 'line.quantity'],
+          filters: [{ field: 'order.createdAt', op: 'gte', value: '2000-01-01' }],
+        },
+      ],
+    });
+    expect(saved.status).toBe(201);
+    const { reportId } = (await saved.json()) as { reportId: string };
+
+    const run = await post(app, '/api/reports/run', { reportId, sectionId: 'lines' });
+    expect(run.status).toBe(200);
+    const page = (await run.json()) as { rows: { 'order.orderNo': string; 'line.quantity': number }[] };
+    expect(page.rows).toEqual([
+      expect.objectContaining({ 'order.orderNo': 'IN-1', 'partner.name': '华东供应商', 'line.quantity': 2 }),
+    ]);
+
+    const openLedger = await post(app, '/api/reports', {
+      title: '全部流水',
+      sections: [{ id: 'flow', title: '流水', grain: 'ledger', columns: ['ledger.delta'], filters: [] }],
+    });
+    expect(openLedger.status).toBe(400);
+
+    const removed = await app.request(`/api/reports/${reportId}`, { method: 'DELETE' });
+    expect(removed.status).toBe(200);
+    const left = (await (await app.request('/api/reports')).json()) as { reportId: string }[];
+    expect(left.find((row) => row.reportId === reportId)).toBeUndefined();
   });
 });

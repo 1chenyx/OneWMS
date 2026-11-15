@@ -5,10 +5,11 @@ import type { AgentMessage, AgentToolMeta } from './types.js';
  * 工具目录（编排层，不进工具总线、不落 oplog）。
  *
  * 常驻上下文只放一行摘要和参数骨架（名称、类型、枚举、数值范围）。
- * 完整说明不在 tools 数组里原地升级——tools.load 把整组说明（描述全文 +
- * 参数规则）作为该次调用的结果返回。模型按说明发出调用之后，进模型的副本
- * 把说明收成一句（见 model-history）；下一条用户消息也不再把该组留在清单里，
- * 要用再加载。授权范围始终是助手定义与总线的交集，加载不能越权。
+ * 完整说明不在 tools 数组里原地升级——tools.load 把整组说明（描述全文，
+ * 加上正文没写过的参数一句）放进这一步的任务框。类型、枚举、必填留在
+ * 工具清单里，不在说明里再写一遍。模型按说明发出调用之后，任务框不再带
+ * 这段说明；下一条用户消息也不再把该组留在清单里，要用再加载。会话记录
+ * 仍是全文。授权范围始终是助手定义与总线的交集，加载不能越权。
  *
  * 工具数不超过 TOOL_CATALOG_DEFER_AT 时，授权内的工具仍然可以直接调用
  * （摘要够用就不用多一轮）。超过之后，未加载的组从 function calling 清单拿掉，
@@ -39,8 +40,24 @@ const STRUCT_DESC_MAX = 80;
 
 const pinnedIds = new Set<string>(PINNED_TOOL_IDS);
 
-/** 组 id：wms 用第二段（wms.order.conflict.list → order），其余用第一段 */
+/**
+ * 单据按任务拆开，避免开一张单就把流转、改单、冲突的说明一起带上。
+ * 开单和取消仍是 order。助手管理页的「出入库」分组不跟这里走。
+ */
+const ORDER_GROUP_OVERRIDE: Readonly<Record<string, string>> = {
+  'wms.order.transition': 'order-flow',
+  'wms.order.putaway': 'order-flow',
+  'wms.order.revise': 'order-edit',
+  'wms.order.query': 'order-edit',
+  'wms.order.conflict.list': 'order-edit',
+  'wms.order.conflict.accept': 'order-edit',
+  'wms.order.conflict.dismiss': 'order-edit',
+};
+
+/** 组 id：单据见 ORDER_GROUP_OVERRIDE；其余 wms 用第二段，再其余用第一段 */
 export function toolGroup(toolId: string): string {
+  const override = ORDER_GROUP_OVERRIDE[toolId];
+  if (override) return override;
   const parts = toolId.split('.');
   if (parts[0] === 'wms' && parts.length >= 2) return parts[1] ?? toolId;
   return parts[0] ?? toolId;
@@ -173,33 +190,47 @@ export function applyLoad(domain: readonly AgentToolMeta[], args: Record<string,
 }
 
 /**
- * 整组完整说明（描述全文 + 逐参数规则），作为 tools.load 的结果返回。
- * 躺在历史里随上下文进后续轮次，不升级进 tools 数组（见文件头）。
+ * 整组说明：每个工具的描述全文。常驻工具的全文已经在清单里，这里不重复。
+ * 参数的类型、枚举、必填也不重复。正文没写到的参数说明留一句。
  */
 function renderGroupDocs(group: string, tools: readonly AgentToolMeta[]): string {
-  const blocks = tools.map((t) => {
-    const lines = [`### ${t.id}——${t.label}`, t.description.trim()];
-    const entries = Object.entries(t.parameters.properties ?? {});
-    if (entries.length > 0) {
-      lines.push('参数：');
-      const required = new Set(t.parameters.required ?? []);
-      for (const [name, prop] of entries) lines.push(propertyLine(name, prop, required.has(name)));
-    }
-    return lines.join('\n');
-  });
-  return `【${group} 组完整说明】本组工具现在可直接调用，无需再次加载。\n\n${blocks.join('\n\n')}`;
+  const documented = tools.filter((t) => !pinnedIds.has(t.id));
+  const blocks = documented.map((t) => renderToolDoc(t));
+  const lines = [`【${group} 组完整说明】本组工具现在可直接调用，无需再次加载。`];
+  if (documented.length < tools.length) lines.push('常驻工具的说明已在清单里，这里不重复。');
+  if (blocks.length > 0) lines.push(blocks.join('\n\n'));
+  return lines.join('\n\n');
 }
 
-function propertyLine(name: string, prop: ParameterProperty, required: boolean): string {
-  const bits: string[] = [prop.type];
-  if (required) bits.push('必填');
-  if (prop.enum) bits.push(`枚举：${prop.enum.map(String).join(' / ')}`);
-  if (prop.minimum !== undefined || prop.maximum !== undefined) {
-    bits.push(`范围 ${prop.minimum ?? '-∞'}~${prop.maximum ?? '∞'}`);
+function renderToolDoc(tool: AgentToolMeta): string {
+  const lines = [`### ${tool.id}——${tool.label}`, tool.description.trim()];
+  const notes = uniqueParamNotes(tool);
+  if (notes.length > 0) {
+    lines.push('参数里正文没写的：');
+    lines.push(...notes);
   }
-  if (prop.default !== undefined) bits.push(`默认 ${JSON.stringify(prop.default)}`);
-  if (prop.description && prop.description.trim()) bits.push(prop.description.trim());
-  return `- ${name}（${bits.join('；')}）`;
+  return lines.join('\n');
+}
+
+/** 正文已经包含的参数说明不再附。类型和必填看工具清单。 */
+function uniqueParamNotes(tool: AgentToolMeta): string[] {
+  const body = tool.description;
+  const notes: string[] = [];
+  for (const [name, prop] of Object.entries(tool.parameters.properties ?? {})) {
+    const desc = prop.description?.trim();
+    if (!desc || alreadySaid(body, desc)) continue;
+    notes.push(`- ${name}：${desc}`);
+  }
+  return notes;
+}
+
+function alreadySaid(body: string, desc: string): boolean {
+  if (body.includes(desc)) return true;
+  const parts = desc
+    .split(/[，。；]/)
+    .map((part) => part.replace(/（[^）]*）/g, '').trim())
+    .filter((part) => part.length >= 6);
+  return parts.length > 0 && parts.every((part) => body.includes(part));
 }
 
 /**

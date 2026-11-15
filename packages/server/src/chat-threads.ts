@@ -54,9 +54,13 @@ export interface ChatThreadTurn {
   assistantText: string;
   failed?: string;
   failedCode?: string;
+  /** 用户中途停止。模型上下文不收录这一轮 */
+  stopped?: boolean;
   done: boolean;
   /** 这一轮各次模型调用的 token 合计。旧存档没有 */
   usage?: { inputTokens: number; outputTokens: number };
+  /** 从发出到这一轮结束的毫秒数。旧存档没有。不参与历史时间的比较 */
+  elapsedMs?: number;
 }
 
 export interface ChatThreadRecord {
@@ -183,6 +187,7 @@ function sanitizeTurn(raw: unknown): ChatThreadTurn | undefined {
   const failed = clipString(row.failed, 2_000);
   const failedCode = clipString(row.failedCode, 80);
   const usage = sanitizeUsage(row.usage);
+  const elapsedMs = sanitizeElapsed(row.elapsedMs);
   return {
     userText: clipString(row.userText, MAX_TEXT),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
@@ -190,7 +195,9 @@ function sanitizeTurn(raw: unknown): ChatThreadTurn | undefined {
     assistantText: clipString(row.assistantText, MAX_TEXT),
     ...(failed ? { failed } : {}),
     ...(failedCode ? { failedCode } : {}),
+    ...(row.stopped === true ? { stopped: true } : {}),
     ...(usage ? { usage } : {}),
+    ...(elapsedMs !== undefined ? { elapsedMs } : {}),
     done: row.done === true,
   };
 }
@@ -209,6 +216,14 @@ function sanitizeUsage(raw: unknown): { inputTokens: number; outputTokens: numbe
   const outputTokens = sanitizeTokenCount(row.outputTokens);
   if (inputTokens === undefined || outputTokens === undefined) return undefined;
   return { inputTokens, outputTokens };
+}
+
+/** 一轮挂起问卡时人可能离开很久，上限留一周 */
+const MAX_ELAPSED_MS = 7 * 24 * 60 * 60 * 1000;
+
+function sanitizeElapsed(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.min(Math.floor(value), MAX_ELAPSED_MS);
 }
 
 /** 客户端传来的气泡。不是数组则拒绝；单条坏了就丢掉 */
@@ -296,7 +311,7 @@ export function turnsFromHistory(history: readonly AgentMessage[]): ChatThreadTu
 /**
  * 已有气泡比模型上下文短，说明最新一轮还没从客户端写回，先用上下文补上。
  * 气泡更长时保留它（失败的一轮只在界面上，不进模型上下文）。
- * 用上下文补气泡时带上已有轮次的用量；latestUsage 记在最新一轮上。
+ * 用上下文补气泡时带上已有轮次的用量和用时；latestUsage 记在最新一轮上。
  */
 export function mergeTurns(
   history: readonly AgentMessage[],
@@ -305,12 +320,20 @@ export function mergeTurns(
 ): ChatThreadTurn[] {
   const synthesized = turnsFromHistory(history);
   if (previous && previous.length > 0 && synthesized.length <= previous.length) return [...previous];
-  const carried = synthesized.map((turn, index) => {
-    const prior = previous?.[index]?.usage;
-    if (!prior || turn.usage) return turn;
-    return { ...turn, usage: prior };
-  });
+  const carried = synthesized.map((turn, index) => carryTurnRecord(turn, previous?.[index]));
   return stampLastUsage(carried, latestUsage);
+}
+
+/** 用模型上下文补气泡时，留下这一轮已经记过的用量和用时 */
+function carryTurnRecord(turn: ChatThreadTurn, prior: ChatThreadTurn | undefined): ChatThreadTurn {
+  if (!prior) return turn;
+  const usage = turn.usage ?? prior.usage;
+  const elapsedMs = turn.elapsedMs ?? prior.elapsedMs;
+  return {
+    ...turn,
+    ...(usage ? { usage } : {}),
+    ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+  };
 }
 
 function stampLastUsage(

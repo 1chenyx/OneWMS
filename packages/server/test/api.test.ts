@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { stripTimeContext, type LlmProvider, type LlmTurnRequest, type LlmTurnResponse } from '@one/ai';
+import { type LlmProvider, type LlmTurnRequest, type LlmTurnResponse } from '@one/ai';
 import { createApp, createAppContext, type AppContext } from '../src/index.js';
 
 /**
@@ -229,7 +229,7 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     expect(actors.has(`ai:general@${ctx!.core.nodeId}`)).toBe(true);
   });
 
-  it('同一会话多轮：turn-done 后历史提交，第二轮请求携带完整上下文', async () => {
+  it('同一会话多轮：turn-done 后历史提交，第二轮只带上一句回复和这句请求', async () => {
     const requests: LlmTurnRequest[] = [];
     let i = 0;
     const turns: LlmTurnResponse[] = [
@@ -257,12 +257,49 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     expect(events.at(-1)?.event).toBe('turn-done');
     expect(events.map((e) => e.event)).toEqual(['text-delta', 'turn-done']);
 
-    // 第一轮两次模型调用（工具→回复），第二轮一次——requests[2] 即第二轮请求：
-    // user → tool-calls → tool-results → assistant → 新 user
+    // 第一轮两次模型调用（工具→回复），第二轮一次。requests[2] 是任务框，不是整段会话
     const msgs = requests[2].messages;
-    expect(msgs.map((m) => m.role)).toEqual(['user', 'tool-calls', 'tool-results', 'assistant', 'user']);
-    expect((msgs[3] as { text: string }).text).toBe('A-1 还有 5 个。');
-    expect(stripTimeContext((msgs[4] as { text: string }).text)).toBe('是这批新到的吗？');
+    expect(msgs).toHaveLength(1);
+    const text = msgs[0]?.role === 'user' ? msgs[0].text : '';
+    expect(text).toContain('上一句回复：\nA-1 还有 5 个。');
+    expect(text).toContain('是这批新到的吗？');
+    expect(text).not.toContain('tool-results');
+  });
+
+  it('上下文选长时第三轮带上更早的短行；无效长度在占用会话前拒绝', async () => {
+    const requests: LlmTurnRequest[] = [];
+    let i = 0;
+    const provider: LlmProvider = {
+      async completeTurn(req) {
+        if (req.system.includes('记忆提取器')) {
+          return { text: '{"save":[],"forget":[]}', toolCalls: [] };
+        }
+        requests.push({ ...req, messages: [...req.messages] });
+        const replies = ['第一答', '第二答', '第三答'];
+        return { text: replies[i++] ?? '', toolCalls: [] };
+      },
+    };
+    const app = setup(provider);
+
+    const bad = await post(app, '/api/chat/sessions/s-ctx/message', { message: '你好', context: 'huge' });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ code: 'BAD_REQUEST', message: '上下文长度无效' });
+    expect(requests).toHaveLength(0);
+
+    const first = await post(app, '/api/chat/sessions/s-ctx/message', { message: '第一问' });
+    expect(parseSse(await first.text()).at(-1)?.event).toBe('turn-done');
+    const second = await post(app, '/api/chat/sessions/s-ctx/message', { message: '第二问' });
+    expect(parseSse(await second.text()).at(-1)?.event).toBe('turn-done');
+    const third = await post(app, '/api/chat/sessions/s-ctx/message', { message: '第三问', context: 'long' });
+    expect(parseSse(await third.text()).at(-1)?.event).toBe('turn-done');
+
+    const chat = requests.filter((req) => !req.system.includes('记忆提取器'));
+    const framed = chat[2]?.messages[0];
+    const text = framed?.role === 'user' ? framed.text : '';
+    expect(text).toContain('更早的对话');
+    expect(text).toContain('用户：第一问 → 第一答');
+    expect(text).toContain('上一句回复：\n第二答');
+    expect(text).not.toMatch(/用户：当前时间/);
   });
 
   it('模型调用抛错 → error 事件；会话可继续（历史未提交，从上一轮重来）', async () => {
@@ -390,11 +427,12 @@ describe('POST /api/chat/sessions/:id/answer（ui.ask 挂起/唤醒，M12 步骤
     expect(rest.map((e) => e.event)).toEqual(['tool-result', 'text-delta', 'turn-done']);
     expect(rest[0].data).toMatchObject({ toolId: 'ui.ask', ok: true, payload: { answer: '20 个' } });
 
-    // 回答回传模型：第二轮请求的 tool-results 携带 answer
+    // 回答回传模型：任务框带上问题和回答
     const msgs = requests[1].messages;
-    expect(msgs.map((m) => m.role)).toEqual(['user', 'tool-calls', 'tool-results']);
-    const results = (msgs[2] as { results: Array<{ payload: Record<string, string> }> }).results;
-    expect(results[0].payload).toEqual({ answer: '20 个' });
+    expect(msgs).toHaveLength(1);
+    const text = msgs[0]?.role === 'user' ? msgs[0].text : '';
+    expect(text).toContain('要入多少个？');
+    expect(text).toContain('20 个');
 
     // 审计豁免：ui.ask 不穿工具总线——本轮无任何 ai:* actor 事件落 oplog
     const actors: string[] = [];
