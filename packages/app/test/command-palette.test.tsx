@@ -124,7 +124,7 @@ describe('CommandPalette：Ctrl+K 全局搜索', () => {
     expect(screen.getByText(/没有匹配的页面/)).toBeInTheDocument();
 
     await user.keyboard('{Escape}');
-    expect(screen.getByTestId('page').textContent).toBe('skus');
+    expect(screen.getByTestId('page').textContent).toBe('dashboard');
     await waitFor(() => {
       expect(screen.queryByPlaceholderText('搜索页面：入库、库存、流程…')).not.toBeInTheDocument();
     });

@@ -197,6 +197,46 @@ describe('ChatPage：SSE 流式', () => {
     expect(streamMock).toHaveBeenCalledWith(expect.any(String), '建一个 SKU', 'general', expect.any(Function), undefined);
   });
 
+  it('输入框展示本段 token 消耗，下一轮累加', async () => {
+    streamMock
+      .mockImplementationOnce(async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
+        onEvent({ type: 'text-delta', text: '第一句' });
+        onEvent({ type: 'turn-done', steps: 1, usage: { inputTokens: 1000, outputTokens: 200 } });
+      })
+      .mockImplementationOnce(async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
+        onEvent({ type: 'text-delta', text: '第二句' });
+        onEvent({ type: 'turn-done', steps: 1, usage: { inputTokens: 1500, outputTokens: 300 } });
+      });
+    const user = userEvent.setup();
+    render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
+    expect(screen.queryByLabelText(/本段消耗/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('第一问');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+
+    const first = await screen.findByLabelText('本段消耗 1200 token');
+    expect(first).toHaveTextContent('消耗 1,200 token');
+    expect(first).toHaveAttribute('title', '输入 1,000 · 输出 200 · 最近一轮 1,200');
+
+    await user.click(screen.getByRole('textbox'));
+    await user.keyboard('第二问');
+    await user.click(screen.getByRole('button', { name: /发送/ }));
+
+    const second = await screen.findByLabelText('本段消耗 3000 token');
+    expect(second).toHaveTextContent('消耗 3,000 token');
+    expect(second).toHaveAttribute('title', '输入 2,500 · 输出 500 · 最近一轮 1,800');
+    await waitFor(() => {
+      const body = saveThreadMock.mock.calls.at(-1)?.[1] as {
+        turns: Array<{ usage?: { inputTokens: number; outputTokens: number } }>;
+      };
+      expect(body.turns.map((turn) => turn.usage)).toEqual([
+        { inputTokens: 1000, outputTokens: 200 },
+        { inputTokens: 1500, outputTokens: 300 },
+      ]);
+    });
+  });
+
   it('助手回复按 Markdown 排版，HTML 只显示成文字', async () => {
     streamMock.mockImplementationOnce(
       async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {

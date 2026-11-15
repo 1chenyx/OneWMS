@@ -5,7 +5,7 @@ import { useCancelWave, useCreateWave, useOrders, usePickWave, useProfileSnapsho
 import { ApiError } from '../api/client';
 import type { Order, WaveSummary, WaveWalkLine } from '../api/client';
 import PageHeader from '../components/PageHeader';
-import { monoCell, TABLE_PAGINATION } from '../components/table-style';
+import { monoCell, useClientPagination } from '../components/table-style';
 import { useAppNav } from '../app-nav';
 import { fmtQty } from '../lib/format';
 import { face } from '../theme';
@@ -42,6 +42,7 @@ function batchLabel(code: string): string {
  * 清单按库位加总，拣货员走一趟。拣货开着时，整波生成一张拣货单。
  */
 export default function WavePage() {
+  const pagination = useClientPagination();
   const { message, modal } = AntApp.useApp();
   const { navigate, takeInitialFilter } = useAppNav();
   const [hinted] = useState(() => takeInitialFilter()?.orderNo ?? '');
@@ -214,7 +215,7 @@ export default function WavePage() {
           loading={ordersLoading || wavesLoading}
           dataSource={waiting}
           columns={waitingColumns}
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
           rowSelection={{
             selectedRowKeys: checked,
             onChange: (keys) => setChecked(keys.map(String)),
@@ -230,7 +231,7 @@ export default function WavePage() {
           loading={wavesLoading}
           dataSource={waves ?? []}
           columns={waveColumns}
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
           onRow={(wave) => ({
             onClick: () => setSelectedWave(wave.waveNo),
             style: {

@@ -187,7 +187,7 @@ describe('草稿保存', () => {
     const dialog = await screen.findByRole('dialog', { name: '确认助手改动' });
     expect(dialog).toHaveTextContent('「通用助手」改为可以修改库存');
     expect(screen.queryByRole('dialog', { name: '请确认配置变更' })).not.toBeInTheDocument();
-    expect(screen.getByTestId('page')).toHaveTextContent('skus');
+    expect(screen.getByTestId('page')).toHaveTextContent('dashboard');
 
     confirmMock.mockResolvedValueOnce({ newVersion: 4, appliedOps: 1 });
     await user.click(screen.getByRole('button', { name: '确认应用' }));
@@ -208,7 +208,7 @@ describe('草稿保存', () => {
     expect(confirmMock).toHaveBeenCalledWith('p-9');
     expect(await screen.findByText(/助手改动已应用/)).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getByTestId('page')).toHaveTextContent('skus');
+    expect(screen.getByTestId('page')).toHaveTextContent('dashboard');
     expect(screen.queryByText('未保存')).not.toBeInTheDocument();
   });
 
@@ -227,7 +227,7 @@ describe('草稿保存', () => {
     expect(rejectMock).toHaveBeenCalledWith('p-8');
     expect(confirmMock).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getByTestId('page')).toHaveTextContent('skus');
+    expect(screen.getByTestId('page')).toHaveTextContent('dashboard');
     expect(screen.getByText('未保存')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: '展示名' })).toHaveValue('通用助手甲');
   });

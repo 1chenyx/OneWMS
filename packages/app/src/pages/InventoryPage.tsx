@@ -403,8 +403,9 @@ export default function InventoryPage() {
             loading={sliceQuery.isLoading}
             pagination={serverPagination({
               current: list.page,
+              pageSize: list.pageSize,
               total: sliceQuery.isError ? 0 : (sliceQuery.data?.total ?? 0),
-              onChange: list.setPage,
+              onChange: list.onChange,
             })}
             locale={{
               emptyText: sliceQuery.isError
@@ -426,8 +427,9 @@ export default function InventoryPage() {
             loading={isLoading}
             pagination={serverPagination({
               current: list.page,
+              pageSize: list.pageSize,
               total: isListPage(payload) ? payload.total : visibleRows.length,
-              onChange: list.setPage,
+              onChange: list.onChange,
             })}
             locale={{ emptyText: '还没有库存流水（录入期初或调整后出现）' }}
           />

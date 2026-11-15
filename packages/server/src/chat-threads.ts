@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { AgentMessage, ToolCallRequest, ToolCallResult } from '@one/ai';
+import { stripTimeContext, type AgentMessage, type ToolCallRequest, type ToolCallResult } from '@one/ai';
 
 /**
  * AI 对话存档（本机文件）。
@@ -55,6 +55,8 @@ export interface ChatThreadTurn {
   failed?: string;
   failedCode?: string;
   done: boolean;
+  /** 这一轮各次模型调用的 token 合计。旧存档没有 */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface ChatThreadRecord {
@@ -102,13 +104,17 @@ function clip(text: string, max: number): string {
   return `${chars.slice(0, max).join('')}…`;
 }
 
-/** 模型消息里的用户原文。带附件时服务端会把预览拼在前面，标题和气泡只留用户说的那句 */
+/**
+ * 模型消息里的用户原文。先剥掉 wms-agent 拼在开头的时间上下文行（给模型看的，
+ * 不进界面）；带附件时服务端会把预览拼在前面，标题和气泡只留用户说的那句。
+ */
 export function plainUserText(text: string): string {
+  const bare = stripTimeContext(text);
   const marker = '用户说：';
-  const at = text.lastIndexOf(marker);
-  if (at !== -1) return text.slice(at + marker.length).trim();
-  if (text.includes('【附件')) return '';
-  return text.trim();
+  const at = bare.lastIndexOf(marker);
+  if (at !== -1) return bare.slice(at + marker.length).trim();
+  if (bare.includes('【附件')) return '';
+  return bare.trim();
 }
 
 export function titleFromTurns(turns: readonly ChatThreadTurn[]): string {
@@ -176,6 +182,7 @@ function sanitizeTurn(raw: unknown): ChatThreadTurn | undefined {
     : [];
   const failed = clipString(row.failed, 2_000);
   const failedCode = clipString(row.failedCode, 80);
+  const usage = sanitizeUsage(row.usage);
   return {
     userText: clipString(row.userText, MAX_TEXT),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
@@ -183,8 +190,25 @@ function sanitizeTurn(raw: unknown): ChatThreadTurn | undefined {
     assistantText: clipString(row.assistantText, MAX_TEXT),
     ...(failed ? { failed } : {}),
     ...(failedCode ? { failedCode } : {}),
+    ...(usage ? { usage } : {}),
     done: row.done === true,
   };
+}
+
+const MAX_TOKEN_COUNT = 1_000_000_000;
+
+function sanitizeTokenCount(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.min(Math.floor(value), MAX_TOKEN_COUNT);
+}
+
+function sanitizeUsage(raw: unknown): { inputTokens: number; outputTokens: number } | undefined {
+  const row = asRecord(raw);
+  if (!row) return undefined;
+  const inputTokens = sanitizeTokenCount(row.inputTokens);
+  const outputTokens = sanitizeTokenCount(row.outputTokens);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  return { inputTokens, outputTokens };
 }
 
 /** 客户端传来的气泡。不是数组则拒绝；单条坏了就丢掉 */
@@ -272,12 +296,31 @@ export function turnsFromHistory(history: readonly AgentMessage[]): ChatThreadTu
 /**
  * 已有气泡比模型上下文短，说明最新一轮还没从客户端写回，先用上下文补上。
  * 气泡更长时保留它（失败的一轮只在界面上，不进模型上下文）。
+ * 用上下文补气泡时带上已有轮次的用量；latestUsage 记在最新一轮上。
  */
-export function mergeTurns(history: readonly AgentMessage[], previous: readonly ChatThreadTurn[] | undefined): ChatThreadTurn[] {
+export function mergeTurns(
+  history: readonly AgentMessage[],
+  previous: readonly ChatThreadTurn[] | undefined,
+  latestUsage?: { inputTokens: number; outputTokens: number },
+): ChatThreadTurn[] {
   const synthesized = turnsFromHistory(history);
-  if (!previous || previous.length === 0) return synthesized;
-  if (synthesized.length > previous.length) return synthesized;
-  return [...previous];
+  if (previous && previous.length > 0 && synthesized.length <= previous.length) return [...previous];
+  const carried = synthesized.map((turn, index) => {
+    const prior = previous?.[index]?.usage;
+    if (!prior || turn.usage) return turn;
+    return { ...turn, usage: prior };
+  });
+  return stampLastUsage(carried, latestUsage);
+}
+
+function stampLastUsage(
+  turns: ChatThreadTurn[],
+  usage: { inputTokens: number; outputTokens: number } | undefined,
+): ChatThreadTurn[] {
+  if (!usage || turns.length === 0) return turns;
+  const last = turns[turns.length - 1]!;
+  if (last.usage) return turns;
+  return [...turns.slice(0, -1), { ...last, usage }];
 }
 
 function shrinkThread(record: ChatThreadRecord): ChatThreadRecord {

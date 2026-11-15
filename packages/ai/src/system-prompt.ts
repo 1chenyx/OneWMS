@@ -6,8 +6,11 @@ import type { AgentMemoryContext } from './types.js';
  * System Prompt 组装（DESIGN.md §6.4 消费闭环 ② 的 v2，里程碑 4）。
  *
  * 段落结构：身份与行为规则（含慢通道规则）→ 记忆（长期上下文，可选）→
- * 当前配置（Profile 摘要）→ 库存快照 → 时间。静态文案集中管理在
+ * 当前配置（Profile 摘要）→ 库存快照。静态文案集中管理在
  * prompts.ts（统一优化入口），本文件只负责把规则文案与运行时数据拼装。
+ * 当前时间不在这里：system 每轮重组，时间一变整个请求前缀就变，跨轮的
+ * 前缀缓存全部失效——时间由 wms-agent 拼进本轮用户消息开头（见
+ * withTimeContext），system 在数据未变时跨轮字节稳定。
  * 工具清单走 function calling 的 tools 参数（原生通道，
  * 不在 prompt 文本里重复）。
  *
@@ -94,7 +97,6 @@ export function buildSystemPrompt(ws: WmsWorkspace, memory?: AgentMemoryContext)
     lines.push('- 暂无 SKU。用户要出入库时先用创建 SKU 工具建档。');
   }
 
-  lines.push('', `当前时间：${new Date().toISOString()}`);
   return lines.join('\n');
 }
 

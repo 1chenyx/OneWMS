@@ -184,6 +184,239 @@ export function syncDraft(draft: IntegrationDraft, connectors: Record<string, un
   };
 }
 
+export interface ExternalApiRoute {
+  id: string;
+  title: string;
+  text: string;
+  /** 为空表示按当前配置就能交给对方。有字时说明保存或启用之前打过来会失败。 */
+  blocked: string | null;
+}
+
+export interface ExternalApiView {
+  lead: string;
+  routes: ExternalApiRoute[];
+}
+
+const API_RESULTS = [
+  '200 已接住。internalRef 是我们的单号。同一主键再推仍是 200，不改已经接住的单据。',
+  '401 鉴权没对上。',
+  '404 这条入口没开，或这家不是这类单据的入站方。',
+  '422 报文或编码对不上。',
+  '409 业务没接住，改完可以再推同一主键。',
+  '一次一笔 JSON，最大 256KB。',
+].join('\n');
+
+/** 对接页上始终给出的调用约定。密钥只写占位。某一家的具体地址由 externalApi 再补。 */
+export function callerGuide(origin: string | null): string {
+  const base = origin ? origin.replace(/\/$/, '') : '{对方打得到的主机}';
+  return [
+    `POST ${base}/api/integrations/{连接器 id}/{路由 id}`,
+    'Content-Type: application/json',
+    '',
+    '鉴权三选一。把占位换成已经写入本机的密钥。',
+    'Authorization: Bearer {令牌}',
+    '{请求头}: {前缀}{密钥}',
+    'Authorization: Basic {Base64(用户名:密码)}',
+    '',
+    '保存并生效，并且这条路由是接收之后，才会真的接住。',
+    'HMAC 和 OAuth 还没接通，选了这两档对方会被拒绝。',
+    '',
+    API_RESULTS,
+  ].join('\n');
+}
+
+/**
+ * 给对方的调用说明。地址和示例来自当前草稿，密钥只写占位，不写值。
+ * 拉取和只推没有这条地址。
+ */
+export function externalApi(
+  item: ConnectorDraft,
+  opts: {
+    moduleEnabled: boolean;
+    origin: string | null;
+    writers: { order: string | null; sku: string | null; partner: string | null } | null;
+  },
+): ExternalApiView {
+  const built = overlayConnector(item);
+  if (!built.ok) return { lead: built.message, routes: [] };
+  if (item.direction === 'outbound') {
+    return { lead: '这家只推。我们按事件推到上面的地址，对方不用调用我们。', routes: [] };
+  }
+  const routes = Array.isArray(built.value.routes) ? built.value.routes : [];
+  const webhooks = routes.filter(isWebhookRoute);
+  const polls = routes.some(isPollRoute);
+  if (webhooks.length === 0) {
+    return {
+      lead: polls
+        ? '这家是拉取。我们按间隔去取数，对方不用调用我们。'
+        : '还没有接收路由。写上一条接收路由之后，这里会给出对方要调用的地址。',
+      routes: [],
+    };
+  }
+  const origin = opts.origin ? opts.origin.replace(/\/$/, '') : null;
+  const listed = webhooks.map((route) => describeWebhook(item, route, origin, opts));
+  const lead = [
+    '对方按下面的地址推一笔 JSON。保存并生效之后才会真的接收。',
+    '密钥用本机已经写入的那一份，说明里不写密钥值。',
+    origin ? '' : '还没有局域网地址。把路径接到对方打得到的主机上。',
+    polls ? '其余拉取路由仍由我们按间隔去取。' : '',
+  ]
+    .filter((line) => line !== '')
+    .join('');
+  return { lead, routes: listed };
+}
+
+function describeWebhook(
+  item: ConnectorDraft,
+  route: Record<string, unknown>,
+  origin: string | null,
+  opts: {
+    moduleEnabled: boolean;
+    writers: { order: string | null; sku: string | null; partner: string | null } | null;
+  },
+): ExternalApiRoute {
+  const id = typeof route.id === 'string' ? route.id : '';
+  const canonical = typeof route.canonical === 'string' ? route.canonical : '';
+  const title = [id || '未命名', '接收', CANONICAL_LABEL[canonical] ?? canonical].filter((part) => part !== '').join(' · ');
+  const auth = authLine(item);
+  const path = isConnectorId(item.id.trim()) && isConnectorId(id) ? `/api/integrations/${item.id.trim()}/${id}` : '';
+  const url = path ? `${origin ?? ''}${path}` : '';
+  const sample = JSON.stringify(sampleBody(route), null, 2);
+  const blocked = webhookBlocked(item, route, canonical, path, auth.ready, auth.reason, opts);
+  const text = [
+    `POST ${url || '(地址还没法拼)'}`,
+    auth.line,
+    'Content-Type: application/json',
+    '',
+    sample,
+    '',
+    ...(blocked ? [blocked, ''] : []),
+    API_RESULTS,
+  ].join('\n');
+  return { id: id || title, title, text, blocked };
+}
+
+function webhookBlocked(
+  item: ConnectorDraft,
+  route: Record<string, unknown>,
+  canonical: string,
+  path: string,
+  authReady: boolean,
+  authReason: string,
+  opts: {
+    moduleEnabled: boolean;
+    writers: { order: string | null; sku: string | null; partner: string | null } | null;
+  },
+): string | null {
+  const reasons: string[] = [];
+  if (!path) reasons.push('连接器 id 或路由 id 还没法拼成地址');
+  if (!opts.moduleEnabled) reasons.push('对接还没启用，保存并生效后才会接收');
+  if (!item.enabled) reasons.push('这家还没启用');
+  if (route.enabled === false) reasons.push('这条路由停着');
+  if (!authReady) reasons.push(authReason);
+  const family = canonical.startsWith('order.') ? 'order' : canonical.startsWith('sku.') ? 'sku' : canonical.startsWith('partner.') ? 'partner' : undefined;
+  if (item.enabled && opts.writers && family && opts.writers[family] !== item.id.trim()) {
+    reasons.push('这类单据的入站不是这家，对方会得到 404');
+  }
+  return reasons.length > 0 ? reasons.join('。') : null;
+}
+
+function authLine(item: ConnectorDraft): { line: string; ready: boolean; reason: string } {
+  if (item.adapter === 'bearer') return { line: 'Authorization: Bearer {令牌}', ready: true, reason: '' };
+  if (item.adapter === 'apiKey') {
+    const header = item.header.trim() || 'X-Api-Key';
+    const prefix = item.prefix.trim();
+    return { line: `${header}: ${prefix}{密钥}`, ready: true, reason: '' };
+  }
+  if (item.adapter === 'basic') return { line: 'Authorization: Basic {Base64(用户名:密码)}', ready: true, reason: '' };
+  if (item.adapter === 'none') return { line: '接收必须带鉴权', ready: false, reason: '接收必须带鉴权，请改成 Bearer、API Key 或 Basic' };
+  return { line: '这一档鉴权还没接通', ready: false, reason: '这一档鉴权还没接通，对方现在打过来会被拒绝' };
+}
+
+function sampleBody(route: Record<string, unknown>): Record<string, unknown> {
+  const canonical = typeof route.canonical === 'string' ? route.canonical : '';
+  const document: Record<string, unknown> = {};
+  const externalId = isObject(route.idempotency) && typeof route.idempotency.externalIdPath === 'string' ? route.idempotency.externalIdPath : '';
+  if (externalId) putSample(document, externalId, idExample(canonical));
+  const mapping = isObject(route.mapping) ? route.mapping : {};
+  if (Array.isArray(mapping.fields)) {
+    for (const field of mapping.fields) {
+      if (isObject(field)) absorbSample(document, field.from);
+    }
+  }
+  if (isObject(mapping.lines) && typeof mapping.lines.from === 'string' && Array.isArray(mapping.lines.item)) {
+    const line: Record<string, unknown> = {};
+    for (const field of mapping.lines.item) {
+      if (isObject(field)) absorbSample(line, field.from);
+    }
+    putSample(document, mapping.lines.from, [line]);
+  }
+  const inbound = isObject(route.inbound) ? route.inbound : {};
+  const itemsPath = typeof inbound.itemsPath === 'string' ? inbound.itemsPath : '';
+  if (itemsPath === '') return document;
+  const wrapped: Record<string, unknown> = {};
+  putSample(wrapped, itemsPath, document);
+  return wrapped;
+}
+
+function absorbSample(target: Record<string, unknown>, from: unknown): void {
+  if (!isObject(from) || typeof from.op !== 'string' || from.op === 'const') return;
+  if (from.op === 'template' && typeof from.template === 'string') {
+    for (const match of from.template.matchAll(/\{([^{}]+)\}/g)) putSample(target, match[1] ?? '', '示例');
+    return;
+  }
+  if (typeof from.path !== 'string' || from.path === '') return;
+  putSample(target, from.path, valueExample(from.path, from.op, typeof from.entity === 'string' ? from.entity : undefined));
+}
+
+function idExample(canonical: string): string {
+  if (canonical.startsWith('sku.')) return 'SKU-1';
+  if (canonical.startsWith('partner.')) return 'P-1';
+  return 'SO1001';
+}
+
+function valueExample(path: string, op: string, entity: string | undefined): string {
+  if (op === 'number') return '2';
+  if (op === 'date') return '2026-11-13';
+  if (op === 'code') {
+    if (entity === 'partner') return 'C08';
+    if (entity === 'warehouse') return 'WH-01';
+    return 'A1';
+  }
+  const leaf = path.split('.').pop() ?? path;
+  if (leaf === 'billNo' || leaf === 'orderNo') return 'SO1001';
+  if (leaf === 'qty' || leaf === 'quantity') return '2';
+  return '示例';
+}
+
+function putSample(root: Record<string, unknown>, path: string, value: unknown): void {
+  const parts = path.split('.').filter((part) => part !== '');
+  if (parts.length === 0) return;
+  let cursor: Record<string, unknown> = root;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const key = parts[i]!;
+    const next = cursor[key];
+    if (!isObject(next)) {
+      if (cursor[key] !== undefined) return;
+      const created: Record<string, unknown> = {};
+      cursor[key] = created;
+      cursor = created;
+    } else {
+      cursor = next;
+    }
+  }
+  const leaf = parts[parts.length - 1]!;
+  if (cursor[leaf] === undefined) cursor[leaf] = value;
+}
+
+function isWebhookRoute(route: unknown): route is Record<string, unknown> {
+  return isObject(route) && route.direction === 'in' && isObject(route.inbound) && route.inbound.mode === 'webhook';
+}
+
+function isPollRoute(route: unknown): boolean {
+  return isObject(route) && route.direction === 'in' && isObject(route.inbound) && route.inbound.mode === 'poll';
+}
+
 export function routeLines(json: string): string[] {
   let parsed: unknown;
   try {

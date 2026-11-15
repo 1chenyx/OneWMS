@@ -122,7 +122,7 @@ function applyEvent(turns: ChatTurn[], ev: ChatStreamEvent): ChatTurn[] {
         ),
       }));
     case 'turn-done':
-      return patchLast(turns, (t) => ({ ...t, done: true }));
+      return patchLast(turns, (t) => ({ ...t, done: true, ...(ev.usage ? { usage: ev.usage } : {}) }));
     case 'error':
       return patchLast(turns, (t) => ({ ...t, failed: ev.message, done: true }));
   }

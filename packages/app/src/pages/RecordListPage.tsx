@@ -330,8 +330,9 @@ export default function RecordListPage({ descriptor }: { descriptor: UiPageDescr
           scroll={{ x: 'max-content' }}
           pagination={serverPagination({
             current: list.page,
+            pageSize: list.pageSize,
             total: totalOf(data),
-            onChange: list.setPage,
+            onChange: list.onChange,
           })}
         />
       </Card>

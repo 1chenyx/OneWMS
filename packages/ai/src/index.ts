@@ -22,7 +22,7 @@ export type {
   StreamAgentDeps,
 } from './agent.js';
 
-export { createAgentFromDef } from './wms-agent.js';
+export { createAgentFromDef, withTimeContext, stripTimeContext } from './wms-agent.js';
 export type { CreateAgentFromDefOptions, SessionTool, WmsAgent } from './wms-agent.js';
 
 export {
@@ -70,6 +70,7 @@ export type {
   LlmStreamChunk,
   LlmTurnRequest,
   LlmTurnResponse,
+  LlmUsage,
   ToolCallRequest,
   ToolCallResult,
 } from './types.js';

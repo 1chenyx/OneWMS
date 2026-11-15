@@ -23,7 +23,7 @@ import PageHeader from '../components/PageHeader';
 import { useDraftNumber } from '../components/use-seeded-code';
 import { PrintPreviewModal, PrintRoot, PrintSelectionBar, PrintStyle, usePrintSession } from '../components/print-preview';
 import { PickingPrintSheet, pickingPrintTitle } from '../components/print-sheets';
-import { TABLE_PAGINATION, monoCell } from '../components/table-style';
+import { useClientPagination, monoCell } from '../components/table-style';
 import { useAppNav } from '../app-nav';
 
 /**
@@ -31,6 +31,7 @@ import { useAppNav } from '../app-nav';
  * 新建：多选拣货中的出库单。打印仍在列表上。
  */
 export default function PickingsPage() {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
   const [pending] = useState(() => takeInitialFilter() ?? {});
@@ -216,7 +217,7 @@ export default function PickingsPage() {
           columns={columns}
           dataSource={pickings ?? []}
           loading={isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
           locale={{
             emptyText:
               pickingStateOrders.length === 0

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import type { LlmProvider, LlmTurnRequest, LlmTurnResponse } from '@one/ai';
+import { stripTimeContext, type LlmProvider, type LlmTurnRequest, type LlmTurnResponse } from '@one/ai';
 import { createApp, createAppContext, type AppContext } from '../src/index.js';
 
 /**
@@ -189,7 +189,15 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
   it('mock provider 驱动：事件序（tool-call → tool-result → text-delta → turn-done）+ actor 审计', async () => {
     const app = setup(
       scriptedProvider([
-        { text: '', toolCalls: [{ callId: 'c1', toolId: 'wms.sku.create', args: { skuCode: 'A-1', name: '螺丝' } }] },
+        {
+          text: '',
+          toolCalls: [
+            // 延迟目录：sku 组不在常驻清单里，模型先 load（同一步内顺序结算，
+            // load 落地后 sku.create 即可调用）
+            { callId: 'c0', toolId: 'tools.load', args: { group: 'sku' } },
+            { callId: 'c1', toolId: 'wms.sku.create', args: { skuCode: 'A-1', name: '螺丝' } },
+          ],
+        },
         { text: '已创建 SKU A-1。', toolCalls: [] },
       ]),
     );
@@ -198,11 +206,20 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     expect(res.headers.get('content-type')).toContain('text/event-stream');
 
     const events = parseSse(await res.text());
-    expect(events.map((e) => e.event)).toEqual(['tool-call', 'tool-result', 'text-delta', 'turn-done']);
-    expect(events[0].data).toMatchObject({ toolId: 'wms.sku.create', args: { skuCode: 'A-1', name: '螺丝' } });
-    expect(events[1].data).toMatchObject({ toolId: 'wms.sku.create', ok: true });
-    expect(events[2].data).toEqual({ type: 'text-delta', text: '已创建 SKU A-1。' });
-    expect(events[3].data).toEqual({ type: 'turn-done', steps: 2 });
+    expect(events.map((e) => e.event)).toEqual([
+      'tool-call',
+      'tool-result',
+      'tool-call',
+      'tool-result',
+      'text-delta',
+      'turn-done',
+    ]);
+    expect(events[0].data).toMatchObject({ type: 'tool-call', toolId: 'tools.load', args: { group: 'sku' } });
+    expect(events[1].data).toMatchObject({ type: 'tool-result', toolId: 'tools.load', ok: true });
+    expect(events[2].data).toMatchObject({ toolId: 'wms.sku.create', args: { skuCode: 'A-1', name: '螺丝' } });
+    expect(events[3].data).toMatchObject({ toolId: 'wms.sku.create', ok: true });
+    expect(events[4].data).toEqual({ type: 'text-delta', text: '已创建 SKU A-1。' });
+    expect(events[5].data).toEqual({ type: 'turn-done', steps: 2 });
 
     // 审计免费（§9.3）：AI 的操作以 actor='ai:general@nodeId' 落 oplog
     // （M16：actor 标识助手 id——默认 general，通道仍按节点唯一）
@@ -245,7 +262,7 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     const msgs = requests[2].messages;
     expect(msgs.map((m) => m.role)).toEqual(['user', 'tool-calls', 'tool-results', 'assistant', 'user']);
     expect((msgs[3] as { text: string }).text).toBe('A-1 还有 5 个。');
-    expect((msgs[4] as { text: string }).text).toBe('是这批新到的吗？');
+    expect(stripTimeContext((msgs[4] as { text: string }).text)).toBe('是这批新到的吗？');
   });
 
   it('模型调用抛错 → error 事件；会话可继续（历史未提交，从上一轮重来）', async () => {

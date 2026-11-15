@@ -33,7 +33,7 @@ import { filledCode, useSeededField } from '../components/use-seeded-code';
 import type { Stocktake, StocktakeLine } from '../api/client';
 import ScanInput from '../components/ScanInput';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { useClientPagination, monoCell, numCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
 
 /**
@@ -50,6 +50,7 @@ const STATE_TAG: Record<string, { color: string; label: string }> = {
 };
 
 export default function StocktakePage() {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const { data: rows, isLoading } = useStocktakes();
   const close = useCloseStocktake();
@@ -176,7 +177,7 @@ export default function StocktakePage() {
           columns={columns}
           dataSource={rows ?? []}
           loading={isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
           locale={{ emptyText: '还没有盘点单' }}
         />
         <CreateStocktakeModal open={createOpen} onClose={() => setCreateOpen(false)} />
@@ -278,6 +279,7 @@ function CreateStocktakeModal({ open, onClose }: { open: boolean; onClose: () =>
  * （多库位/批次）全部列出供逐桶录数；Tag 可点 × 清除恢复全表。
  */
 function StocktakeDetailModal({ no, onClose }: { no: string | null; onClose: () => void }) {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const detail = useStocktakeDetail(no);
   const count = useCountStocktake();
@@ -456,7 +458,7 @@ function StocktakeDetailModal({ no, onClose }: { no: string | null; onClose: () 
             rowKey={(l) => `${l.skuCode}@${l.locationCode}@${l.batchNo}`}
             columns={columns}
             dataSource={scanFilter ? d.lines.filter((l) => l.skuCode === scanFilter) : d.lines}
-            pagination={TABLE_PAGINATION}
+            pagination={pagination}
             size="small"
             locale={{ emptyText: scanFilter ? `没有 ${scanFilter} 的待盘行` : '范围内没有待盘的库存桶' }}
           />

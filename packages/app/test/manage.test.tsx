@@ -734,7 +734,7 @@ describe('ExpiryPage：效期看板（M14 临期分层预警）', () => {
     const user = userEvent.setup();
     render(wrap(<ExpiryPage />));
 
-    await user.click(screen.getByRole('combobox'));
+    await user.click(screen.getByRole('combobox', { name: '分层' }));
     await user.click(await screen.findByTitle('已过期'));
     expect(screen.getByText('B-OLD')).toBeInTheDocument();
     expect(screen.queryByText('B-NOW')).not.toBeInTheDocument();

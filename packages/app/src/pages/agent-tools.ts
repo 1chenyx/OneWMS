@@ -24,8 +24,11 @@ export const MISSING_TOOLS = '__missing__';
 const GROUP_ORDER = [
   'inventory',
   'order',
+  'wave',
   'picking',
   'stocktake',
+  'transfer',
+  'scrap',
   'replenish',
   'lpn',
   'serial',
@@ -35,6 +38,9 @@ const GROUP_ORDER = [
   'zone',
   'partner',
   'report',
+  'numbering',
+  'integration',
+  'core',
   'memory',
   'profile',
   'ui',
@@ -43,8 +49,11 @@ const GROUP_ORDER = [
 const GROUP_LABELS: Record<string, string> = {
   inventory: '库存',
   order: '出入库',
+  wave: '波次',
   picking: '拣货',
   stocktake: '盘点',
+  transfer: '调拨',
+  scrap: '报损',
   replenish: '补货',
   lpn: '托盘',
   serial: '序列号',
@@ -54,6 +63,9 @@ const GROUP_LABELS: Record<string, string> = {
   zone: '库区',
   partner: '往来单位',
   report: '报表',
+  numbering: '编号',
+  integration: '对接',
+  core: '操作日志',
   memory: '记忆',
   profile: '配置',
   ui: '界面',
@@ -349,6 +361,39 @@ export function readOnlyIds(catalog: readonly AgentToolInfo[]): string[] {
     ids.push(tool.id);
   }
   return ids;
+}
+
+const DEFAULT_AGENT_IDS = new Set(['general', 'readonly', 'config']);
+
+/**
+ * 三件套的内置授权。和 packages/ai 的 builtinAgentDefs 同一条规则：
+ * 通用助手去掉 profile.propose，只读只要查询，配置是查询再加提议。
+ * 应用包不依赖 @one/ai，所以这里按目录重算一份，用来判断有没有改过授权。
+ */
+export function defaultToolIds(agentId: string, catalog: readonly AgentToolInfo[]): string[] | null {
+  if (!DEFAULT_AGENT_IDS.has(agentId)) return null;
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const tool of catalog) {
+    if (seen.has(tool.id)) continue;
+    seen.add(tool.id);
+    const read = tool.permission === 'read';
+    const propose = tool.id === 'profile.propose';
+    const take = agentId === 'general' ? !propose : agentId === 'readonly' ? read : read || propose;
+    if (take) ids.push(tool.id);
+  }
+  return ids;
+}
+
+/** 保存时标上授权来源。和内置策略一致就是 default，改过就是 custom。 */
+export function withToolGrant(agent: AgentDef, catalog: readonly AgentToolInfo[]): AgentDef {
+  const defaults = defaultToolIds(agent.id, catalog);
+  if (!defaults) {
+    if (agent.toolGrant === undefined) return agent;
+    const { toolGrant: _grant, ...rest } = agent;
+    return rest;
+  }
+  return { ...agent, toolGrant: sameIds(agent.tools, defaults) ? 'default' : 'custom' };
 }
 
 export function sameIds(a: readonly string[], b: readonly string[]): boolean {

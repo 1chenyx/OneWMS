@@ -32,10 +32,10 @@ function Probe({ filter }: { filter?: InitialFilter }) {
 const wrap = (ui: React.ReactNode) => <AppNavProvider>{ui}</AppNavProvider>;
 
 describe('AppNavProvider：navigate 与一次性 initialFilter', () => {
-  it('默认页 skus；navigate 切页', async () => {
+  it('默认页是运营看板；navigate 切页', async () => {
     const user = userEvent.setup();
     render(wrap(<Probe filter={{ skuCode: 'A-1' }} />));
-    expect(screen.getByTestId('page').textContent).toBe('skus');
+    expect(screen.getByTestId('page').textContent).toBe('dashboard');
 
     await user.click(screen.getByRole('button', { name: '跳库存页' }));
     expect(screen.getByTestId('page').textContent).toBe('inventory');

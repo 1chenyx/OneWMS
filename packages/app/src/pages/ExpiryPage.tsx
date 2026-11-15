@@ -4,7 +4,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useExpiryBoard } from '../api/hooks';
 import { useAppNav } from '../app-nav';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { useClientPagination, monoCell, numCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
 import { downloadXlsx, xlsxName } from '../lib/sheet';
 import { downloadCsv, fileStamp, toCsv } from '../lib/csv';
@@ -60,6 +60,7 @@ function DaysLeft({ value }: { value: number | null }) {
 }
 
 export default function ExpiryPage() {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
   const { data, isLoading } = useExpiryBoard();
@@ -152,6 +153,7 @@ export default function ExpiryPage() {
         extra={
           <>
             <Select<ExpiryLevel | 'all'>
+              aria-label="分层"
               value={level}
               onChange={setLevel}
               style={{ width: 140 }}
@@ -193,7 +195,7 @@ export default function ExpiryPage() {
           columns={columns}
           dataSource={visibleRows}
           loading={isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
           locale={{ emptyText: '还没有批次库存（入库声明批次后出现）' }}
           expandable={{
             rowExpandable: (r) => r.buckets.length > 0,
@@ -213,7 +215,7 @@ export default function ExpiryPage() {
                   },
                 ]}
                 dataSource={r.buckets}
-                pagination={TABLE_PAGINATION}
+                pagination={pagination}
                 style={{ maxWidth: 360 }}
               />
             ),

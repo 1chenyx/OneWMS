@@ -32,7 +32,7 @@ import { ApiError } from '../api/client';
 import type { Transfer, TransferDetailLine, InventoryBucketRow } from '../api/client';
 import { filledCode, useSeededField } from '../components/use-seeded-code';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { useClientPagination, monoCell, numCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
 
 /**
@@ -49,6 +49,7 @@ const STATE_TAG: Record<string, { color: string; label: string }> = {
 };
 
 export default function TransfersPage() {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const { data: rows, isLoading } = useTransfers();
   const ship = useShipTransfer();
@@ -189,7 +190,7 @@ export default function TransfersPage() {
           columns={columns}
           dataSource={rows ?? []}
           loading={isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
           locale={{ emptyText: '还没有调拨单' }}
         />
         <CreateTransferModal open={createOpen} onClose={() => setCreateOpen(false)} />

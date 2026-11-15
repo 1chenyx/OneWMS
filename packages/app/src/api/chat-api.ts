@@ -7,7 +7,8 @@ export type ChatStreamEvent =
   /** ui.ask 挂起：渲染回答输入卡，回答经 answerChatAsk 提交后流继续 */
   | { type: 'ask'; callId: string; question: string }
   | { type: 'tool-result'; callId: string; toolId: string; ok: boolean; payload: unknown }
-  | { type: 'turn-done'; steps: number }
+  /** usage 是这一轮里各次模型调用的合计。模型没回报时没有这个字段 */
+  | { type: 'turn-done'; steps: number; usage?: { inputTokens: number; outputTokens: number } }
   | { type: 'error'; message: string };
 
 /** 一轮对话里的一次工具调用（流式推进：tool-call 事件先落卡，tool-result 回填结果） */
@@ -94,6 +95,8 @@ export interface ChatThreadTurn {
   failed?: string;
   failedCode?: string;
   done: boolean;
+  /** 这一轮的 token。旧存档和没回报用量的模型没有 */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export async function listChatThreads(): Promise<ChatThreadSummary[]> {

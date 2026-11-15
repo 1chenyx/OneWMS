@@ -1,7 +1,8 @@
 import { Descriptions, Table, Typography } from 'antd';
+import type { TablePaginationConfig } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ReactNode } from 'react';
-import { TABLE_PAGINATION } from './table-style';
+import { useClientPagination } from './table-style';
 
 /**
  * 工具结果视图（M12 步骤2）：查询类工具的 payload 渲染成表格，
@@ -72,33 +73,34 @@ function withKeys<T extends object>(rows: T[]): (T & { key: number })[] {
 }
 
 export default function ToolResultView({ toolId, payload }: { toolId: string; payload: unknown }) {
+  const pagination = useClientPagination();
   switch (toolId) {
     case 'wms.inventory.query':
-      return renderQuery(payload);
+      return renderQuery(payload, pagination);
     case 'wms.inventory.expiring':
-      return renderExpiring(payload);
+      return renderExpiring(payload, pagination);
     case 'wms.location.list':
-      return renderLocationList(payload);
+      return renderLocationList(payload, pagination);
     case 'ui.ask':
       return renderAsk(payload);
     default:
-      return renderPlain(payload);
+      return renderPlain(payload, pagination);
   }
 }
 
-function renderQuery(payload: unknown): ReactNode {
+function renderQuery(payload: unknown, pagination: TablePaginationConfig): ReactNode {
   if (Array.isArray(payload)) {
     // 元素带 byLocation → 形态三（全部 SKU 分组清单）；否则形态一（库位平铺）
     return payload.length > 0 && isSkuGroup(payload[0])
-      ? renderGroupList(payload as SkuGroup[])
-      : renderFlatRows(payload as FlatRow[]);
+      ? renderGroupList(payload as SkuGroup[], pagination)
+      : renderFlatRows(payload as FlatRow[], pagination);
   }
-  if (isSkuGroup(payload)) return renderSingleGroup(payload);
-  return renderPlain(payload);
+  if (isSkuGroup(payload)) return renderSingleGroup(payload, pagination);
+  return renderPlain(payload, pagination);
 }
 
 /** 形态一：库位平铺（「这个库位里有什么」——行含批次与效期） */
-function renderFlatRows(rows: FlatRow[]) {
+function renderFlatRows(rows: FlatRow[], pagination: TablePaginationConfig) {
   const columns: ColumnsType<FlatRow> = [
     { title: 'SKU', dataIndex: 'skuCode' },
     { title: '名称', dataIndex: 'name' },
@@ -108,13 +110,13 @@ function renderFlatRows(rows: FlatRow[]) {
   ];
   return (
     <>
-      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={TABLE_PAGINATION} />
+      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={pagination} />
     </>
   );
 }
 
 /** 形态二：单 SKU 分组——总量 + 分库位行（批次明细随库位行竖排） */
-function renderSingleGroup(g: SkuGroup) {
+function renderSingleGroup(g: SkuGroup, pagination: TablePaginationConfig) {
   const columns: ColumnsType<LocationGroup> = [
     { title: '库位', dataIndex: 'locationCode' },
     { title: '名称', dataIndex: 'locationName' },
@@ -141,13 +143,13 @@ function renderSingleGroup(g: SkuGroup) {
         <Descriptions.Item label="名称">{g.name}</Descriptions.Item>
         <Descriptions.Item label="总量">{g.total}</Descriptions.Item>
       </Descriptions>
-      <Table size="small" columns={columns} dataSource={withKeys(g.byLocation)} pagination={TABLE_PAGINATION} />
+      <Table size="small" columns={columns} dataSource={withKeys(g.byLocation)} pagination={pagination} />
     </>
   );
 }
 
 /** 形态三：全部 SKU 分组清单——每 SKU 一行汇总（分库位明细追问具体 SKU 可得） */
-function renderGroupList(groups: SkuGroup[]) {
+function renderGroupList(groups: SkuGroup[], pagination: TablePaginationConfig) {
   const columns: ColumnsType<SkuGroup> = [
     { title: 'SKU', dataIndex: 'skuCode' },
     { title: '名称', dataIndex: 'name' },
@@ -155,13 +157,13 @@ function renderGroupList(groups: SkuGroup[]) {
   ];
   return (
     <>
-      <Table size="small" columns={columns} dataSource={withKeys(groups)} pagination={TABLE_PAGINATION} />
+      <Table size="small" columns={columns} dataSource={withKeys(groups)} pagination={pagination} />
     </>
   );
 }
 
-function renderExpiring(payload: unknown) {
-  if (!Array.isArray(payload)) return renderPlain(payload);
+function renderExpiring(payload: unknown, pagination: TablePaginationConfig) {
+  if (!Array.isArray(payload)) return renderPlain(payload, pagination);
   const rows = payload as ExpiringRow[];
   const columns: ColumnsType<ExpiringRow> = [
     { title: 'SKU', dataIndex: 'skuCode' },
@@ -173,13 +175,13 @@ function renderExpiring(payload: unknown) {
   ];
   return (
     <>
-      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={TABLE_PAGINATION} />
+      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={pagination} />
     </>
   );
 }
 
-function renderLocationList(payload: unknown) {
-  if (!Array.isArray(payload)) return renderPlain(payload);
+function renderLocationList(payload: unknown, pagination: TablePaginationConfig) {
+  if (!Array.isArray(payload)) return renderPlain(payload, pagination);
   const rows = payload as LocationRow[];
   const columns: ColumnsType<LocationRow> = [
     { title: '库位', dataIndex: 'locationCode' },
@@ -188,7 +190,7 @@ function renderLocationList(payload: unknown) {
   ];
   return (
     <>
-      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={TABLE_PAGINATION} />
+      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={pagination} />
     </>
   );
 }
@@ -228,7 +230,7 @@ function isPlainRow(v: unknown): v is Record<string, unknown> {
 }
 
 /** 对象数组 → 表格。内部 id 不进列，列名用中文。 */
-function renderObjectTable(rows: Record<string, unknown>[]) {
+function renderObjectTable(rows: Record<string, unknown>[], pagination: TablePaginationConfig) {
   const keys: string[] = [];
   for (const row of rows) {
     for (const key of Object.keys(row)) {
@@ -248,19 +250,19 @@ function renderObjectTable(rows: Record<string, unknown>[]) {
   }));
   return (
     <>
-      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={TABLE_PAGINATION} />
+      <Table size="small" columns={columns} dataSource={withKeys(rows)} pagination={pagination} />
     </>
   );
 }
 
 /** 写操作和未专门排版的结果：短句，不把对象摊成 JSON */
-function renderPlain(payload: unknown): ReactNode {
-  if (Array.isArray(payload) && payload.every(isPlainRow)) return renderObjectTable(payload);
+function renderPlain(payload: unknown, pagination: TablePaginationConfig): ReactNode {
+  if (Array.isArray(payload) && payload.every(isPlainRow)) return renderObjectTable(payload, pagination);
   const row = payload && typeof payload === 'object' && !Array.isArray(payload)
     ? (payload as Record<string, unknown>)
     : undefined;
   if (row && Array.isArray(row.rows) && row.rows.every(isPlainRow)) {
-    return renderObjectTable(row.rows as Record<string, unknown>[]);
+    return renderObjectTable(row.rows as Record<string, unknown>[], pagination);
   }
   if (!row) {
     if (payload === null || payload === undefined) return null;

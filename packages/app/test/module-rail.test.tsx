@@ -86,6 +86,10 @@ describe('应用壳：导航在左，主区在右', () => {
       </ConfigProvider>,
     );
 
+    expect(screen.getByRole('heading', { name: '运营看板' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '看板' }).style.background).not.toBe('transparent');
+    expect(screen.getByRole('button', { name: '档案' }).style.background).toBe('transparent');
+
     const shell = document.querySelector('.app-shell') as HTMLElement;
     expect(shell.style.flexDirection).toBe('row');
     expect(shell.style.height).toBe('100%');
@@ -112,7 +116,7 @@ describe('ModuleRail：悬停浮出功能网格', () => {
     expect(screen.queryByText('序列号')).not.toBeInTheDocument();
     expect(screen.queryByText('托盘')).not.toBeInTheDocument();
     expect(screen.getByTestId('module-flyout-grid').style.gridTemplateColumns).toBe('1fr 1fr');
-    expect(screen.getByTestId('page').textContent).toBe('skus');
+    expect(screen.getByTestId('page').textContent).toBe('dashboard');
   });
 
   it('悬停稍候后以网格浮出该类功能，点功能切页并收起', async () => {

@@ -39,6 +39,10 @@ vi.mock('../src/api/hooks', () => ({
   useIntegrationCodes: () => ({ data: { rows: harness.state.rows }, isLoading: false }),
   useToolInvoke: () => ({ mutateAsync: harness.invokeMock, isPending: false }),
   useToolConfirm: () => ({ mutateAsync: harness.confirmToolMock, isPending: false }),
+  useLanAddress: () => ({
+    data: { nodeId: 'n', workspaceId: 'ws', ip: '192.168.1.8', port: 3000, url: 'http://192.168.1.8:3000' },
+    isLoading: false,
+  }),
 }));
 
 const wrap = (ui: ReactNode) => (
@@ -127,6 +131,8 @@ describe('对接页', () => {
   it('添加连接器后保存会提议装上对接，密钥不进提议', async () => {
     const user = userEvent.setup();
     render(wrap(<IntegrationsPage />));
+    expect(screen.getByRole('region', { name: '对外接口' })).toBeInTheDocument();
+    expect(screen.getByText(/\{连接器 id\}/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '添加连接器' }));
     await user.type(screen.getByLabelText('令牌'), 's3cret');
     await user.click(screen.getByRole('button', { name: '保存配置' }));
@@ -168,6 +174,9 @@ describe('对接页', () => {
     const user = userEvent.setup();
     render(wrap(<IntegrationsPage />));
     expect(screen.getByText('sales-in · 拉取 · 建单')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '对外接口' })).toBeInTheDocument();
+    expect(screen.getByText(/192\.168\.1\.8:3000\/api\/integrations\/\{连接器 id\}/)).toBeInTheDocument();
+    expect(screen.getByText(/这家是拉取/)).toBeInTheDocument();
     expect(screen.getByText('本机已有 token')).toBeInTheDocument();
     expect(screen.queryByText('s3cret')).not.toBeInTheDocument();
 

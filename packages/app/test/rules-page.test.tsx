@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { App as AntApp, ConfigProvider } from 'antd';
 import type { ProfileSnapshot } from '@one/core';
 import { NUMBERING_PLACES, readNumbering, sampleNumber } from '@one/wms/numbering';
+import { ZONE_KINDS } from '@one/wms/zone-kinds';
 import type { ProfileCatalog } from '../src/api/profile-api';
 import RulesPage from '../src/pages/RulesPage';
 
@@ -84,6 +85,7 @@ describe('规则页', () => {
     render(wrap(<RulesPage />));
     expect(screen.getByRole('heading', { name: '规则' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '出库规则' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '库区分类' })).not.toBeInTheDocument();
     expect(screen.getByText(/单上不再另选/)).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /严格桶/ })).toBeChecked();
     expect(screen.getByRole('switch', { name: '过期批次不能出' })).not.toBeChecked();
@@ -203,6 +205,87 @@ describe('规则页', () => {
     await user.type(input, 'NOSEQ');
     expect(screen.getByText(/必须有且只有一个/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '提交编号规则' })).toBeDisabled();
+  });
+
+  it('库区打开时可以勾选启用的分类，还没有键时用 add', async () => {
+    harness.state.snapshot = {
+      ...snapshot(),
+      modules: {
+        'core.wms': { enabled: true, version: '0.1.0', settings: {} },
+        'module.zone': { enabled: true, version: '0.1.0', settings: {} },
+      },
+    };
+    harness.proposeMock.mockResolvedValue({
+      proposalId: 'p-zone',
+      pendingConfirm: true,
+      hint: '',
+      report: { summary: '共 1 项变更', items: [] },
+    });
+    const user = userEvent.setup();
+    render(wrap(<RulesPage />));
+
+    expect(screen.getByRole('heading', { name: '库区分类' })).toBeInTheDocument();
+    expect(screen.getByText(/没勾过时，八种都启用/)).toBeInTheDocument();
+    for (const kind of ZONE_KINDS) {
+      expect(screen.getByRole('checkbox', { name: new RegExp(kind.label) })).toBeChecked();
+    }
+
+    await user.click(screen.getByRole('checkbox', { name: /收货区/ }));
+    expect(harness.proposeMock).toHaveBeenCalledWith({
+      patch: [
+        {
+          op: 'add',
+          path: '/modules/module.zone/settings/enabledKinds',
+          value: ZONE_KINDS.map((kind) => kind.id).filter((id) => id !== 'receiving'),
+        },
+      ],
+      note: '规则：关掉收货区',
+    });
+    const bar = await screen.findByRole('region', { name: '确认这次修改' });
+    expect(bar).toHaveTextContent('关掉收货区。之后不能新建收货区，原来的收货区不再限制作业');
+    expect(bar).toHaveTextContent('已经建好的库区还在');
+    expect(screen.getByRole('checkbox', { name: /收货区/ })).not.toBeChecked();
+    expect(screen.getByRole('radio', { name: /严格桶/ })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: '入库单编号模板' })).toBeDisabled();
+  });
+
+  it('库区分类已经存过时用 replace', async () => {
+    harness.state.snapshot = {
+      ...snapshot(),
+      modules: {
+        'core.wms': { enabled: true, version: '0.1.0' },
+        'module.zone': {
+          enabled: true,
+          version: '0.1.0',
+          settings: { enabledKinds: ['picking'] },
+        },
+      },
+    };
+    harness.proposeMock.mockResolvedValue({
+      proposalId: 'p-zone-on',
+      pendingConfirm: true,
+      hint: '',
+      report: { summary: '共 1 项变更', items: [] },
+    });
+    const user = userEvent.setup();
+    render(wrap(<RulesPage />));
+
+    expect(screen.getByRole('checkbox', { name: /拣货区/ })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /存货区/ })).not.toBeChecked();
+    await user.click(screen.getByRole('checkbox', { name: /存货区/ }));
+    expect(harness.proposeMock).toHaveBeenCalledWith({
+      patch: [
+        {
+          op: 'replace',
+          path: '/modules/module.zone/settings/enabledKinds',
+          value: ['storage', 'picking'],
+        },
+      ],
+      note: '规则：打开存货区',
+    });
+    expect(await screen.findByRole('region', { name: '确认这次修改' })).toHaveTextContent(
+      '打开存货区。之后可以新建存货区',
+    );
   });
 
   it('出库规则还在确认时不能再提交编号', async () => {

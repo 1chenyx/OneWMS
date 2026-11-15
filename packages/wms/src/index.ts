@@ -174,7 +174,7 @@ export type { ReplenishmentSuggestion } from './queries/replenish-queries.js';
 export { listWarehouses, listWarehouseStock, presentLocation } from './queries/warehouse-queries.js';
 export { listZones } from './queries/zone-queries.js';
 export type { ZoneListRow } from './queries/zone-queries.js';
-export { ZONE_KINDS, isZoneKind, zoneKindLabel } from './zone-kinds.js';
+export { ZONE_KINDS, isZoneKind, readEnabledZoneKinds, zoneKindLabel } from './zone-kinds.js';
 export type { ZoneKind } from './zone-kinds.js';
 export { listSerials, querySerial } from './queries/serial-queries.js';
 export type { SerialRowView } from './queries/serial-queries.js';
@@ -323,6 +323,8 @@ export {
   ZoneKindError,
   ZoneWarehouseMismatchError,
   ZoneOccupiedError,
+  ZoneUseError,
+  ZoneKindDisabledError,
   SerialDisabledError,
   SerialRequiredError,
   SerialNotTrackedError,

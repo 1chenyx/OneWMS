@@ -6,7 +6,7 @@ import { useOrders, useProfileSnapshot } from '../api/hooks';
 import type { Order } from '../api/client';
 import PutawayWork from '../components/PutawayWork';
 import PageHeader from '../components/PageHeader';
-import { monoCell, TABLE_PAGINATION } from '../components/table-style';
+import { monoCell, useClientPagination } from '../components/table-style';
 import { useAppNav } from '../app-nav';
 import { fmtQty } from '../lib/format';
 
@@ -15,6 +15,7 @@ import { fmtQty } from '../lib/format';
  * 入库单页不再做这一步。上架之后回入库单结束单据。
  */
 export default function PutawayPage() {
+  const pagination = useClientPagination();
   const { takeInitialFilter } = useAppNav();
   const [orderNoFilter, setOrderNoFilter] = useState(() => takeInitialFilter()?.orderNo ?? '');
   const snapshot = useProfileSnapshot();
@@ -122,7 +123,7 @@ export default function PutawayPage() {
           columns={columns}
           dataSource={waiting}
           loading={isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
           locale={{ emptyText: '没有待上架的入库单。先在入库单里收货。' }}
         />
       </Card>

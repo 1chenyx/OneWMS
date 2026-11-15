@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   blankConnector,
   buildSettings,
+  callerGuide,
   draftFromModule,
+  externalApi,
   modulePatch,
   writerPreview,
 } from '../src/lib/integration-draft';
@@ -92,5 +94,77 @@ describe('对接草稿', () => {
     expect(modulePatch({ installed: false, wasEnabled: false, hadSettings: false, enabled: true, settings })[0]?.op).toBe('add');
     const replace = modulePatch({ installed: true, wasEnabled: true, hadSettings: true, enabled: true, settings });
     expect(replace).toEqual([{ op: 'replace', path: '/modules/module.integration/settings', value: settings }]);
+  });
+
+  it('对外说明始终给出调用格式，不写密钥', () => {
+    const text = callerGuide('http://192.168.1.8:3000/');
+    expect(text).toContain('POST http://192.168.1.8:3000/api/integrations/{连接器 id}/{路由 id}');
+    expect(text).toContain('Authorization: Bearer {令牌}');
+    expect(text).toContain('同一主键再推仍是 200');
+    expect(text).not.toContain('s3cret');
+    expect(callerGuide(null)).toContain('POST {对方打得到的主机}/api/integrations/{连接器 id}/{路由 id}');
+  });
+
+  it('接收路由写出给对方的地址和示例，密钥不进说明', () => {
+    const webhook = {
+      ...inbound,
+      routes: [
+        {
+          ...inbound.routes[0],
+          endpointId: undefined,
+          inbound: { mode: 'webhook', itemsPath: '' },
+          mapping: {
+            fields: [
+              { to: 'direction', from: { op: 'const', value: 'out' } },
+              { to: 'orderNo', from: { op: 'path', path: 'billNo' } },
+              { to: 'partnerCode', from: { op: 'code', entity: 'partner', path: 'customerCode' } },
+            ],
+            lines: {
+              to: 'lines',
+              from: 'lines',
+              item: [
+                { to: 'skuCode', from: { op: 'code', entity: 'sku', path: 'itemCode' } },
+                { to: 'quantity', from: { op: 'number', path: 'qty' } },
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const item = draftFromModule({ enabled: true, settings: { connectors: { jiancang: webhook } } }).connectors[0];
+    if (!item) throw new Error('没有连接器');
+    item.secrets = { token: 's3cret' };
+    const doc = externalApi(item, {
+      moduleEnabled: true,
+      origin: 'http://192.168.1.8:3000',
+      writers: { order: 'jiancang', sku: null, partner: null },
+    });
+    expect(doc.routes).toHaveLength(1);
+    expect(doc.routes[0]?.blocked).toBeNull();
+    expect(doc.routes[0]?.text).toContain('POST http://192.168.1.8:3000/api/integrations/jiancang/sales-in');
+    expect(doc.routes[0]?.text).toContain('Authorization: Bearer {令牌}');
+    expect(doc.routes[0]?.text).toContain('"billNo": "SO1001"');
+    expect(doc.routes[0]?.text).toContain('"customerCode": "C08"');
+    expect(doc.routes[0]?.text).toContain('"itemCode": "A1"');
+    expect(doc.routes[0]?.text).toContain('"qty": "2"');
+    expect(doc.routes[0]?.text).not.toContain('s3cret');
+    expect(doc.routes[0]?.text).toContain('同一主键再推仍是 200');
+  });
+
+  it('拉取不给调用地址，不鉴权的接收会标明还不能用', () => {
+    const polled = draftFromModule({ enabled: true, settings: { connectors: { jiancang: inbound } } }).connectors[0];
+    if (!polled) throw new Error('没有连接器');
+    const pull = externalApi(polled, { moduleEnabled: true, origin: null, writers: { order: 'jiancang', sku: null, partner: null } });
+    expect(pull.routes).toEqual([]);
+    expect(pull.lead).toContain('拉取');
+
+    const open = draftFromModule({
+      enabled: true,
+      settings: { connectors: { jiancang: { ...inbound, auth: { adapter: 'none' }, routes: [{ ...inbound.routes[0], endpointId: undefined, inbound: { mode: 'webhook', itemsPath: '' } }] } } },
+    }).connectors[0];
+    if (!open) throw new Error('没有连接器');
+    const doc = externalApi(open, { moduleEnabled: true, origin: null, writers: { order: 'jiancang', sku: null, partner: null } });
+    expect(doc.routes[0]?.blocked).toContain('必须带鉴权');
+    expect(doc.routes[0]?.text).toContain('POST /api/integrations/jiancang/sales-in');
   });
 });

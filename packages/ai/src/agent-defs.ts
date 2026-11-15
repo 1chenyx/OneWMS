@@ -14,6 +14,11 @@ import type { WmsWorkspace } from '@one/wms';
  *  - readonly：仅 permission='read' 的工具；
  *  - config：read 全量 + profile.propose（能提议配置，无业务写）。
  * 「改配置」是高权限动作：使用 AI（对话）与配置 AI（管理页）分属不同通道。
+ *
+ * 这三名若仍按上面的策略授权（没有 toolGrant='custom'，清单里也没有策略之外的工具），
+ * 读取时按当前工具总线重算。后加的波次、调拨、报损、报表等会自动补上。
+ * 人设和说明若还是内置原文，一并换成现在的说法。管理页改过授权后写上
+ * toolGrant='custom'，之后以保存的清单为准。
  */
 
 /** core.ai 模块 id（settings.agents 的落点；区别于审计 actor 前缀 'ai:{id}'） */
@@ -43,15 +48,45 @@ export interface AgentDefinition {
   /** 模型覆盖（如 'qwen3:8b'）：缺省用进程级 AI 配置 */
   model?: string;
   /**
+   * 三件套的授权来源。default：工具随内置策略跟着总线走。
+   * custom：用 tools 里保存的清单，后来新增的工具不会自动加进来。
+   */
+  toolGrant?: 'default' | 'custom';
+  /**
    * 可使用的角色/用户清单（v2 预留：助手按角色分配）。v1 不消费——
    * 字段仅透传保存，管理界面灰显「预留」。
    */
   allowedRoles?: string[];
 }
 
+/** 曾经写进配置、现在仍视为内置原文的说明和人设。换过文案的不在此列。 */
+const FACTORY_PERSONA: Record<string, { descriptions: string[]; prompts: string[] }> = {
+  general: {
+    descriptions: ['查询与出入库操作（默认）', '查询和办理仓库业务（默认）'],
+    prompts: [
+      '你是通用仓库助手：可以查询库存、管理 SKU 与单据、执行出入库操作。',
+      '你是通用仓库助手：可以查询，也可以办理入库、出库、拣货、波次、盘点、调拨、报损、补货、主数据和报表。不能修改系统配置。',
+    ],
+  },
+  readonly: {
+    descriptions: ['仅查询，不修改任何数据', '只能查询，不能修改数据'],
+    prompts: [
+      '你是只读查询助手：只回答关于库存、单据、配置现状的问题，不修改任何数据。',
+      '你是只读查询助手：可以查看库存、单据、作业、主数据、报表和配置现状，不修改任何数据。',
+    ],
+  },
+  config: {
+    descriptions: ['查询 + 起草配置变更提议（由用户确认生效）', '查看现状，并起草配置变更（确认后生效）'],
+    prompts: [
+      '你是配置助手：帮助用户查看现状并起草配置变更提议。提议必须由用户亲自确认后才生效。',
+      '你是配置助手：可以查看现状并起草配置变更提议。提议必须由用户亲自确认后才生效。不要直接修改库存、单据或其他业务数据。',
+    ],
+  },
+};
+
 /**
  * 内置三件套（代码缺省）：工具矩阵按总线现状展开——将来新增工具自动进入
- * general（新业务工具）与 readonly / config（新读工具），内置定义无需跟进维护。
+ * general（新业务工具）与 readonly / config（新读工具）。
  */
 export function builtinAgentDefs(toolRefs: readonly AgentToolRef[]): AgentDefinition[] {
   const readIds = toolRefs.filter((t) => t.permission === 'read').map((t) => t.id);
@@ -62,25 +97,55 @@ export function builtinAgentDefs(toolRefs: readonly AgentToolRef[]): AgentDefini
     {
       id: 'general',
       name: '通用助手',
-      description: '查询与出入库操作（默认）',
-      systemPrompt: '你是通用仓库助手：可以查询库存、管理 SKU 与单据、执行出入库操作。',
+      description: '查询和办理仓库业务（默认）',
+      systemPrompt:
+        '你是通用仓库助手：可以查询，也可以办理入库、出库、拣货、波次、盘点、调拨、报损、补货、主数据和报表。不能修改系统配置。',
       tools: toolRefs.filter((t) => t.id !== 'profile.propose').map((t) => t.id),
+      toolGrant: 'default',
     },
     {
       id: 'readonly',
       name: '只读助手',
-      description: '仅查询，不修改任何数据',
-      systemPrompt: '你是只读查询助手：只回答关于库存、单据、配置现状的问题，不修改任何数据。',
+      description: '只能查询，不能修改数据',
+      systemPrompt: '你是只读查询助手：可以查看库存、单据、作业、主数据、报表和配置现状，不修改任何数据。',
       tools: readIds,
+      toolGrant: 'default',
     },
     {
       id: 'config',
       name: '配置助手',
-      description: '查询 + 起草配置变更提议（由用户确认生效）',
-      systemPrompt: '你是配置助手：帮助用户查看现状并起草配置变更提议。提议必须由用户亲自确认后才生效。',
+      description: '查看现状，并起草配置变更（确认后生效）',
+      systemPrompt:
+        '你是配置助手：可以查看现状并起草配置变更提议。提议必须由用户亲自确认后才生效。不要直接修改库存、单据或其他业务数据。',
       tools: configTools,
+      toolGrant: 'default',
     },
   ];
+}
+
+function isFactoryPersona(saved: AgentDefinition): boolean {
+  const factory = FACTORY_PERSONA[saved.id];
+  if (!factory) return false;
+  return factory.descriptions.includes(saved.description) && factory.prompts.includes(saved.systemPrompt);
+}
+
+/**
+ * 三件套仍走内置策略时，用当前总线补齐工具。
+ * 授权被改过（toolGrant=custom，或清单里有策略之外的工具，或被清空）则保持原样。
+ */
+function alignBuiltinTools(saved: AgentDefinition, builtin: AgentDefinition | undefined): AgentDefinition {
+  if (!builtin) return saved;
+  const allowed = new Set(builtin.tools);
+  const follows =
+    saved.toolGrant === 'default' ||
+    (saved.toolGrant !== 'custom' && saved.tools.length > 0 && saved.tools.every((id) => allowed.has(id)));
+  if (!follows) return { ...saved, toolGrant: 'custom' };
+  const next: AgentDefinition = { ...saved, tools: [...builtin.tools], toolGrant: 'default' };
+  if (isFactoryPersona(saved)) {
+    next.description = builtin.description;
+    next.systemPrompt = builtin.systemPrompt;
+  }
+  return next;
 }
 
 /** 脏面窄化：settings.agents 的单项 → AgentDefinition（非法项返回 undefined 丢弃） */
@@ -98,16 +163,19 @@ function asAgentDef(raw: unknown): AgentDefinition | undefined {
     systemPrompt: r.systemPrompt,
     tools: r.tools as string[],
     model: typeof r.model === 'string' && r.model.trim() ? r.model : undefined,
+    ...(r.toolGrant === 'default' || r.toolGrant === 'custom' ? { toolGrant: r.toolGrant } : {}),
   };
 }
 
 /**
  * 读助手定义清单：core.ai settings.agents（配置面）→ 内置三件套（缺省面）。
  * 配置了但全部非法 / 清空 = 恢复内置（与「未配置」同归）。重复 id 保留先到者（确定性）。
+ * 三件套若还按内置策略授权，工具按当前总线重算，不沿用早先保存的旧清单。
  */
 export function readAgentDefs(ws: WmsWorkspace): AgentDefinition[] {
+  const builtins = builtinAgentDefs(ws.tools.list());
   const raw = ws.profile.getSnapshot().modules[AI_MODULE_ID]?.settings?.agents;
-  if (!Array.isArray(raw)) return builtinAgentDefs(ws.tools.list());
+  if (!Array.isArray(raw)) return builtins;
 
   const defs: AgentDefinition[] = [];
   const seen = new Set<string>();
@@ -117,7 +185,9 @@ export function readAgentDefs(ws: WmsWorkspace): AgentDefinition[] {
     seen.add(def.id);
     defs.push(def);
   }
-  return defs.length > 0 ? defs : builtinAgentDefs(ws.tools.list());
+  if (defs.length === 0) return builtins;
+  const byId = new Map(builtins.map((def) => [def.id, def]));
+  return defs.map((def) => alignBuiltinTools(def, byId.get(def.id)));
 }
 
 /**

@@ -53,7 +53,7 @@ describe('tool-catalog', () => {
     expect(presented[2].description).not.toContain(query.label);
   });
 
-  it('超过上限：未加载的组不进清单，加载后恢复全文', () => {
+  it('超过上限：未加载的组不进清单，加载后列出但保持摘要（全文走结果）', () => {
     const many = Array.from({ length: TOOL_CATALOG_DEFER_AT }, (_, i) => tool(`wms.extra.t${i}`));
     const order = tool('wms.order.create');
     const domain = [...many, order];
@@ -65,16 +65,20 @@ describe('tool-catalog', () => {
 
     const shown = presentCatalog(domain, new Set(['order']));
     const loaded = shown.find((t) => t.id === 'wms.order.create');
-    expect(loaded?.description).toContain('后半句不进摘要');
+    // 加载过的组进清单但仍是一行摘要：全文在 tools.load 的结果里，
+    // tools 数组不因加载而变化（前缀缓存的前提）
+    expect(loaded?.description).toBe('wms.order.create 的完整说明');
     expect(shown.some((t) => t.id.startsWith('wms.extra'))).toBe(false);
   });
 
-  it('加载只接受授权内的组；历史能恢复', () => {
+  it('加载只接受授权内的组；结果带整组完整说明；历史能恢复', () => {
     const domain = [tool('wms.order.create')];
     expect(applyLoad(domain, { group: 'sku' }).ok).toBe(false);
     expect(applyLoad(domain, {}).ok).toBe(false);
     const ok = applyLoad(domain, { group: 'order' });
     expect(ok).toMatchObject({ ok: true, group: 'order', payload: { toolIds: ['wms.order.create'] } });
+    expect(ok).toMatchObject({ payload: { docs: expect.stringContaining('### wms.order.create') } });
+    expect(ok.payload).not.toHaveProperty('error');
 
     const groups = expandedGroupsFromHistory([
       { role: 'tool-results', results: [{ callId: 'c', toolId: 'tools.load', ok: true, payload: { group: 'order', toolIds: [] } }] },

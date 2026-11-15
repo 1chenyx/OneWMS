@@ -31,7 +31,7 @@ import { ApiError } from '../api/client';
 import type { Scrap, ScrapDetailLine, InventoryBucketRow } from '../api/client';
 import { filledCode, useSeededField } from '../components/use-seeded-code';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { useClientPagination, monoCell, numCell } from '../components/table-style';
 import { fmtQty } from '../lib/format';
 
 /**
@@ -46,6 +46,7 @@ const STATE_TAG: Record<string, { color: string; label: string }> = {
 };
 
 export default function ScrapsPage() {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const { data: rows, isLoading } = useScraps();
   const confirm = useConfirmScrap();
@@ -156,7 +157,7 @@ export default function ScrapsPage() {
           columns={columns}
           dataSource={rows ?? []}
           loading={isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
           locale={{ emptyText: '还没有报损单' }}
         />
         <CreateScrapModal open={createOpen} onClose={() => setCreateOpen(false)} />

@@ -4,7 +4,9 @@ import { presentOf } from '../lib/module-present';
 import { useProfileCatalog, useProfileSnapshot } from '../api/hooks';
 import ChangeConfirm from './ChangeConfirm';
 import NumberingRulesCard from './NumberingRulesCard';
+import ZoneKindRulesCard from './ZoneKindRulesCard';
 import { useNumberingRules } from './use-numbering-rules';
+import { useZoneKindRules } from './use-zone-kind-rules';
 import {
   ALLOCATION_LABEL,
   allocationResult,
@@ -21,6 +23,7 @@ import {
 
 /**
  * 规则。出库怎么扣、各处编号怎么编，都在这里定。
+ * 库区打开时，这里再选这个工作区启用哪些分类。
  * 出库单不再另选批次怎么扣，也不另选写了的批次、库位能不能换。
  */
 
@@ -39,13 +42,15 @@ const PAGE_STYLE = `
   flex-direction: column;
   gap: 16px;
 }
-.outbound-rules {
+.outbound-rules,
+.zone-kind-rules {
   padding: 14px 16px;
   border: 1px solid #f0f0f0;
   border-radius: 10px;
   background: #fff;
 }
-.outbound-rules h3 {
+.outbound-rules h3,
+.zone-kind-rules h3 {
   margin: 0;
   font-size: 16px;
 }
@@ -76,21 +81,44 @@ export default function RulesPage() {
   const catalog = useProfileCatalog();
   const outbound = useOutboundRules();
   const numbering = useNumberingRules();
+  const zoneKinds = useZoneKindRules();
   const nameOf = (id: string) => catalog.data?.modules.find((item) => item.id === id)?.name ?? presentOf(id).name;
   const settings = snapshot.data?.modules['core.wms']?.settings;
+  const zoneOn = snapshot.data?.modules['module.zone']?.enabled === true;
+  const subtitle = zoneOn
+    ? '出库怎么扣、各处编号怎么编、库区用哪些分类，都在这里定。确认后才生效。'
+    : '出库怎么扣、各处编号怎么编，都在这里定。确认后才生效。';
 
   return (
     <div className="rules-page">
       <style>{PAGE_STYLE}</style>
-      <PageHeader title="规则" subtitle="出库怎么扣、各处编号怎么编，都在这里定。确认后才生效。" />
+      <PageHeader title="规则" subtitle={subtitle} />
       {snapshot.isError ? (
         <Alert type="error" showIcon message="读不到规则配置" />
       ) : snapshot.isLoading || !snapshot.data ? (
         <Card loading />
       ) : (
         <div className="rules-body">
-          <OutboundRulesCard settings={settings} rules={outbound} locked={numbering.busy} nameOf={nameOf} />
-          <NumberingRulesCard settings={settings} rules={numbering} locked={outbound.busy} nameOf={nameOf} />
+          <OutboundRulesCard
+            settings={settings}
+            rules={outbound}
+            locked={numbering.busy || zoneKinds.busy}
+            nameOf={nameOf}
+          />
+          {zoneOn ? (
+            <ZoneKindRulesCard
+              settings={snapshot.data.modules['module.zone']?.settings}
+              rules={zoneKinds}
+              locked={outbound.busy || numbering.busy}
+              nameOf={nameOf}
+            />
+          ) : null}
+          <NumberingRulesCard
+            settings={settings}
+            rules={numbering}
+            locked={outbound.busy || zoneKinds.busy}
+            nameOf={nameOf}
+          />
         </div>
       )}
     </div>

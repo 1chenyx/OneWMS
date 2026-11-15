@@ -77,6 +77,7 @@ describe('createVercelLlmProvider：响应解析', () => {
 
     expect(res.text).toBe('你好');
     expect(res.toolCalls).toEqual([]);
+    expect(res.usage).toEqual({ inputTokens: 1, outputTokens: 1 });
   });
 
   it('工具调用 → toolCalls（input JSON 串已解为 args 对象）', async () => {
@@ -176,6 +177,7 @@ describe('createVercelLlmProvider：streamTurn（流式互译）', () => {
     expect(chunks).toEqual([
       { type: 'text-delta', text: '你' },
       { type: 'text-delta', text: '好' },
+      { type: 'usage', inputTokens: 1, outputTokens: 1 },
     ]);
   });
 
@@ -197,6 +199,7 @@ describe('createVercelLlmProvider：streamTurn（流式互译）', () => {
     expect(chunks).toEqual([
       { type: 'text-delta', text: '我来入库' },
       { type: 'tool-calls', text: '我来入库', calls: [{ callId: 'call_1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: 10 } }] },
+      { type: 'usage', inputTokens: 1, outputTokens: 1 },
     ]);
   });
 

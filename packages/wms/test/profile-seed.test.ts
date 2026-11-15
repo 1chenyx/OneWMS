@@ -124,7 +124,13 @@ describe('默认 Profile 种子', () => {
     expect(snapshot.modules['module.asn']).toMatchObject({ enabled: true, version: '0.1.0' });
     expect(snapshot.modules['module.replenish']).toMatchObject({ enabled: true, version: '0.1.0' });
     expect(snapshot.modules['module.warehouse']).toMatchObject({ enabled: true, version: '0.1.0' });
-    expect(snapshot.modules['module.zone']).toMatchObject({ enabled: true, version: '0.1.0' });
+    expect(snapshot.modules['module.zone']).toMatchObject({
+      enabled: true,
+      version: '0.1.0',
+      settings: {
+        enabledKinds: ['receiving', 'qc', 'storage', 'picking', 'staging', 'shipping', 'return', 'defective'],
+      },
+    });
     expect(snapshot.modules['module.serial']).toMatchObject({ enabled: true, version: '0.1.0' });
     expect(snapshot.modules['module.lpn']).toMatchObject({ enabled: true, version: '0.1.0' });
     expect(snapshot.modules['module.picking']).toMatchObject({ enabled: true, version: '0.1.0' });

@@ -179,8 +179,9 @@ export default function SkusPage() {
           loading={isLoading}
           pagination={serverPagination({
             current: list.page,
+            pageSize: list.pageSize,
             total: totalOf(skuPayload),
-            onChange: list.setPage,
+            onChange: list.onChange,
           })}
           locale={{ emptyText: query ? '没有匹配的 SKU' : '还没有 SKU，点右上角新建或让 AI 帮你建' }}
         />

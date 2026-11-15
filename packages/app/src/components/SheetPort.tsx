@@ -7,7 +7,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { PreviewRow } from '../lib/exchange';
 import { downloadXlsx, readTableFile, xlsxName } from '../lib/sheet';
 import type { SheetTable } from '../lib/sheet';
-import { TABLE_PAGINATION, monoCell, numCell } from './table-style';
+import { useClientPagination, monoCell, numCell } from './table-style';
 
 /**
  * 挂在档案/单据页头上的导入导出。导出只出 Excel；导入认 Excel，也认 CSV。
@@ -103,6 +103,7 @@ export default function SheetPort<T extends PreviewRow>({
   exports?: ExportJob[];
   importSpec?: ImportSpec<T>;
 }) {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const qc = useQueryClient();
   const [exporting, setExporting] = useState<string | null>(null);
@@ -349,7 +350,7 @@ export default function SheetPort<T extends PreviewRow>({
                   size="small"
                   columns={importSpec.columns}
                   dataSource={rows}
-                  pagination={TABLE_PAGINATION}
+                  pagination={pagination}
                   scroll={{ x: 'max-content' }}
                 />
               </>

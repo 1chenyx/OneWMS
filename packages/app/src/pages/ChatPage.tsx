@@ -37,6 +37,7 @@ import { face } from '../theme';
  *  - 成功的操作展开后仍可去对应管理页；
  *  - 输入区可以带上 Excel、CSV 或文本，用户说怎么处理，助手就怎么处理。
  *    发送在输入框内的右下角，和助手、模型、导入文件同一行。
+ *    模型回报的 token 显示在底栏上方，是本段各轮的合计。
  *  - variant=dock：右侧浮窗里的同一块面板，不带页头，输入框矮一档。
  *    底栏不换行，助手和模型变窄后省略过长的名字。
  */
@@ -113,6 +114,53 @@ function ChipText({ children }: { children: string }) {
     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '1 1 auto' }}>
       {children}
     </span>
+  );
+}
+
+function formatTokenCount(value: number): string {
+  return String(Math.max(0, Math.floor(value))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/** 本段已结束各轮的合计。正在回复的这一轮要等模型回报后才计入 */
+function sessionTokenUse(turns: readonly ChatTurn[]): { inputTokens: number; outputTokens: number; last: number } | null {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let last = 0;
+  let seen = false;
+  for (const turn of turns) {
+    if (!turn.usage) continue;
+    seen = true;
+    inputTokens += turn.usage.inputTokens;
+    outputTokens += turn.usage.outputTokens;
+    last = turn.usage.inputTokens + turn.usage.outputTokens;
+  }
+  return seen ? { inputTokens, outputTokens, last } : null;
+}
+
+function TokenUse({ turns, streaming }: { turns: readonly ChatTurn[]; streaming: boolean }) {
+  const usage = sessionTokenUse(turns);
+  if (!usage) return null;
+  const total = usage.inputTokens + usage.outputTokens;
+  const detail = `输入 ${formatTokenCount(usage.inputTokens)} · 输出 ${formatTokenCount(usage.outputTokens)} · 最近一轮 ${formatTokenCount(usage.last)}`;
+  return (
+    <div style={{ display: 'flex', justifyContent: 'flex-end', minWidth: 0, padding: '0 4px 2px' }}>
+      <span
+        aria-label={`本段消耗 ${total} token`}
+        title={streaming ? `${detail} · 正在回复，这一轮结束后计入` : detail}
+        style={{
+          maxWidth: '100%',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          color: face.text3,
+          fontFamily: face.mono,
+          fontSize: 12,
+          lineHeight: '18px',
+        }}
+      >
+        消耗 {formatTokenCount(total)} token
+      </span>
+    </div>
   );
 }
 
@@ -421,6 +469,7 @@ export default function ChatPage({ variant = 'page' }: { variant?: 'page' | 'doc
               style={{ display: 'none' }}
               onChange={(e) => onPickFiles(e.target.files)}
             />
+            <TokenUse turns={chat.turns} streaming={chat.isStreaming} />
             <div
               className="composer-bar"
               style={{

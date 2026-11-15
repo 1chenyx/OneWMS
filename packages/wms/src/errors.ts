@@ -1,4 +1,5 @@
 import { CoreError } from '@one/core';
+import { ZONE_USE_LABEL, zoneKindLabel, zoneKindUseText, type ZoneUse } from './zone-kinds.js';
 
 /**
  * 领域错误（@one/wms）。
@@ -129,6 +130,26 @@ export class ZoneOccupiedError extends CoreError {
     super(
       'WMS_ZONE_OCCUPIED',
       `库区 ${zoneCode} 里还有 ${locationCount} 个库位，不能改所属仓库。先把这些库位划走。`,
+    );
+  }
+}
+
+/** 这个库区不能做这一步。未分区不会抛。 */
+export class ZoneUseError extends CoreError {
+  constructor(locationCode: string, zoneCode: string, kind: string, use: ZoneUse) {
+    super(
+      'WMS_ZONE_USE',
+      `库位 ${locationCode} 在${zoneKindLabel(kind)} ${zoneCode}。${zoneKindUseText(kind)}，不能在这里${ZONE_USE_LABEL[use]}。`,
+    );
+  }
+}
+
+/** 这个分类没有在当前工作区启用。 */
+export class ZoneKindDisabledError extends CoreError {
+  constructor(kind: string) {
+    super(
+      'WMS_ZONE_KIND_OFF',
+      `${zoneKindLabel(kind)}没有启用。到规则页打开这个分类，或让配置助手改 /modules/module.zone/settings/enabledKinds。`,
     );
   }
 }

@@ -32,6 +32,7 @@ import {
   groupLevel,
   levelDetail,
   levelTitle,
+  withToolGrant,
   type AgentToolInfo,
   type ToolBucket,
 } from './agent-tools';
@@ -534,7 +535,7 @@ export default function AgentsPage() {
       }
       seen.add(agent.id);
     }
-    const submitting = drafts.map((draft) => draft.def);
+    const submitting = drafts.map((draft) => withToolGrant(draft.def, tools));
     setSaving(true);
     try {
       if (pendingId) {
@@ -564,9 +565,12 @@ export default function AgentsPage() {
     setApplying(true);
     try {
       const result = await api.confirmProposal(pendingId);
-      const submitted = drafts.map((draft) => draft.def);
+      const submitted = drafts.map((draft) => withToolGrant(draft.def, tools));
       setDrafts((prev) =>
-        prev!.map((draft) => ({ ...draft, persisted: draft.def.id.trim() !== '' })),
+        prev!.map((draft) => {
+          const def = submitted.find((agent) => agent.id === draft.def.id) ?? draft.def;
+          return { ...draft, persisted: def.id.trim() !== '', def };
+        }),
       );
       setBaseline(agentSnapshot(submitted));
       setPendingId(null);

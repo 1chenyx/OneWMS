@@ -15,6 +15,7 @@ import type {
   LlmStreamChunk,
   LlmTurnRequest,
   LlmTurnResponse,
+  LlmUsage,
   ToolCallRequest,
 } from '../types.js';
 
@@ -39,6 +40,7 @@ export function createVercelLlmProvider(model: LanguageModel): LlmProvider {
         tools: toToolSet(req.tools),
         stopWhen: isStepCount(1),
       });
+      const usage = readUsage(result.usage);
       return {
         text: result.text,
         toolCalls: result.toolCalls.map((c) => ({
@@ -46,6 +48,7 @@ export function createVercelLlmProvider(model: LanguageModel): LlmProvider {
           toolId: c.toolName,
           args: (c.input ?? {}) as Record<string, unknown>,
         })),
+        ...(usage ? { usage } : {}),
       };
     },
 
@@ -65,6 +68,7 @@ export function createVercelLlmProvider(model: LanguageModel): LlmProvider {
 
       let text = '';
       const calls: ToolCallRequest[] = [];
+      let reported: LlmUsage | undefined;
       for await (const part of result.fullStream) {
         if (part.type === 'text-delta') {
           text += part.text;
@@ -75,6 +79,10 @@ export function createVercelLlmProvider(model: LanguageModel): LlmProvider {
             toolId: part.toolName,
             args: (part.input ?? {}) as Record<string, unknown>,
           });
+        } else if (part.type === 'finish') {
+          reported = readUsage(part.totalUsage) ?? reported;
+        } else if (part.type === 'finish-step') {
+          if (!reported) reported = readUsage(part.usage);
         } else if (part.type === 'error') {
           throw part.error;
         }
@@ -82,8 +90,26 @@ export function createVercelLlmProvider(model: LanguageModel): LlmProvider {
       if (calls.length > 0) {
         yield { type: 'tool-calls', text: text || undefined, calls };
       }
+      if (reported) {
+        yield { type: 'usage', inputTokens: reported.inputTokens, outputTokens: reported.outputTokens };
+      }
     },
   };
+}
+
+/** SDK 用量 → 我们的整数。两边都没有数字时视为没回报 */
+function readUsage(usage: { inputTokens?: number; outputTokens?: number } | undefined): LlmUsage | undefined {
+  if (!usage) return undefined;
+  if (typeof usage.inputTokens !== 'number' && typeof usage.outputTokens !== 'number') return undefined;
+  return {
+    inputTokens: normalizeTokenCount(usage.inputTokens),
+    outputTokens: normalizeTokenCount(usage.outputTokens),
+  };
+}
+
+function normalizeTokenCount(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 0;
+  return Math.floor(value);
 }
 
 /** 工具元数据 → SDK ToolSet（id 即 toolName；schema 透传，参数校验在工具总线） */

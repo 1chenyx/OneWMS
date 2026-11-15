@@ -15,10 +15,12 @@ import {
   levelTitle,
   matchesTool,
   oneLine,
+  defaultToolIds,
   readOnlyIds,
   sameIds,
   toolGroupId,
   visibleBuckets,
+  withToolGrant,
 } from '../src/pages/agent-tools';
 
 const catalog: AgentToolInfo[] = [
@@ -51,6 +53,39 @@ describe('工具分组', () => {
     expect(buckets.find((bucket) => bucket.id === 'custom')!.label).toBe('custom');
   });
 
+  it('后加的业务分组用中文名，不露出英文分组键', () => {
+    const extra: AgentToolInfo[] = [
+      { id: 'wms.wave.query', label: '查询波次', description: '', permission: 'read' },
+      { id: 'wms.transfer.query', label: '查询调拨单', description: '', permission: 'read' },
+      { id: 'wms.scrap.query', label: '查询报损单', description: '', permission: 'read' },
+      { id: 'wms.numbering.preview', label: '预览编号', description: '', permission: 'read' },
+      { id: 'integration.code.list', label: '编码清单', description: '', permission: 'read' },
+      { id: 'core.oplog.query', label: '查询操作日志', description: '', permission: 'read' },
+    ];
+    const labels = Object.fromEntries(buildBuckets([...catalog, ...extra], []).map((bucket) => [bucket.id, bucket.label]));
+    expect(labels).toMatchObject({
+      wave: '波次',
+      transfer: '调拨',
+      scrap: '报损',
+      numbering: '编号',
+      integration: '对接',
+      core: '操作日志',
+    });
+    expect(buildBuckets([...catalog, ...extra], []).map((bucket) => bucket.id)).toEqual([
+      'inventory',
+      'order',
+      'wave',
+      'transfer',
+      'scrap',
+      'sku',
+      'numbering',
+      'integration',
+      'core',
+      'memory',
+      'custom',
+    ]);
+  });
+
   it('已授权但不在目录里的工具单独成组，放在最前', () => {
     const buckets = buildBuckets(catalog, ['gone.tool', 'wms.sku.create', 'gone.tool']);
     expect(buckets[0]!.id).toBe(MISSING_TOOLS);
@@ -78,6 +113,31 @@ describe('工具分组', () => {
     expect(oneLine('查询库存余量。后面还有很多。')).toBe('查询库存余量。');
     expect(oneLine('没有句号')).toBe('没有句号');
     expect(oneLine(`${'很'.repeat(80)}。结尾`)).toBe(`${'很'.repeat(72)}…`);
+  });
+});
+
+describe('内置授权标记', () => {
+  const tools: AgentToolInfo[] = [
+    { id: 'wms.inventory.query', label: '查询库存', description: '', permission: 'read' },
+    { id: 'wms.inventory.adjust', label: '调整库存', description: '', permission: 'write' },
+    { id: 'profile.propose', label: '提议修改', description: '', permission: 'write' },
+  ];
+  const base: AgentDef = {
+    id: 'general',
+    name: '通用助手',
+    description: '',
+    systemPrompt: '',
+    tools: ['wms.inventory.query', 'wms.inventory.adjust'],
+  };
+
+  it('三件套和内置策略一致时标 default，改过或不是三件套就标 custom / 去掉标记', () => {
+    expect(defaultToolIds('general', tools)).toEqual(['wms.inventory.query', 'wms.inventory.adjust']);
+    expect(defaultToolIds('readonly', tools)).toEqual(['wms.inventory.query']);
+    expect(defaultToolIds('config', tools)).toEqual(['wms.inventory.query', 'profile.propose']);
+    expect(defaultToolIds('inspector', tools)).toBeNull();
+    expect(withToolGrant(base, tools).toolGrant).toBe('default');
+    expect(withToolGrant({ ...base, tools: ['wms.inventory.query'] }, tools).toolGrant).toBe('custom');
+    expect(withToolGrant({ ...base, id: 'inspector', toolGrant: 'default' }, tools).toolGrant).toBeUndefined();
   });
 });
 

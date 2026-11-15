@@ -74,7 +74,7 @@ describe('右侧 AI 浮窗', () => {
       </ConfigProvider>,
     );
 
-    expect(screen.getByTestId('page')).toHaveTextContent('skus');
+    expect(screen.getByTestId('page')).toHaveTextContent('dashboard');
     const dock = document.querySelector('.chat-dock') as HTMLElement;
     expect(dock.style.position).toBe('fixed');
     expect(dock.style.right).toBe('24px');

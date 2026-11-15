@@ -48,7 +48,7 @@ export function createLocationTools(resolveWorkspace: WorkspaceResolver): ToolDe
     id: 'wms.location.create',
     label: '创建库位',
     description:
-      '创建一个新的库位（仓库内的物理存储位）。locationCode 是全库唯一的库位编码，不传或空着则按编号规则（location）生成，传了就用传入的；name 是显示名称（可选，缺省同编码）。库存可分库位存放与移库；保留字 DEFAULT 不可用于创建（它是未指定库位时库存的默认归宿，虚拟存在）。可选 warehouseCode 把库位划进已有仓库（module.warehouse）；不传或空字符串则未分仓。停用多仓后只要带了 warehouseCode 就拒绝。可选 zoneCode 把库位划进已有库区（module.zone）；不传则未分区。库区有所属仓库时，库位跟着进那个仓库；两边仓库不一致会拒绝。停用库区后只要带了 zoneCode 就拒绝。容量是库位最多放多少。不填表示不限。上架是否拦截由 putawayCapacity 决定。',
+      '创建一个新的库位（仓库内的物理存储位）。locationCode 是全库唯一的库位编码，不传或空着则按编号规则（location）生成，传了就用传入的；name 是显示名称（可选，缺省同编码）。库存可分库位存放与移库；保留字 DEFAULT 不可用于创建（它是未指定库位时库存的默认归宿，虚拟存在）。可选 warehouseCode 把库位划进已有仓库（module.warehouse）；不传或空字符串则未分仓。停用多仓后只要带了 warehouseCode 就拒绝。可选 zoneCode 把库位划进已有库区（module.zone）；不传则未分区。库区有所属仓库时，库位跟着进那个仓库；两边仓库不一致会拒绝。停用库区后只要带了 zoneCode 就拒绝。划进库区后，收货、上架、发货按该库区的分类限制；未分区不限制，工作区关掉的分类也不再限制。容量是库位最多放多少。不填表示不限。上架是否拦截由 putawayCapacity 决定。',
     permission: 'write',
     parameters: {
       type: 'object',

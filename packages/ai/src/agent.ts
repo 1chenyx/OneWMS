@@ -1,7 +1,6 @@
 import {
   applyLoad,
   catalogBlock,
-  expandedGroupsFromHistory,
   presentCatalog,
   TOOLS_LOAD_ID,
   toolGroup,
@@ -13,6 +12,7 @@ import type {
   AgentToolMeta,
   LlmProvider,
   LlmTurnResponse,
+  LlmUsage,
   ToolCallRequest,
   ToolCallResult,
 } from './types.js';
@@ -25,7 +25,9 @@ import type {
  *  - 工具执行全部穿过注入的 invoke 闭包（→ ToolsView.invoke，规则即护栏）；
  *  - 工具被拒（ToolRejectedError 族等任何异常）不中断循环——错误信息回传模型，
  *    由它向用户解释（§9.3 审计免费：拒绝的操作本来就不落事件）。
- *  - 同一工具、同一参数已经失败过，本次运行里不再执行，把上次的错误交回模型。
+ *  - 同一工具、同一参数已经失败过，本次运行里不再执行，把上次的错误交回模型；
+ *    但中间只要有过一次成功的写操作，缓存就清空——世界变了，旧错误可能不再
+ *    成立（例：上架被质检拦截 → 推进到已质检 → 同参数重试上架应真正执行）。
  *  - 同一步里相邻的读工具一起执行；写、ui.ask、目录结算仍按出现顺序。
  */
 export class AgentStepLimitError extends Error {
@@ -64,11 +66,13 @@ export interface RunAgentDeps {
    * 只落一次账）；编排层自己不重试，透传即可。
    */
   invoke: (toolId: string, args: Record<string, unknown>, callId?: string) => Promise<unknown>;
-  /** 编排步数上限，默认 8 */
+  /** 编排步数上限，默认 20 */
   maxSteps?: number;
   /**
-   * 工具目录（createAgentFromDef 开启）。常驻瘦 schema，tools.load 把一组的
-   * 完整说明升进下一轮；该调用不进 invoke。缺省关闭，编排单测保持原样透传。
+   * 工具目录（createAgentFromDef 开启）。常驻瘦 schema，tools.load 把整组
+   * 完整说明作为该调用的结果返回；说明用过即从进模型的副本里收起。
+   * 已加载的组只在这一轮用户消息里留在清单中，下一条消息重新加载。
+   * 该调用不进 invoke。缺省关闭，编排单测保持原样透传。
    */
   catalog?: boolean;
   /**
@@ -90,7 +94,7 @@ export async function runAgent(userText: string, deps: RunAgentDeps): Promise<Ag
   const invocations: AgentInvocation[] = [];
   const failures = new Map<string, string>();
   let steps = 0;
-  const catalog = startCatalog(tools, messages, deps.catalog === true, deps.sessionToolIds);
+  const catalog = startCatalog(tools, deps.catalog === true, deps.sessionToolIds);
 
   for (;;) {
     if (++steps > maxSteps) throw new AgentStepLimitError(maxSteps);
@@ -134,7 +138,8 @@ export type AgentStreamEvent =
   /** ui.ask 挂起：驱动方暂停消费本流，等用户回答（或超时）经 next(reply) 注入 */
   | { type: 'ask'; callId: string; question: string }
   | { type: 'tool-result'; callId: string; toolId: string; ok: boolean; payload: unknown }
-  | { type: 'turn-done'; steps: number };
+  /** usage 是本轮用户消息里各次模型调用的合计。模型没回报时省略 */
+  | { type: 'turn-done'; steps: number; usage?: LlmUsage };
 
 /** 一次流式任务的终态结果：messages 是完整历史（含最终 assistant 回复），供会话续跑 */
 export interface AgentTurnResult {
@@ -171,7 +176,8 @@ export async function* streamAgent(
   const messages: AgentMessage[] = [...(deps.history ?? []), { role: 'user', text: userText }];
   const failures = new Map<string, string>();
   let steps = 0;
-  const catalog = startCatalog(tools, messages, deps.catalog === true, deps.sessionToolIds);
+  let usage: LlmUsage | undefined;
+  const catalog = startCatalog(tools, deps.catalog === true, deps.sessionToolIds);
 
   for (;;) {
     if (++steps > maxSteps) throw new AgentStepLimitError(maxSteps);
@@ -191,11 +197,12 @@ export async function* streamAgent(
       }
       yield { type: 'text-delta', text: value };
     }
+    if (res.usage) usage = addUsage(usage, res.usage);
 
     // 终态：模型不再调用工具 → 追加 assistant 消息后收尾
     if (res.toolCalls.length === 0) {
       messages.push({ role: 'assistant', text: res.text });
-      yield { type: 'turn-done', steps };
+      yield usage ? { type: 'turn-done', steps, usage } : { type: 'turn-done', steps };
       return { text: res.text, steps, messages };
     }
 
@@ -228,7 +235,6 @@ interface CatalogRuntime {
 /** 从本轮工具里拆出业务工具与会话壳。目录关闭时返回 undefined */
 function startCatalog(
   tools: AgentToolMeta[],
-  messages: AgentMessage[],
   enabled: boolean,
   sessionToolIds: readonly string[] = [],
 ): CatalogRuntime | undefined {
@@ -238,7 +244,8 @@ function startCatalog(
     domain: tools.filter((t) => !sessionIds.has(t.id) && t.id !== TOOLS_LOAD_ID),
     session: tools.filter((t) => sessionIds.has(t.id)),
     sessionIds,
-    expanded: expandedGroupsFromHistory(messages),
+    // 不从历史恢复。上一轮加载过的瘦 schema 不再占每一跳的工具清单。
+    expanded: new Set(),
   };
 }
 
@@ -271,7 +278,10 @@ interface ExecCtx {
   tools: readonly AgentToolMeta[];
   invoke: RunAgentDeps['invoke'];
   catalog?: CatalogRuntime;
-  /** 本轮运行内，工具 + 参数 → 已经出现过的错误原文 */
+  /**
+   * 本轮运行内，工具 + 参数 → 已经出现过的错误原文（拦截无谓的同参重试）。
+   * 任一写工具成功即整体清空：成功的写意味着状态变了，旧错误未必还成立。
+   */
   failures: Map<string, string>;
   invocations?: AgentInvocation[];
   /** 流式路径才向调用方 yield 事件，并挂起 ui.ask */
@@ -387,6 +397,11 @@ async function invokeOne(call: ToolCallRequest, ctx: ExecCtx): Promise<ToolCallR
   }
   try {
     const payload = await ctx.invoke(call.toolId, call.args, call.callId);
+    // 写成功 = 状态变了：清空失败缓存，让同参数的重试真正再执行一次
+    // （例：质检拦截 → transition 成功 → 同参数上架重试不再重放旧错误）
+    if (ctx.tools.some((tool) => tool.id === call.toolId && tool.permission === 'write')) {
+      ctx.failures.clear();
+    }
     noteUse(ctx, call.toolId);
     return { callId: call.callId, toolId: call.toolId, ok: true, payload };
   } catch (err) {
@@ -425,6 +440,15 @@ function isAskReply(v: unknown): v is AskReply {
   return (v as { declined?: unknown }).declined === true;
 }
 
+/** 同一次用户消息里，每次模型调用的用量相加。工具来回会把历史再送一遍，所以输入会重复计入 */
+function addUsage(current: LlmUsage | undefined, next: LlmUsage): LlmUsage {
+  if (!current) return { inputTokens: next.inputTokens, outputTokens: next.outputTokens };
+  return {
+    inputTokens: current.inputTokens + next.inputTokens,
+    outputTokens: current.outputTokens + next.outputTokens,
+  };
+}
+
 /**
  * 单轮模型调用（生成器形态）：yield 增量文本，return 本轮完整响应。
  * 优先 streamTurn（真流式）；未实现则回退 completeTurn（整轮文本单个增量）。
@@ -437,17 +461,20 @@ async function* streamOneTurn(
   if (provider.streamTurn) {
     let text = '';
     const calls: ToolCallRequest[] = [];
+    let usage: LlmUsage | undefined;
     for await (const chunk of provider.streamTurn(req)) {
       if (chunk.type === 'text-delta') {
         text += chunk.text;
         yield chunk.text;
+      } else if (chunk.type === 'usage') {
+        usage = addUsage(usage, chunk);
       } else {
         if (chunk.text && !text) yield chunk.text;
         if (chunk.text) text = chunk.text;
         calls.push(...chunk.calls);
       }
     }
-    return { text, toolCalls: calls };
+    return usage ? { text, toolCalls: calls, usage } : { text, toolCalls: calls };
   }
   const res = await provider.completeTurn(req);
   if (res.text) yield res.text;

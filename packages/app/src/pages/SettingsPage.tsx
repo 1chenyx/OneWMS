@@ -40,7 +40,7 @@ import {
   useSyncRun,
 } from '../api/hooks';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION } from '../components/table-style';
+import { useClientPagination } from '../components/table-style';
 
 /**
  * 设置页——设备（本机身份 + 局域网配对）、数据（本机备份 + 导出导入）。
@@ -134,6 +134,7 @@ function NodeTab() {
 
 /** ② 局域网同步：已配对节点清单（服务端持久化，重启仍在）+ 添加 / 移除 / 手动跑一轮 */
 function SyncTab() {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp(); // App 上下文实例（notice 容器随组件树卸载，不用全局静态 message）
   const [urlText, setUrlText] = useState('');
   const { data, isLoading } = useSyncPeers();
@@ -234,7 +235,7 @@ function SyncTab() {
         loading={isLoading}
         columns={columns}
         dataSource={data?.peers ?? []}
-        pagination={TABLE_PAGINATION}
+        pagination={pagination}
         locale={{ emptyText: '还没有配对节点——把对方的地址填进上面的「添加节点」' }}
       />
       {data && !data.persisted && (
@@ -289,6 +290,7 @@ function formatInterval(ms: number): string {
 /** ③ 备份：定时滚动（服务端自动写）+ 手动备份 / 恢复 / 删除
  *  给 0 基础用户的定心丸：不用记「导出迁移包」这个动作，出错能一键回到某个时刻。 */
 function BackupTab() {
+  const pagination = useClientPagination();
   const { message, modal } = AntApp.useApp();
   const { data, isLoading } = useBackups();
   const create = useCreateBackup();
@@ -398,7 +400,7 @@ function BackupTab() {
         loading={isLoading}
         columns={columns}
         dataSource={data?.backups ?? []}
-        pagination={TABLE_PAGINATION}
+        pagination={pagination}
         locale={{ emptyText: data?.enabled ? '还没有备份——点右上角「立即备份」' : '当前宿主不支持备份' }}
       />
     </Card>

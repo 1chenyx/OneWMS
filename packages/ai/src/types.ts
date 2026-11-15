@@ -94,10 +94,21 @@ export interface LlmTurnRequest {
   tools: AgentToolMeta[];
 }
 
+/**
+ * 一次模型调用的 token。输入含系统提示、历史和工具定义；输出含回复和工具调用。
+ * 缺省表示这一家模型没有回报用量。
+ */
+export interface LlmUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 /** 单轮补全响应：text 与 toolCalls 可并存（旁白 + 调用）；toolCalls 为空 = 会话终态 */
 export interface LlmTurnResponse {
   text: string;
   toolCalls: ToolCallRequest[];
+  /** 这一次调用的用量。模型没回报时省略 */
+  usage?: LlmUsage;
 }
 
 /**
@@ -108,7 +119,9 @@ export interface LlmTurnResponse {
  */
 export type LlmStreamChunk =
   | { type: 'text-delta'; text: string }
-  | { type: 'tool-calls'; text?: string; calls: ToolCallRequest[] };
+  | { type: 'tool-calls'; text?: string; calls: ToolCallRequest[] }
+  /** 本轮流结束时的用量。可出现在 tool-calls 之前或之后，编排层只累加、不展示 */
+  | { type: 'usage'; inputTokens: number; outputTokens: number };
 
 /**
  * LLM 通信的 Provider 抽象（IO 边界的唯一口子）。

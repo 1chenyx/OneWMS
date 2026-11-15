@@ -5,7 +5,7 @@ import { useOrders, useProfileSnapshot, useTransitionOrder } from '../api/hooks'
 import { ApiError } from '../api/client';
 import type { Order } from '../api/client';
 import PageHeader from '../components/PageHeader';
-import { monoCell, TABLE_PAGINATION } from '../components/table-style';
+import { monoCell, useClientPagination } from '../components/table-style';
 import { useAppNav } from '../app-nav';
 import { fmtQty } from '../lib/format';
 
@@ -33,6 +33,7 @@ export default function StagePage({
   to: string;
   action: string;
 }) {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
   const [orderNoFilter, setOrderNoFilter] = useState(() => takeInitialFilter()?.orderNo ?? '');
@@ -145,7 +146,7 @@ export default function StagePage({
           loading={isLoading}
           columns={columns}
           dataSource={waiting}
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
         />
       </Card>
     </div>

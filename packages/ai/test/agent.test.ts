@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { runAgent, streamAgent, AgentStepLimitError } from '../src/index.js';
+import { TOOL_CATALOG_DEFER_AT } from '../src/tool-catalog.js';
 import type {
   AgentStreamEvent,
   AgentTurnResult,
@@ -249,6 +250,49 @@ describe('runAgent：错误回传（§4.2 规则即护栏）', () => {
 
     expect(calls).toBe(4);
   });
+
+  it('中间有写成功后，同参数重试真正再执行（失败缓存随写清空）', async () => {
+    // 复现线上场景：上架被质检拦截 → transition 推进到已质检（写成功）→
+    // 同参数重试上架，不应重放旧错误，而应真正执行
+    const transitionTool: AgentToolMeta = {
+      id: 'wms.order.transition',
+      label: '推进单据',
+      description: '推进单据',
+      parameters: { type: 'object', properties: {} },
+      permission: 'write',
+    };
+    let adjustAttempts = 0;
+    let inspected = false;
+    const { provider, requests } = scriptedProvider([
+      { text: '', toolCalls: [{ callId: 'c1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: 1 } }] },
+      { text: '', toolCalls: [{ callId: 'c2', toolId: 'wms.order.transition', args: { to: 'inspected' } }] },
+      { text: '', toolCalls: [{ callId: 'c3', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: 1 } }] },
+      { text: '好了', toolCalls: [] },
+    ]);
+
+    const result = await runAgent('上架', {
+      provider,
+      system: 'SYS',
+      tools: [...demoTools, transitionTool],
+      invoke: async (toolId) => {
+        if (toolId === 'wms.order.transition') {
+          inspected = true;
+          return { to: 'inspected' };
+        }
+        adjustAttempts += 1;
+        if (!inspected) throw new Error('WMS_QC_REQUIRED: 需先质检');
+        return { quantity: 1 };
+      },
+    });
+
+    expect(adjustAttempts).toBe(2); // 重试真正执行了，不是缓存重放
+    expect(result.invocations[2]).toMatchObject({ toolId: 'wms.inventory.adjust', ok: true });
+    // 第四次模型调用收到重试的成功结果（messages[6] = c3 的 tool-results）
+    const retried = requests[3].messages[6];
+    if (retried.role !== 'tool-results') throw new Error('expected tool-results');
+    expect(retried.results[0].payload).toEqual({ quantity: 1 });
+    expect(result.text).toBe('好了');
+  });
 });
 
 describe('runAgent：同一步的读并行、写按顺序', () => {
@@ -346,16 +390,16 @@ describe('runAgent：maxSteps 保护', () => {
     expect(requests).toHaveLength(2);
   });
 
-  it('默认上限 8 步', async () => {
+  it('默认上限 20 步', async () => {
     const loop: LlmTurnResponse = { text: '', toolCalls: [{ callId: 'c', toolId: 'wms.inventory.query', args: {} }] };
     const endless: LlmTurnResponse[] = Array.from({ length: 20 }, () => loop);
     const { provider, requests } = scriptedProvider(endless);
 
     await expect(
       runAgent('默认上限测试', { provider, system: 'SYS', tools: demoTools, invoke: noopInvoke }),
-    ).rejects.toThrow(/上限 8/);
+    ).rejects.toThrow(/上限 20/);
 
-    expect(requests).toHaveLength(8);
+    expect(requests).toHaveLength(20);
   });
 });
 
@@ -494,6 +538,51 @@ describe('streamAgent：事件序与终态', () => {
     expect(events[1]).toMatchObject({ type: 'tool-result', toolId: 'wms.inventory.adjust', ok: false });
     expect((events[1] as { payload: { error: string } }).payload.error).toContain('库存不足');
     expect(events.at(-1)).toEqual({ type: 'turn-done', steps: 2 });
+  });
+
+  it('一轮里各次模型调用的 token 加总后随 turn-done 送出', async () => {
+    const { provider } = scriptedProvider([
+      {
+        text: '',
+        toolCalls: [{ callId: 'c1', toolId: 'wms.inventory.query', args: {} }],
+        usage: { inputTokens: 100, outputTokens: 10 },
+      },
+      { text: '还有 5 个', toolCalls: [], usage: { inputTokens: 140, outputTokens: 8 } },
+    ]);
+
+    const { events } = await collect(
+      streamAgent('查一下', { provider, system: 'SYS', tools: demoTools, invoke: async () => 5 }),
+    );
+
+    expect(events.at(-1)).toEqual({
+      type: 'turn-done',
+      steps: 2,
+      usage: { inputTokens: 240, outputTokens: 18 },
+    });
+  });
+
+  it('流式分片里的 usage 同样加进 turn-done', async () => {
+    const { provider } = scriptedStreamProvider([
+      [
+        { type: 'text-delta', text: '查' },
+        { type: 'usage', inputTokens: 50, outputTokens: 4 },
+        { type: 'tool-calls', calls: [{ callId: 'c1', toolId: 'wms.inventory.query', args: {} }] },
+      ],
+      [
+        { type: 'text-delta', text: '好' },
+        { type: 'usage', inputTokens: 70, outputTokens: 6 },
+      ],
+    ]);
+
+    const { events } = await collect(
+      streamAgent('查一下', { provider, system: 'SYS', tools: demoTools, invoke: async () => 5 }),
+    );
+
+    expect(events.at(-1)).toEqual({
+      type: 'turn-done',
+      steps: 2,
+      usage: { inputTokens: 120, outputTokens: 10 },
+    });
   });
 
   it('模型调用抛错 → 生成器 rejects（server 层转 error 事件）', async () => {
@@ -677,7 +766,7 @@ describe('工具目录：瘦 schema 与 tools.load', () => {
     permission: 'write',
   };
 
-  it('常驻只给摘要；tools.load 不进总线，下一轮附上完整说明', async () => {
+  it('常驻只给摘要；tools.load 不进总线，完整说明随结果返回，tools 数组字节稳定', async () => {
     const { provider, requests } = scriptedProvider([
       { text: '', toolCalls: [{ callId: 'c1', toolId: 'tools.load', args: { group: 'order' } }] },
       { text: '', toolCalls: [{ callId: 'c2', toolId: 'wms.order.create', args: { direction: 'in', lines: [] } }] },
@@ -698,8 +787,15 @@ describe('工具目录：瘦 schema 与 tools.load', () => {
     expect(invoked).toEqual(['wms.order.create']);
     expect(requests[0].tools.find((t) => t.id === 'wms.order.create')?.description).toBe('创建一张入库单或出库单');
     expect(requests[0].tools.find((t) => t.id === 'wms.order.create')?.parameters.properties?.direction?.description).toBeUndefined();
-    expect(requests[1].tools.find((t) => t.id === 'wms.order.create')?.description).toContain('分配策略');
+    // 加载不改变工具清单（前缀缓存的前提），完整说明在结果里进历史
+    expect(requests[1].tools).toEqual(requests[0].tools);
     expect(result.invocations[0]).toMatchObject({ toolId: 'tools.load', ok: true });
+    expect(JSON.stringify(result.invocations[0].payload)).toContain('分配策略');
+    const loadResult = requests[1].messages[2] as { results: Array<{ payload: unknown }> };
+    expect(JSON.stringify(loadResult.results[0].payload)).toContain('分配策略');
+    // 工具已经调用成功，回复这一步不再带整组说明
+    expect(JSON.stringify(requests[2].messages)).not.toContain('分配策略');
+    expect(JSON.stringify(requests[2].messages)).toContain('完整说明已从本轮上下文拿掉');
     expect(result.text).toBe('开好了');
   });
 
@@ -726,7 +822,7 @@ describe('工具目录：瘦 schema 与 tools.load', () => {
     expect(JSON.stringify(result.invocations[1].payload)).toContain('不在该助手的授权范围内');
   });
 
-  it('流式：历史里加载过的组，下一句直接带完整说明', async () => {
+  it('流式：下一条用户消息不再带上一轮的整组说明', async () => {
     const { provider, requests } = scriptedProvider([{ text: '好', toolCalls: [] }]);
     const gen = streamAgent('继续开单', {
       provider,
@@ -737,17 +833,20 @@ describe('工具目录：瘦 schema 与 tools.load', () => {
       history: [
         { role: 'user', text: '开单' },
         { role: 'tool-calls', calls: [{ callId: 'c0', toolId: 'tools.load', args: { group: 'order' } }] },
-        { role: 'tool-results', results: [{ callId: 'c0', toolId: 'tools.load', ok: true, payload: { group: 'order', toolIds: ['wms.order.create'] } }] },
+        { role: 'tool-results', results: [{ callId: 'c0', toolId: 'tools.load', ok: true, payload: { group: 'order', toolIds: ['wms.order.create'], docs: '### wms.order.create——创建出入库单\n…分配策略的完整规则…' } }] },
         { role: 'assistant', text: '要开哪种？' },
       ],
       invoke: async () => ({}),
     });
     await gen.next();
-    expect(requests[0].tools.find((t) => t.id === 'wms.order.create')?.description).toContain('分配策略');
+    // 工具数没过延迟线，摘要仍在清单里；上一轮的整组说明不进这一轮
+    expect(requests[0].tools.find((t) => t.id === 'wms.order.create')?.description).toBe('创建一张入库单或出库单');
+    expect(JSON.stringify(requests[0].messages)).not.toContain('分配策略');
+    expect(JSON.stringify(requests[0].messages)).toContain('group=order');
     expect(requests[0].tools.map((t) => t.id)).toContain('ui.ask');
   });
 
-  it('连续加载超过三组时，最久没用的组回到摘要', async () => {
+  it('连续加载多组不改变工具清单：整轮字节稳定（前缀缓存前提）', async () => {
     const spec = (id: string, name: string): AgentToolMeta => ({
       id,
       label: name,
@@ -772,7 +871,7 @@ describe('工具目录：瘦 schema 与 tools.load', () => {
       load('c4', 'location'),
       { text: '好', toolCalls: [] },
     ]);
-    await runAgent('加载说明', {
+    const result = await runAgent('加载说明', {
       provider,
       system: 'SYS',
       tools,
@@ -780,12 +879,65 @@ describe('工具目录：瘦 schema 与 tools.load', () => {
       invoke: async () => ({}),
     });
 
-    const full = (id: string) => requests[4].tools.find((tool) => tool.id === id)?.description ?? '';
-    expect(full('wms.order.create')).toBe('开单');
-    expect(full('wms.sku.create')).toContain('完整规则');
-    expect(full('wms.partner.create')).toContain('完整规则');
-    expect(full('wms.location.create')).toContain('完整规则');
+    // 每一轮的工具清单完全一致；加载结果只带本组说明
+    for (const req of requests) expect(req.tools).toEqual(requests[0].tools);
+    expect(requests[4].tools.find((tool) => tool.id === 'wms.order.create')?.description).toBe('开单');
     expect(requests[4].tools.find((tool) => tool.id === 'tools.load')?.description).toContain('order（1）');
     expect(requests[4].tools.find((tool) => tool.id === 'tools.load')?.description).not.toContain('开单');
+    expect(JSON.stringify(result.invocations[3].payload)).toContain('wms.location.create');
+    expect(JSON.stringify(result.invocations[3].payload)).not.toContain('wms.order.create');
+  });
+
+  it('延迟目录：本轮加载的组下一跳进清单，下一条用户消息重新加载', async () => {
+    const spec = (id: string): AgentToolMeta => ({
+      id,
+      label: id,
+      description: `${id} 的完整说明。后半不进摘要。`,
+      parameters: { type: 'object', properties: {} },
+      permission: 'read',
+    });
+    const tools = Array.from({ length: TOOL_CATALOG_DEFER_AT + 1 }, (_, i) => spec(`wms.extra.t${i}`));
+    const { provider, requests } = scriptedProvider([
+      { text: '', toolCalls: [{ callId: 'c1', toolId: 'tools.load', args: { group: 'extra' } }] },
+      { text: '好', toolCalls: [] },
+    ]);
+    await runAgent('用一下', {
+      provider,
+      system: 'SYS',
+      tools,
+      catalog: true,
+      invoke: async () => ({}),
+    });
+    expect(requests[0].tools.some((tool) => tool.id === 'wms.extra.t0')).toBe(false);
+    expect(requests[1].tools.some((tool) => tool.id === 'wms.extra.t0')).toBe(true);
+
+    const next = scriptedProvider([{ text: '好', toolCalls: [] }]);
+    const gen = streamAgent('下一句', {
+      provider: next.provider,
+      system: 'SYS',
+      tools,
+      catalog: true,
+      history: [
+        { role: 'user', text: '用一下' },
+        { role: 'tool-calls', calls: [{ callId: 'c1', toolId: 'tools.load', args: { group: 'extra' } }] },
+        {
+          role: 'tool-results',
+          results: [
+            {
+              callId: 'c1',
+              toolId: 'tools.load',
+              ok: true,
+              payload: { group: 'extra', toolIds: ['wms.extra.t0'], docs: '整组说明很长' },
+            },
+          ],
+        },
+        { role: 'assistant', text: '好' },
+      ],
+      invoke: async () => ({}),
+    });
+    await gen.next();
+    expect(next.requests[0].tools.some((tool) => tool.id === 'wms.extra.t0')).toBe(false);
+    expect(JSON.stringify(next.requests[0].messages)).not.toContain('整组说明很长');
+    expect(JSON.stringify(next.requests[0].messages)).toContain('group=extra');
   });
 });

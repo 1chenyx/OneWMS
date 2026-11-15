@@ -19,6 +19,7 @@ import { allocateCode } from '../numbering/allocate.js';
 import { allocateFromBuckets } from '../state/allocation.js';
 import { assertSubstitution, mergeBuckets, type PickBucket } from '../state/execution-policy.js';
 import { assertOutboundBuckets } from '../state/outbound-guards.js';
+import { assertZoneUse, orderZoneUse } from '../state/zone-use.js';
 import { appendSerialPlans, planPickingSerials } from '../state/serial-policy.js';
 import { desiredReservationClaims, planReservationReleases, planReservationSync } from '../state/reservation.js';
 import {
@@ -312,6 +313,7 @@ export function createPickingTools(resolveWorkspace: WorkspaceResolver): ToolDef
         const buckets = pickedBuckets(ws, line);
         bucketsByLine.set(line.id, buckets);
         for (const bucket of buckets) {
+          assertZoneUse(ws, bucket.locationId, orderZoneUse('out', Boolean(order.returnOfOrderId)));
           outbound.push({
             skuId: line.skuId,
             locationId: bucket.locationId,

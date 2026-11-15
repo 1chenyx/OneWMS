@@ -9,6 +9,7 @@ import {
   useConfirmProposal,
   useDeleteIntegrationSecret,
   useIntegrationCodes,
+  useLanAddress,
   useIntegrationSecrets,
   useProfileSnapshot,
   useToolConfirm,
@@ -23,10 +24,12 @@ import {
   INTEGRATION_MODULE_ID,
   blankConnector,
   buildSettings,
+  callerGuide,
   draftFromModule,
   isConnectorId,
   modulePatch,
   nextConnectorId,
+  externalApi,
   routeLines,
   secretRefName,
   secretSlots,
@@ -130,9 +133,18 @@ const PAGE_STYLE = `
   gap: 8px;
   margin-top: 8px;
 }
-.int-json {
+.int-json,
+.int-doc {
   font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace;
   font-size: 12px;
+}
+.int-doc {
+  margin: 8px 0 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f6f6f6;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 @media (max-width: 800px) {
   .int-layout { grid-template-columns: 1fr; }
@@ -174,6 +186,9 @@ export default function IntegrationsPage() {
 
   const selected = draft?.connectors.find((item) => item.localId === draft.selected) ?? null;
   const names = useIntegrationSecrets(selected && isConnectorId(selected.id) ? selected.id : null);
+  const lan = useLanAddress();
+  const builtNow = draft ? buildSettings(draft) : null;
+  const writers = builtNow && builtNow.ok ? builtNow.settings.writers : null;
 
   const update = (localId: string, patch: Partial<ConnectorDraft>) => {
     setDraft((current) => {
@@ -301,6 +316,12 @@ export default function IntegrationsPage() {
               }
             />
           ) : null}
+          <ExternalApiCard
+            connectors={draft.connectors}
+            moduleEnabled={draft.enabled}
+            origin={lan.data?.url ?? null}
+            writers={writers}
+          />
           <section className="int-card" aria-label="拉取节奏">
             <h3>节奏</h3>
             <div className="int-rhythm">
@@ -551,6 +572,70 @@ function ConnectorEditor({
           移出这个连接器
         </Button>
       </div>
+    </section>
+  );
+}
+
+function ExternalApiCard({
+  connectors,
+  moduleEnabled,
+  origin,
+  writers,
+}: {
+  connectors: ConnectorDraft[];
+  moduleEnabled: boolean;
+  origin: string | null;
+  writers: { order: string | null; sku: string | null; partner: string | null } | null;
+}) {
+  const { message } = AntApp.useApp();
+  const guide = callerGuide(origin);
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success('已复制给对方的接口');
+    } catch {
+      message.error('没有复制上');
+    }
+  };
+  return (
+    <section className="int-card" aria-label="对外接口">
+      <h3>对外接口</h3>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        别人把数据推给我们时，按下面的地址调用。某一家如果是拉取或只推，会在后面写明，对方不用调用我们。密钥不写在这份说明里。
+      </Typography.Paragraph>
+      <Button size="small" onClick={() => void copy(guide)}>
+        复制这份说明
+      </Button>
+      <pre className="int-doc">{guide}</pre>
+      {connectors.length === 0 ? (
+        <Typography.Paragraph type="secondary" style={{ margin: '12px 0 0' }}>
+          还没有连接器。写上一条接收路由之后，这里会列出每一家的地址和示例。
+        </Typography.Paragraph>
+      ) : (
+        connectors.map((item) => {
+          const doc = externalApi(item, { moduleEnabled, origin, writers });
+          const name = item.name.trim() || item.id || '未命名';
+          return (
+            <div key={item.localId} style={{ marginTop: 16 }}>
+              <div style={{ fontWeight: 500 }}>{name}</div>
+              <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
+                {doc.lead}
+              </Typography.Paragraph>
+              {doc.routes.map((route) => (
+                <div key={route.id} style={{ marginTop: 8 }}>
+                  <div className="int-secret-row">
+                    <span>{route.title}</span>
+                    <Button size="small" onClick={() => void copy(route.text)}>
+                      复制这段说明
+                    </Button>
+                  </div>
+                  <pre className="int-doc">{route.text}</pre>
+                </div>
+              ))}
+            </div>
+          );
+        })
+      )}
     </section>
   );
 }

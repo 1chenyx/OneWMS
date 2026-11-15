@@ -17,6 +17,7 @@ import {
 } from '../errors.js';
 import { readWmsSettings } from '../config/wms-settings.js';
 import { codeOfLocation, QTY_EPS, quantizeQty, resolveBatch, resolveLocation } from '../state/inventory-policy.js';
+import { assertZoneUse } from '../state/zone-use.js';
 import { assertLooseEnough } from '../state/lpn-policy.js';
 import { appendSerialPlans, planPutawaySerials } from '../state/serial-policy.js';
 import {
@@ -49,7 +50,7 @@ export function createPutawayTools(resolveWorkspace: WorkspaceResolver): ToolDef
     id: 'wms.order.putaway',
     label: '上架确认',
     description:
-      '对已收货（received）的入库单做上架确认与归位。module.putaway 启用时这一步必做，已收货不能直接完成，要在上架里做。不带 targets = 纯确认（单据流转到「已上架」，不动库存）；带 targets = 把指定行从收货库位改派到目标库位（每处生成一对移库流水，批次与效期保留，流水 reason: putaway:单号）。同一行可以拆到多个库位：每一处写 quantity，合计不能超过本行，没分走的留在收货库位。同一行只去一处且不写 quantity 时整行搬走。targets 每项：skuCode 必填；fromLocationCode 源库位（可选，缺省 DEFAULT）；batchNo 批次（可选，缺省 DEFAULT）；toLocationCode 目标库位必填；quantity 可选。同一处（skuCode+源库位+批次+目标库位）只能写一行，重复写整单拒绝；上架量也不能超过本单在该源桶收的货（收货 − 已上架），别的单据的货挪不过来。要求单据处于已收货状态且上架模块启用。停用后本工具不可用，已收货直接完成。序列号商品必须整行上架，不能拆库位。',
+      '对已收货（received）的入库单做上架确认与归位。module.putaway 启用时这一步必做，已收货不能直接完成，要在上架里做。不带 targets = 纯确认（单据流转到「已上架」，不动库存）；带 targets = 把指定行从收货库位改派到目标库位（每处生成一对移库流水，批次与效期保留，流水 reason: putaway:单号）。同一行可以拆到多个库位：每一处写 quantity，合计不能超过本行，没分走的留在收货库位。同一行只去一处且不写 quantity 时整行搬走。targets 每项：skuCode 必填；fromLocationCode 源库位（可选，缺省 DEFAULT）；batchNo 批次（可选，缺省 DEFAULT）；toLocationCode 目标库位必填；quantity 可选。同一处（skuCode+源库位+批次+目标库位）只能写一行，重复写整单拒绝；上架量也不能超过本单在该源桶收的货（收货 − 已上架），别的单据的货挪不过来。要求单据处于已收货状态且上架模块启用。停用后本工具不可用，已收货直接完成。序列号商品必须整行上架，不能拆库位。目标库位划进了库区时，只能上到当前启用并且允许上架的分类（缺省是存货区和拣货区）。关掉的分类不再限制。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -102,6 +103,7 @@ export function createPutawayTools(resolveWorkspace: WorkspaceResolver): ToolDef
         const from = resolveLocation(ws, t.fromLocationCode);
         const batch = resolveBatch(t.batchNo, undefined);
         const to = resolveLocation(ws, t.toLocationCode);
+        assertZoneUse(ws, to.locationId, 'putaway');
         const line = lines.find(
           (l) => l.skuId === sku.id && l.locationId === from.locationId && l.batchNo === batch.batchNo,
         );

@@ -1,11 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import type { ToolDefinition } from '@one/core';
 import { WMS_EVENT_TYPES } from '../events/catalog.js';
-import { ZoneAlreadyExistsError, ZoneKindError, ZoneNotFoundError, WarehouseNotFoundError } from '../errors.js';
+import {
+  ZoneAlreadyExistsError,
+  ZoneKindDisabledError,
+  ZoneKindError,
+  ZoneNotFoundError,
+  WarehouseNotFoundError,
+} from '../errors.js';
 import { allocateCode } from '../numbering/allocate.js';
 import { assertWarehouseEnabled } from '../queries/warehouse-queries.js';
 import { assertZoneEnabled, assertZoneWarehouseMovable, listZones } from '../queries/zone-queries.js';
-import { isZoneKind, zoneKindHint, type ZoneKind } from '../zone-kinds.js';
+import { isZoneKind, readEnabledZoneKinds, zoneKindHint, zoneKindRuleText, type ZoneKind } from '../zone-kinds.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 
 /**
@@ -37,6 +43,12 @@ function readKind(raw: unknown, required: boolean): ZoneKind | undefined {
   return kind;
 }
 
+/** 新建、或改成另一种分类时，这个分类必须是当前工作区启用的。保持原分类可以只改名称。 */
+function assertKindEnabled(ws: ReturnType<WorkspaceResolver>, kind: ZoneKind): void {
+  const enabled = readEnabledZoneKinds(ws.profile.getSnapshot().modules['module.zone']?.settings?.enabledKinds);
+  if (!enabled.includes(kind)) throw new ZoneKindDisabledError(kind);
+}
+
 /**
  * 库区档案（module.zone）。
  * 不改库存主键：货仍在库位上。分类只说明这块地方是拿来拣货、存货还是收发。
@@ -54,7 +66,7 @@ export function createZoneTools(resolveWorkspace: WorkspaceResolver): ToolDefini
     id: 'wms.zone.create',
     label: '创建库区',
     description:
-      `创建一个库区。zoneCode 全库唯一，不传或空着则按编号规则（zone）生成，传了就用传入的。name 缺省同编码。kind 是分类，必填：${hint}。库区不是库存桶，库存仍在库位上；之后用 wms.location.create / wms.location.update 的 zoneCode 把库位划进来。可选 warehouseCode 把库区划进已有仓库（module.warehouse）；不传则未分仓。停用库区后本工具拒绝。停用多仓后只要带了 warehouseCode 就拒绝。`,
+      `创建一个库区。zoneCode 全库唯一，不传或空着则按编号规则（zone）生成，传了就用传入的。name 缺省同编码。kind 是分类，必填，且必须是当前工作区启用的：${hint}。库区不是库存桶，库存仍在库位上；之后用 wms.location.create / wms.location.update 的 zoneCode 把库位划进来。可选 warehouseCode 把库区划进已有仓库（module.warehouse）；不传则未分仓。停用库区后本工具拒绝。停用多仓后只要带了 warehouseCode 就拒绝。${zoneKindRuleText()}`,
     permission: 'write',
     parameters: {
       type: 'object',
@@ -64,7 +76,7 @@ export function createZoneTools(resolveWorkspace: WorkspaceResolver): ToolDefini
         kind: {
           type: 'string',
           enum: ['receiving', 'qc', 'storage', 'picking', 'staging', 'shipping', 'return', 'defective'],
-          description: `库区分类。${hint}`,
+          description: `库区分类，只能用当前启用的。启用名单在 /modules/module.zone/settings/enabledKinds，缺省八种都启用。${hint}`,
         },
         warehouseCode: { type: 'string', description: '所属仓库编码（可选；module.warehouse 启用时有效，不传则未分仓）' },
       },
@@ -75,6 +87,7 @@ export function createZoneTools(resolveWorkspace: WorkspaceResolver): ToolDefini
       ws.sync();
       assertZoneEnabled(ws);
       const kind = readKind(params.kind, true)!;
+      assertKindEnabled(ws, kind);
       const warehouseId = resolveZoneWarehouseId(ws, params, 'create');
       const zoneCode = allocateCode(ws, 'zone', params.zoneCode);
       if (ws.zones.byCode(zoneCode)) throw new ZoneAlreadyExistsError(zoneCode);
@@ -101,7 +114,7 @@ export function createZoneTools(resolveWorkspace: WorkspaceResolver): ToolDefini
     id: 'wms.zone.update',
     label: '更新库区',
     description:
-      `更新库区的名称、分类或所属仓库。zoneCode 是业务键不可改。kind 可选，词表：${hint}。warehouseCode 传空字符串表示划出仓库；库区里还有库位时不能改仓库。停用 module.zone 后本工具拒绝。停用多仓后只要带了 warehouseCode 就拒绝。已经划进该库区的库位，改名和改分类不影响它们。`,
+      `更新库区的名称、分类或所属仓库。zoneCode 是业务键不可改。kind 可选，词表：${hint}。只能改成当前启用的分类；保持原分类时可以只改名称，即使这个分类已经关掉。warehouseCode 传空字符串表示划出仓库；库区里还有库位时不能改仓库。停用 module.zone 后本工具拒绝。停用多仓后只要带了 warehouseCode 就拒绝。已经划进该库区的库位，改名和改分类不影响它们。`,
     permission: 'write',
     parameters: {
       type: 'object',
@@ -111,7 +124,7 @@ export function createZoneTools(resolveWorkspace: WorkspaceResolver): ToolDefini
         kind: {
           type: 'string',
           enum: ['receiving', 'qc', 'storage', 'picking', 'staging', 'shipping', 'return', 'defective'],
-          description: `新的分类。${hint}`,
+          description: `新的分类。只能改成当前启用的；不改分类就别传。${hint}`,
         },
         warehouseCode: {
           type: 'string',
@@ -130,6 +143,7 @@ export function createZoneTools(resolveWorkspace: WorkspaceResolver): ToolDefini
       const name = params.name === undefined ? undefined : String(params.name).trim();
       if (name === '') throw new Error('TOOL_REJECTED: name 不能为空字符串（不改就别传）');
       const kind = readKind(params.kind, false);
+      if (kind !== undefined && kind !== zone.kind) assertKindEnabled(ws, kind);
       const warehouseId = resolveZoneWarehouseId(ws, params, 'update');
       if (warehouseId !== undefined) {
         assertZoneWarehouseMovable(ws, zone.id, zone.zoneCode, warehouseId, zone.warehouseId);
@@ -157,7 +171,7 @@ export function createZoneTools(resolveWorkspace: WorkspaceResolver): ToolDefini
     id: 'wms.zone.list',
     label: '库区清单',
     description:
-      `列出库区（编码、名称、分类、所属仓库、划进来的库位个数）。分类：${hint}。未分区的库位不计入任何库区。停用 module.zone 后本工具拒绝。纯读，不产生事件。`,
+      `列出库区（编码、名称、分类、所属仓库、划进来的库位个数）。分类：${hint}。没启用的分类仍会列出已有库区。未分区的库位不计入任何库区。停用 module.zone 后本工具拒绝。纯读，不产生事件。`,
     permission: 'read',
     parameters: { type: 'object', properties: {}, required: [] },
     handler: (_params, ctx) => listZones(resolveWorkspace(ctx.workspaceId)),

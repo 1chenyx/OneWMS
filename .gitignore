@@ -23,6 +23,9 @@ packages/desktop/src-tauri/.updater/
 *-out.txt
 
 
+# 本地 Agent 技能与 Grok 配置，不入库
+.grok/
+
 # 历史遗留的散落产物（已统一收进 dist/）
 release/
 .trae/

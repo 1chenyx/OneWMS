@@ -123,8 +123,9 @@ export default function PartnersPage() {
           loading={isLoading}
           pagination={serverPagination({
             current: list.page,
+            pageSize: list.pageSize,
             total: totalOf(payload),
-            onChange: list.setPage,
+            onChange: list.onChange,
           })}
           locale={{
             emptyText:

@@ -2,9 +2,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { LlmProvider, LlmTurnRequest, LlmTurnResponse } from '@one/ai';
+import { stripTimeContext, type LlmProvider, type LlmTurnRequest, type LlmTurnResponse } from '@one/ai';
 import { createApp, createAppContext, type AppContext } from '../src/index.js';
-import { createChatThreadStore, type ChatThreadRecord } from '../src/chat-threads.js';
+import { createChatThreadStore, mergeTurns, sanitizeTurns, type ChatThreadRecord } from '../src/chat-threads.js';
 
 /**
  * 对话存档：成功的一轮落盘，重启后接着聊；列表、删除、清空和 50 条上限。
@@ -102,8 +102,10 @@ describe('对话存档', () => {
     const second = await post(again, '/api/chat/sessions/s-keep/message', { message: '是这批新到的吗？' });
     expect(parseSse(await second.text()).at(-1)?.event).toBe('turn-done');
     expect(seen[0]?.messages.map((msg) => msg.role)).toEqual(['user', 'assistant', 'user']);
-    expect(seen[0]?.messages[0]).toMatchObject({ text: 'A-1 还剩多少？' });
-    expect(seen[0]?.messages[2]).toMatchObject({ text: '是这批新到的吗？' });
+    // 用户消息带时间上下文前缀（给模型），剥掉后是用户原话
+    const bare = (m: unknown) => stripTimeContext((m as { text: string }).text);
+    expect(bare(seen[0]?.messages[0])).toBe('A-1 还剩多少？');
+    expect(bare(seen[0]?.messages[2])).toBe('是这批新到的吗？');
   });
 
   it('气泡写回后标题用用户原文；resume 带回气泡，不把整表存进去', async () => {
@@ -179,5 +181,63 @@ describe('对话存档', () => {
     expect(reopened.list()).toEqual([]);
     reopened.upsert(sample('again', 1));
     expect(createChatThreadStore(file).get('again')?.title).toBe('again');
+  });
+
+  it('模型回报的 token 随 turn-done 送出，并写进存档', async () => {
+    const file = tempFile();
+    const app = setup(
+      scripted([{ text: '还有 5 个', toolCalls: [], usage: { inputTokens: 80, outputTokens: 12 } }]),
+      file,
+    );
+    const sent = await post(app, '/api/chat/sessions/s-use/message', { message: 'A-1 还剩多少？' });
+    const events = parseSse(await sent.text());
+    expect(events.at(-1)?.data).toMatchObject({
+      type: 'turn-done',
+      usage: { inputTokens: 80, outputTokens: 12 },
+    });
+
+    const opened = await post(app, '/api/chat/sessions/s-use/resume', {});
+    const thread = (await opened.json()) as {
+      thread: { turns: Array<{ usage?: { inputTokens: number; outputTokens: number } }> };
+    };
+    expect(thread.thread.turns[0]?.usage).toEqual({ inputTokens: 80, outputTokens: 12 });
+  });
+});
+
+describe('对话用量', () => {
+  it('存档保留每轮 token；用模型上下文补气泡时不丢掉已有用量', () => {
+    const turns = sanitizeTurns([
+      {
+        userText: '查库存',
+        invocations: [],
+        assistantText: '5 个',
+        done: true,
+        usage: { inputTokens: 10.9, outputTokens: 2 },
+      },
+      {
+        userText: '坏的',
+        invocations: [],
+        assistantText: '',
+        done: true,
+        usage: { inputTokens: -1, outputTokens: 1 },
+      },
+    ]);
+    expect(turns?.[0]?.usage).toEqual({ inputTokens: 10, outputTokens: 2 });
+    expect(turns?.[1]?.usage).toBeUndefined();
+
+    const merged = mergeTurns(
+      [
+        { role: 'user', text: '查库存' },
+        { role: 'assistant', text: '5 个' },
+        { role: 'user', text: '再查' },
+        { role: 'assistant', text: '还是 5' },
+      ],
+      turns?.slice(0, 1),
+      { inputTokens: 20, outputTokens: 3 },
+    );
+    expect(merged.map((turn) => turn.usage)).toEqual([
+      { inputTokens: 10, outputTokens: 2 },
+      { inputTokens: 20, outputTokens: 3 },
+    ]);
   });
 });

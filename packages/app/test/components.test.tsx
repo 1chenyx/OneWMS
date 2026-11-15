@@ -4,10 +4,15 @@ import userEvent from '@testing-library/user-event';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import ToolInvocationCard from '../src/components/ToolInvocationCard';
+import { setListPageSize } from '../src/components/table-style';
 
 // vitest 未开 globals：RTL 自动清理不生效——手动清场（否则前用例的 Tag 跨测试残留，
 // 「执行中」用例会被上个「被拒」用例的 DOM 误伤）
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  setListPageSize(10);
+  localStorage.removeItem('onewms.listPageSize');
+});
 
 describe('ToolInvocationCard', () => {
   it('成功调用：用人话说明结果，不展示工具名和 JSON', () => {
@@ -201,10 +206,14 @@ describe('ToolInvocationCard：查询结果表格渲染（M12 步骤2）', () =>
       </ConfigProvider>,
     );
     expect(screen.getByText('共 60 条')).toBeInTheDocument();
-    expect(screen.getByText('A-50')).toBeInTheDocument();
-    expect(screen.queryByText('A-60')).not.toBeInTheDocument();
+    expect(screen.getByText('A-10')).toBeInTheDocument();
+    expect(screen.queryByText('A-11')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('combobox'));
+    await user.click(await screen.findByTitle('20 条/页'));
+    expect(screen.getByText('A-20')).toBeInTheDocument();
+    expect(screen.queryByText('A-21')).not.toBeInTheDocument();
     await user.click(screen.getByTitle('下一页'));
-    expect(screen.getByText('A-60')).toBeInTheDocument();
+    expect(screen.getByText('A-21')).toBeInTheDocument();
     expect(screen.queryByText('A-1')).not.toBeInTheDocument();
   });
 });

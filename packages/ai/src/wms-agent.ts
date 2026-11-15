@@ -1,6 +1,6 @@
 import type { WmsWorkspace } from '@one/wms';
 import { runAgent, streamAgent, type AgentRunResult, type AgentStreamEvent, type AgentTurnResult, type AskReply } from './agent.js';
-import { UI_ASK_DESCRIPTION, UI_ASK_PARAM_DESCRIPTION } from './prompts.js';
+import { AI_ATTACHMENT_RULE, UI_ASK_DESCRIPTION, UI_ASK_PARAM_DESCRIPTION } from './prompts.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import type { AgentDefinition } from './agent-defs.js';
 import type { AgentMemoryContext, AgentMessage, AgentToolMeta, LlmProvider } from './types.js';
@@ -41,7 +41,8 @@ export interface WmsAgent {
   readonly actor: string;
   /**
    * 授权工具快照（构造时取自工具总线，不含 ui.ask / tools.load）。
-   * 送给模型的是目录呈现：一行摘要，tools.load 之后该组才换成完整说明。
+   * 送给模型的常驻是一行摘要；整组完整说明随 tools.load 的结果返回，
+   * 不在 tools 数组里原地升级（保持字节稳定，前缀缓存友好）。
    */
   readonly tools: AgentToolMeta[];
   /** 运行一次自然语言任务（单轮任务式；会话管理是前端壳的职责） */
@@ -61,6 +62,22 @@ export interface WmsAgent {
 export interface SessionTool {
   meta: AgentToolMeta;
   invoke(args: Record<string, unknown>, actor: string): Promise<unknown>;
+}
+
+/**
+ * 轮内时间上下文。拼在本轮用户消息开头而不是放进 system：system 每轮重组，
+ * 时间一变整个请求前缀（system + tools + 全部历史）都命不中厂商的前缀缓存；
+ * 挪到用户消息最前面，变化的字节只剩新消息本身，之前的上下文全部保持可缓存。
+ * 展示侧（气泡、标题）用 stripTimeContext 去掉这一行。
+ */
+const TIME_LINE = /^当前时间：\S+\n/;
+
+export function withTimeContext(text: string, now: Date = new Date()): string {
+  return `当前时间：${now.toISOString()}\n${text}`;
+}
+
+export function stripTimeContext(text: string): string {
+  return text.replace(TIME_LINE, '');
 }
 
 export interface CreateAgentFromDefOptions {
@@ -108,8 +125,12 @@ export function createAgentFromDef(
 
   const base = `ai:${def.id}`;
   const actor = options.nodeId ? `${base}@${options.nodeId}` : base;
-  const system = `${def.systemPrompt.trim()}\n\n${buildSystemPrompt(ws, options.memory)}`;
   const sessionTools = options.sessionTools ?? [];
+  const system = `${def.systemPrompt.trim()}\n\n${buildSystemPrompt(ws, options.memory)}`;
+  // 附件规则只跟 stream 走：run() 不挂附件工具，提示里写了也无法履约。
+  const streamSystem = sessionTools.some((tool) => tool.meta.id.startsWith('chat.attachment'))
+    ? `${system}\n\n${AI_ATTACHMENT_RULE}`
+    : system;
 
   // 幂等键只盖写工具：读工具的结果会进缓存回放，盖了键等于把陈旧数据当新答案
   const writeToolIds = new Set(tools.filter((t) => t.permission === 'write').map((t) => t.id));
@@ -125,20 +146,20 @@ export function createAgentFromDef(
     actor,
     tools,
     run: (userText) =>
-      runAgent(userText, {
+      runAgent(withTimeContext(userText), {
         provider,
         // 每次任务重组快照——数据新鲜度以任务为粒度
         system,
         tools,
         invoke,
         maxSteps: options.maxSteps,
-        // 常驻瘦 schema；tools.load 在编排层把一组的完整说明升进下一轮
+        // 常驻瘦 schema；整组完整说明随 tools.load 的结果返回
         catalog: true,
       }),
     stream: (userText, history) =>
-      streamAgent(userText, {
+      streamAgent(withTimeContext(userText), {
         provider,
-        system,
+        system: streamSystem,
         // 会话通道附加 ui.ask（分流：编排层拦截挂起，不进工具总线）和本轮附件工具
         tools: [...tools, UI_ASK_TOOL, ...sessionTools.map((tool) => tool.meta)],
         invoke: (toolId, args, callId) => {

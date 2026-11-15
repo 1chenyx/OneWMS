@@ -8,7 +8,7 @@ import type { LpnRow, LpnStockLine } from '../api/client';
 import { useAppNav } from '../app-nav';
 import PageHeader from '../components/PageHeader';
 import { filledCode, useSeededField } from '../components/use-seeded-code';
-import { TABLE_PAGINATION, monoCell, numCell } from '../components/table-style';
+import { useClientPagination, monoCell, numCell } from '../components/table-style';
 
 /**
  * 托盘页。托盘占用已有库位上的货，移托盘时整托一起走。
@@ -53,6 +53,7 @@ function errorText(error: unknown, fallback: string): string {
 }
 
 export default function PalletsPage() {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const { takeInitialFilter } = useAppNav();
   const snapshot = useProfileSnapshot();
@@ -179,7 +180,7 @@ export default function PalletsPage() {
               columns={columns}
               dataSource={rows}
               loading={lpnOn && lpns.isLoading}
-              pagination={TABLE_PAGINATION}
+              pagination={pagination}
               locale={{ emptyText: '还没有托盘' }}
               onRow={(row) => ({
                 onClick: () => setSelected(row.lpnCode),
@@ -209,7 +210,7 @@ export default function PalletsPage() {
                 columns={lineColumns}
                 dataSource={stock.data?.lines ?? []}
                 loading={stock.isLoading}
-                pagination={TABLE_PAGINATION}
+                pagination={pagination}
                 locale={{ emptyText: '这个托盘是空的' }}
               />
             </Card>

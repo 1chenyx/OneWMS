@@ -8,6 +8,8 @@ export interface AgentDef {
   systemPrompt: string;
   tools: string[];
   model?: string;
+  /** default：工具跟着内置策略走；custom：用保存的清单 */
+  toolGrant?: 'default' | 'custom';
   /** v2 预留（管理页灰显）：助手按角色分配 */
   allowedRoles?: string[];
 }

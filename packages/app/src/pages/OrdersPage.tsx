@@ -64,7 +64,7 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
   useEffect(() => {
     setSelectedOrderIds([]);
-  }, [direction, noKw, list.page]);
+  }, [direction, noKw, list.page, list.pageSize]);
   const selectedOrders = visibleOrders.filter((o) => selectedOrderIds.includes(o.id));
   const [detailId, setDetailId] = useState<string | null>(null);
   const [pinnedDetail, setPinnedDetail] = useState<Order | null>(null);
@@ -533,8 +533,9 @@ export default function OrdersPage({ direction }: { direction: 'in' | 'out' }) {
           loading={isLoading}
           pagination={serverPagination({
             current: list.page,
+            pageSize: list.pageSize,
             total: totalOf(orderPayload),
-            onChange: list.setPage,
+            onChange: list.onChange,
           })}
           locale={{ emptyText: '还没有单据' }}
         />

@@ -20,7 +20,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useCreateLocation, useLocations, useProfileSnapshot, useUpdateLocation } from '../api/hooks';
 import { api, ApiError } from '../api/client';
 import type { Location, Warehouse, Zone } from '../api/client';
-import { ZONE_KINDS, zoneKindLabel } from '@one/wms/zone-kinds';
+import { isZoneKind, readEnabledZoneKinds, ZONE_KINDS, zoneKindLabel, zoneKindUseText, type ZoneKind } from '@one/wms/zone-kinds';
 import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
 import PageHeader from '../components/PageHeader';
 import { filledCode, useSeededField } from '../components/use-seeded-code';
@@ -157,6 +157,22 @@ function listKeyOf(warehouseOn: boolean, parent: ParentSel | null, zoneOn: boole
   return `${warehouseKey}|${zone.kind === 'zone' ? `zn:${zone.code}` : 'unzoned'}`;
 }
 
+/** 下拉只列启用的分类。编辑时，当前这种即使已关掉也留着，这样只改名称还能保存。 */
+function kindChoices(enabled: readonly ZoneKind[], current: string | undefined) {
+  const keep = current && isZoneKind(current) && !enabled.includes(current) ? current : null;
+  return ZONE_KINDS.filter((kind) => enabled.includes(kind.id) || kind.id === keep).map((kind) => ({
+    value: kind.id,
+    label: kind.id === keep ? `${kind.label}（已停用）` : kind.label,
+  }));
+}
+
+function zoneHint(zone: { kind: string; zoneCode: string }, enabled: readonly ZoneKind[]): string {
+  const rule = isZoneKind(zone.kind) && enabled.includes(zone.kind)
+    ? zoneKindUseText(zone.kind)
+    : '这个分类已关掉，不再限制作业';
+  return `${zoneKindLabel(zone.kind)} · ${rule} · ${zone.zoneCode}`;
+}
+
 /**
  * 库位管理页——档案大类下的物理存储位主数据。
  * 只能建 + 改名，不能删也不能改编码：locationCode 是业务键，历史单据/
@@ -174,6 +190,7 @@ export default function LocationsPage() {
   const snapshot = useProfileSnapshot();
   const warehouseOn = snapshot.data?.modules['module.warehouse']?.enabled === true;
   const zoneOn = snapshot.data?.modules['module.zone']?.enabled === true;
+  const enabledKinds = readEnabledZoneKinds(snapshot.data?.modules['module.zone']?.settings?.enabledKinds);
   const warehouses = useQuery({
     queryKey: ['warehouses'],
     queryFn: api.warehouses,
@@ -252,6 +269,7 @@ export default function LocationsPage() {
   const [editingZone, setEditingZone] = useState<Zone | null>(null);
   const [zoneSaving, setZoneSaving] = useState(false);
   const [zoneForm] = Form.useForm<{ zoneCode: string; name?: string; kind?: string; warehouseCode?: string }>();
+  const watchedKind = Form.useWatch('kind', zoneForm);
   useSeededField(form, 'locationCode', open && !editing ? 'location' : null);
   useSeededField(warehouseForm, 'warehouseCode', warehouseOpen && !editingWarehouse ? 'warehouse' : null);
   useSeededField(zoneForm, 'zoneCode', zoneOpen && !editingZone ? 'zone' : null);
@@ -488,8 +506,9 @@ export default function LocationsPage() {
       loading={isLoading}
       pagination={serverPagination({
         current: list.page,
+        pageSize: list.pageSize,
         total: totalOf(locationPage),
-        onChange: list.setPage,
+        onChange: list.onChange,
       })}
       locale={{
         emptyText: activeQuery
@@ -630,10 +649,24 @@ export default function LocationsPage() {
             <Form.Item name="name" label="库区名称" rules={editingZone ? [{ required: true, message: '请输入名称' }] : []}>
               <Input placeholder={editingZone ? '如 一层拣货' : '可选，缺省同编码'} />
             </Form.Item>
-            <Form.Item name="kind" label="分类" rules={[{ required: true, message: '请选择分类' }]}>
+            <Form.Item
+              name="kind"
+              label="分类"
+              extra={
+                watchedKind
+                  ? isZoneKind(watchedKind) && enabledKinds.includes(watchedKind)
+                    ? zoneKindUseText(watchedKind)
+                    : '这个分类已关掉，不再限制作业。要改成别的分类，先在规则页打开'
+                  : enabledKinds.length === 0
+                    ? '规则页还没有打开任何分类，现在不能新建'
+                    : '分类决定这个区里的库位能收货、上架还是发货'
+              }
+              rules={[{ required: true, message: '请选择分类' }]}
+            >
               <Select
+                aria-label="库区分类"
                 placeholder="拣货区、存货区…"
-                options={ZONE_KINDS.map((kind) => ({ value: kind.id, label: kind.label }))}
+                options={kindChoices(enabledKinds, editingZone?.kind)}
               />
             </Form.Item>
             {warehouseOn && (
@@ -667,8 +700,10 @@ export default function LocationsPage() {
       : (selectedWarehouse?.name ?? parent?.code ?? '');
   const childHint = zoneOn
     ? zoneSel?.kind === 'unzoned'
-      ? '这些库位还没有划进库区'
-      : `${selectedZone ? `${zoneKindLabel(selectedZone.kind)} · ` : ''}${selectedZone?.zoneCode ?? zoneSel?.code ?? ''}`
+      ? '这些库位还没有划进库区，收货、上架、发货都不限制'
+      : selectedZone
+        ? zoneHint(selectedZone, enabledKinds)
+        : (zoneSel?.code ?? '')
     : parent?.kind === 'unassigned'
       ? '这些库位还没有划进仓库'
       : `${selectedWarehouse?.warehouseCode ?? parent?.code ?? ''} · 这个仓库里的库位`;

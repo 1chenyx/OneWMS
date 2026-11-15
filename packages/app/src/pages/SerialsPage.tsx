@@ -7,13 +7,14 @@ import { api, ApiError } from '../api/client';
 import type { SerialRow } from '../api/client';
 import { useAppNav } from '../app-nav';
 import PageHeader from '../components/PageHeader';
-import { TABLE_PAGINATION, monoCell } from '../components/table-style';
+import { useClientPagination, monoCell } from '../components/table-style';
 
 /**
  * 序列号页。号在收货或库存调整时登记，这一页只负责查。
  * module.serial 关闭时不进导航；若还停在这一页，只留一句说明。
  */
 export default function SerialsPage() {
+  const pagination = useClientPagination();
   const { navigate } = useAppNav();
   const snapshot = useProfileSnapshot();
   const serialOn = snapshot.data?.modules['module.serial']?.enabled === true;
@@ -102,7 +103,7 @@ export default function SerialsPage() {
             columns={columns}
             dataSource={serials.data ?? []}
             loading={serialOn && serials.isLoading}
-            pagination={TABLE_PAGINATION}
+            pagination={pagination}
             locale={{ emptyText: '没有序列号' }}
           />
         </Card>

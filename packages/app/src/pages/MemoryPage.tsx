@@ -37,7 +37,7 @@ import type {
 } from '../api/client';
 import { useAppNav } from '../app-nav';
 import PageHeader from '../components/PageHeader';
-import { LIST_PAGINATION } from '../components/table-style';
+import { useClientPagination } from '../components/table-style';
 
 /**
  * AI 记忆管理页（章节级 markdown 账本的文档视图）。
@@ -123,6 +123,7 @@ const EMPTY_LEDGER: MemoryLedgerResponse = {
 };
 
 export default function MemoryPage() {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const { navigate } = useAppNav();
   const [loading, setLoading] = useState(true);
@@ -682,7 +683,7 @@ export default function MemoryPage() {
         ) : (
           <List
             dataSource={history}
-            pagination={LIST_PAGINATION}
+            pagination={pagination}
             renderItem={(h) => (
               <List.Item
                 actions={[

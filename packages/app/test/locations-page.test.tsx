@@ -13,6 +13,7 @@ import type { Location, Warehouse, Zone } from '../src/api/client';
 
 let warehouseOn = true;
 let zoneOn = false;
+let enabledZoneKinds: unknown;
 
 const warehousesFixture: Warehouse[] = [
   {
@@ -122,7 +123,15 @@ vi.mock('../src/api/client', () => ({
     profileSnapshot: async () => ({
       modules: {
         ...(warehouseOn ? { 'module.warehouse': { enabled: true, version: '0.1.0', settings: {} } } : {}),
-        ...(zoneOn ? { 'module.zone': { enabled: true, version: '0.1.0', settings: {} } } : {}),
+        ...(zoneOn
+          ? {
+              'module.zone': {
+                enabled: true,
+                version: '0.1.0',
+                settings: enabledZoneKinds === undefined ? {} : { enabledKinds: enabledZoneKinds },
+              },
+            }
+          : {}),
       },
     }),
     warehouses: async () => warehousesFixture,
@@ -184,6 +193,7 @@ afterEach(() => {
   document.body.innerHTML = '';
   warehouseOn = true;
   zoneOn = false;
+  enabledZoneKinds = undefined;
 });
 
 async function renderPage() {
@@ -266,9 +276,28 @@ describe('库位管理父子结构', () => {
     expect(await screen.findByText('A-01')).toBeInTheDocument();
     expect(screen.queryByText('A-02')).not.toBeInTheDocument();
     const locations = screen.getByRole('region', { name: '库位' });
-    expect(within(locations).getByText('拣货区 · PK-1')).toBeInTheDocument();
+    expect(within(locations).getByText('拣货区 · 可以上架、拣货发货 · PK-1')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /新建库位/ }));
     expect(await screen.findByText('一层拣货（拣货区）')).toBeInTheDocument();
+  });
+
+  it('只启用部分分类时，新建下拉跟着收窄，已关掉的分类在编辑里还留着', async () => {
+    zoneOn = true;
+    enabledZoneKinds = ['storage'];
+    const user = userEvent.setup();
+    await renderPage();
+
+    const zones = await screen.findByRole('navigation', { name: '库区' });
+    await user.click(within(zones).getByRole('button', { name: /一层拣货/ }));
+    const locations = screen.getByRole('region', { name: '库位' });
+    expect(within(locations).getByText('拣货区 · 这个分类已关掉，不再限制作业 · PK-1')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /编辑库区/ }));
+    const dialog = await screen.findByRole('dialog', { name: /编辑库区/ });
+    await user.click(within(dialog).getByRole('combobox', { name: '库区分类' }));
+    expect(await screen.findByRole('option', { name: '拣货区（已停用）' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '存货区' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '收货区' })).not.toBeInTheDocument();
   });
 });

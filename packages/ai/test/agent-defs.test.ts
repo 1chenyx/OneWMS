@@ -103,4 +103,72 @@ describe('readAgentDefs：配置面 / 兜底', () => {
     await write([{ bad: true }, 42]);
     expect(readAgentDefs(ws).map((d) => d.id)).toEqual(['general', 'readonly', 'config']);
   });
+
+  it('三件套的旧清单是策略子集时，按当前总线补齐，并换上现在的说明', async () => {
+    ws.modules.install(aiModuleManifest(), { actor: `module:${AI_MODULE_ID}@local` });
+    const builtins = builtinAgentDefs(ws.tools.list());
+    const drop = new Set(['wms.wave.query', 'wms.report.catalog', 'wms.transfer.query', 'wms.numbering.preview']);
+    const stale = builtins.map((def) => ({
+      id: def.id,
+      name: def.name,
+      description:
+        def.id === 'general'
+          ? '查询与出入库操作（默认）'
+          : def.id === 'readonly'
+            ? '仅查询，不修改任何数据'
+            : '查询 + 起草配置变更提议（由用户确认生效）',
+      systemPrompt:
+        def.id === 'general'
+          ? '你是通用仓库助手：可以查询库存、管理 SKU 与单据、执行出入库操作。'
+          : def.id === 'readonly'
+            ? '你是只读查询助手：只回答关于库存、单据、配置现状的问题，不修改任何数据。'
+            : '你是配置助手：帮助用户查看现状并起草配置变更提议。提议必须由用户亲自确认后才生效。',
+      tools: def.tools.filter((id) => !drop.has(id)),
+    }));
+    const proposed = (await ws.tools.invoke(
+      'profile.propose',
+      { patch: [{ op: 'replace', path: `/modules/${AI_MODULE_ID}/settings/agents`, value: stale }] },
+      'user:test',
+    )) as { proposalId: string };
+    ws.profile.confirm(proposed.proposalId, 'user:test');
+
+    const defs = readAgentDefs(ws);
+    expect(defs.map((def) => def.tools)).toEqual(builtins.map((def) => def.tools));
+    expect(defs.map((def) => def.description)).toEqual(builtins.map((def) => def.description));
+    expect(defs.map((def) => def.systemPrompt)).toEqual(builtins.map((def) => def.systemPrompt));
+    expect(defs.every((def) => def.toolGrant === 'default')).toBe(true);
+    for (const id of drop) {
+      if (!ws.tools.list().some((tool) => tool.id === id)) continue;
+      const owner = builtins.find((def) => def.tools.includes(id));
+      expect(owner).toBeTruthy();
+      expect(defs.find((def) => def.id === owner!.id)!.tools).toContain(id);
+    }
+  });
+
+  it('改过授权的三件套保持保存的清单，不把后加的工具补回来', async () => {
+    ws.modules.install(aiModuleManifest(), { actor: `module:${AI_MODULE_ID}@local` });
+    const builtins = builtinAgentDefs(ws.tools.list());
+    const general = builtins.find((def) => def.id === 'general')!;
+    const readonly = builtins.find((def) => def.id === 'readonly')!;
+    const config = builtins.find((def) => def.id === 'config')!;
+    const saved = [
+      { ...general, tools: ['wms.inventory.query'], toolGrant: 'custom' as const },
+      { ...readonly, tools: ['gone.tool', 'wms.inventory.query'], toolGrant: undefined },
+      { ...config, tools: [] as string[], toolGrant: undefined },
+    ];
+    const proposed = (await ws.tools.invoke(
+      'profile.propose',
+      { patch: [{ op: 'replace', path: `/modules/${AI_MODULE_ID}/settings/agents`, value: saved }] },
+      'user:test',
+    )) as { proposalId: string };
+    ws.profile.confirm(proposed.proposalId, 'user:test');
+
+    const defs = readAgentDefs(ws);
+    expect(defs.find((def) => def.id === 'general')!.tools).toEqual(['wms.inventory.query']);
+    expect(defs.find((def) => def.id === 'general')!.toolGrant).toBe('custom');
+    expect(defs.find((def) => def.id === 'readonly')!.tools).toEqual(['gone.tool', 'wms.inventory.query']);
+    expect(defs.find((def) => def.id === 'readonly')!.toolGrant).toBe('custom');
+    expect(defs.find((def) => def.id === 'config')!.tools).toEqual([]);
+    expect(defs.find((def) => def.id === 'config')!.toolGrant).toBe('custom');
+  });
 });

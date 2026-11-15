@@ -175,12 +175,16 @@ export function chatRoutes(ctx: AppContext): Hono {
   };
 
   /** turn-done 后把模型上下文落进存档。已有气泡更全时先留着，等客户端把界面写回来 */
-  const archiveCommitted = (session: ChatSession, agentId: string): void => {
+  const archiveCommitted = (
+    session: ChatSession,
+    agentId: string,
+    usage?: { inputTokens: number; outputTokens: number },
+  ): void => {
     if (session.history.length === 0) return;
     try {
       const prev = ctx.chatThreads.get(session.id);
       const now = Date.now();
-      const turns = mergeTurns(session.history, prev?.turns);
+      const turns = mergeTurns(session.history, prev?.turns, usage);
       const record: ChatThreadRecord = {
         id: session.id,
         agentId,
@@ -376,18 +380,20 @@ export function chatRoutes(ctx: AppContext): Hono {
         try {
           // 手动驱动生成器：yield 的事件推 SSE；return 值是完整历史（turn-done 后提交）
           const run = agent.stream(userText, session.history)[Symbol.asyncIterator]();
+          let turnUsage: { inputTokens: number; outputTokens: number } | undefined;
           for (;;) {
             const { value, done } = reply === undefined ? await run.next() : await run.next(reply);
             reply = undefined;
             if (done) {
               session.history = value.messages;
-              archiveCommitted(session, agentId);
+              archiveCommitted(session, agentId, turnUsage);
               // 自动记忆（fire-and-forget）：turn-done 历史提交后排队提取，
               // 不阻塞 SSE；autoMemory 关闭/空轮/失败均静默（memory-hook 纪律）
               void scheduleMemoryExtraction(ctx, agentProvider, value.messages);
               break;
             }
             if (stream.aborted) break; // 客户端断开：停止消费（本轮历史不提交）
+            if (value.type === 'turn-done' && value.usage) turnUsage = value.usage;
             await stream.writeSSE({ event: value.type, data: JSON.stringify(value) });
             if (value.type === 'ask') {
               // 挂起等待用户回答：answer 端点（或超时）settle 后，reply 注入下一轮 next()

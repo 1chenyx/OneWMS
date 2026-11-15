@@ -6,13 +6,14 @@ import { api } from '../api/client';
 import type { ReplenishmentSuggestion } from '../api/client';
 import { useDraftNumber } from './use-seeded-code';
 import { fmtQty } from '../lib/format';
-import { monoCell, numCell, TABLE_PAGINATION } from './table-style';
+import { monoCell, numCell, useClientPagination } from './table-style';
 
 /**
  * 按缺口生成一张普通入库单（module.replenish）。
  * 建议只在弹窗打开时拉，库存页本身仍只显示低库存预警。
  */
 export default function ReplenishModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const queryClient = useQueryClient();
   const suggestions = useQuery({
@@ -131,7 +132,7 @@ export default function ReplenishModal({ open, onClose }: { open: boolean; onClo
         <Table<ReplenishmentSuggestion>
           rowKey="skuCode"
           size="small"
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
           columns={columns}
           dataSource={rows}
           rowSelection={{

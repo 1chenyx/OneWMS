@@ -7,7 +7,7 @@ import { api, ApiError } from '../api/client';
 import type { Order, ReturnableLine } from '../api/client';
 import { useDraftNumber } from './use-seeded-code';
 import { fmtQty } from '../lib/format';
-import { monoCell, numCell, TABLE_PAGINATION } from './table-style';
+import { monoCell, numCell, useClientPagination } from './table-style';
 
 /**
  * 退货开单（module.return）。不新增状态：客退开入库单，退供开出库单，
@@ -23,6 +23,7 @@ export default function ReturnModal({
   onClose: () => void;
   order: Order | null;
 }) {
+  const pagination = useClientPagination();
   const { message } = AntApp.useApp();
   const { data: locations } = useLocations();
   const create = useCreateOrder();
@@ -134,7 +135,7 @@ export default function ReturnModal({
           rowKey={(line) => `${line.skuCode}\u0000${line.batchNo}`}
           dataSource={view?.lines ?? []}
           loading={returnable.isLoading}
-          pagination={TABLE_PAGINATION}
+          pagination={pagination}
           locale={{ emptyText: '没有可退数量' }}
           columns={[
             { title: 'SKU', dataIndex: 'skuCode', width: 120, onCell: monoCell },

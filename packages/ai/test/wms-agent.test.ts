@@ -52,7 +52,13 @@ const EVENTS = () => {
 describe('createAgentFromDef：端到端（快通道全链路）', () => {
   it('自然语言入库：工具执行 + actor 落审计 + 最终回复', async () => {
     const { provider } = scriptedProvider([
-      { text: '好的，马上入库', toolCalls: [{ callId: 'c1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: 10, reason: 'AI 入库' } }] },
+      {
+        text: '好的，马上入库',
+        toolCalls: [
+          { callId: 'c0', toolId: 'tools.load', args: { group: 'inventory' } },
+          { callId: 'c1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: 10, reason: 'AI 入库' } },
+        ],
+      },
       { text: '已为 A-1 入库 10 个，当前库存 15 个。', toolCalls: [] },
     ]);
     const agent = createAgentFromDef(ws, provider, defOf('general'));
@@ -60,8 +66,9 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     const result = await agent.run('A-1 入库 10 个');
 
     expect(result.text).toBe('已为 A-1 入库 10 个，当前库存 15 个。');
-    expect(result.invocations).toHaveLength(1);
-    expect(result.invocations[0].ok).toBe(true);
+    // tools.load（目录结算，不进总线）+ 库存调整
+    expect(result.invocations).toHaveLength(2);
+    expect(result.invocations[1]).toMatchObject({ toolId: 'wms.inventory.adjust', ok: true });
 
     // 库存投影：5 + 10 = 15（事件 → 投影链路完整）
     const sku = ws.skus.byCode('A-1')!;
@@ -77,7 +84,13 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
   it('护栏照常生效：出库超量被拒、错误回传模型、零事件落账', async () => {
     const before = EVENTS().length;
     const { provider, requests } = scriptedProvider([
-      { text: '', toolCalls: [{ callId: 'c1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: -999 } }] },
+      {
+        text: '',
+        toolCalls: [
+          { callId: 'c0', toolId: 'tools.load', args: { group: 'inventory' } },
+          { callId: 'c1', toolId: 'wms.inventory.adjust', args: { skuCode: 'A-1', delta: -999 } },
+        ],
+      },
       { text: '出库失败：A-1 库存不足（当前只有 5 个）', toolCalls: [] },
     ]);
     const agent = createAgentFromDef(ws, provider, defOf('general'));
@@ -86,9 +99,9 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
 
     // 模型收到的是结构化错误，且循环未中断
     expect(result.text).toBe('出库失败：A-1 库存不足（当前只有 5 个）');
-    expect(result.invocations[0].ok).toBe(false);
-    const results = requests[1].messages[2] as { results: Array<{ payload: { error: string } }> };
-    expect(results.results[0].payload.error).toContain('InsufficientStockError');
+    expect(result.invocations[1].ok).toBe(false);
+    const results = requests[1].messages[2] as { results: Array<{ payload: { error?: string } }> };
+    expect(results.results[1].payload.error).toContain('InsufficientStockError');
 
     // 校验失败绝不落事件（§4.3 命令失败 ≠ 事实）
     expect(EVENTS().length).toBe(before);
@@ -106,34 +119,30 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     // 人设前缀在前（M16），全局纪律 + 数据快照在后（不因人设删减）
     expect(req.system.startsWith('你是通用仓库助手')).toBe(true);
     expect(req.system).toContain('行为规则：');
+    // 时间不在 system（跨轮字节稳定，前缀缓存友好），拼在用户消息开头
+    expect(req.system).not.toContain('当前时间');
+    expect((req.messages[0] as { text: string }).text).toMatch(/^当前时间：\S+\n现在库存怎么样？$/);
     expect(req.system).toContain('SKU 总数：1');
     expect(req.system).toContain('有库存记录的 SKU：1');
     expect(req.system).toContain('库存总量：5');
     // 单条数量不进提示：本轮写入之后就会过时，明细走查询工具
     expect(req.system).not.toContain('A-1 / 螺丝');
     expect(req.system).not.toContain('螺丝');
-    // 工具授权按定义过滤：general = 总线全量 − profile.propose（改配置是高权限，M16 移出默认）。
-    // 期望值从总线现算而不是写死清单：装了什么模块就该有什么工具，
-    // 硬编码列表每加一个模块就烂一次（这条断言曾因缺 memory.* 与后续 wms 工具而长期红着）。
-    // tools.load 是编排层为「常驻瘦 schema」自己挂的升级工具，不在总线上，比较时排除。
+    // 延迟目录（分步分块）：工具数超过 TOOL_CATALOG_DEFER_AT 时，清单只列
+    // 常驻工具（全文）+ tools.load 分组索引；其余组 load 之后下一轮进清单。
+    // general 约 85 个工具，长期处于延迟模式（授权全量由 agent-defs 展开侧保证）。
     const ids = req.tools.map((t) => t.id);
     expect(ids).not.toContain('profile.propose');
     expect(ids).toContain('tools.load');
-    expect(ids.filter((id) => id !== 'tools.load').sort()).toEqual(
-      ws.tools
-        .list()
-        .map((t) => t.id)
-        .filter((id) => id !== 'profile.propose')
-        .sort(),
-    );
-    // 注：本包测试的工作区只挂 WmsDomain（@one/ai 刻意不依赖 @one/memory），
-    // 总线上没有 memory.* —— 内置助手定义是按总线现状展开的，记忆工具的授权
-    // 由 server 包（真挂了记忆模块）的端到端用例覆盖。
-    // 常驻是一行摘要；高频查询保持完整说明。长规则等 tools.load 之后再附上
-    const orderCreate = req.tools.find((t) => t.id === 'wms.order.create');
-    expect(orderCreate?.description).toBe('创建一张入库单或出库单');
-    expect(orderCreate?.parameters.properties?.direction?.description).toBeUndefined();
-    expect(orderCreate?.parameters.properties?.lines?.description).toContain('skuCode');
+    expect(ids).toContain('wms.inventory.query');
+    expect(ids).toContain('wms.order.query');
+    expect(ids).toContain('wms.sku.resolve');
+    expect(ids).not.toContain('wms.order.create'); // 未加载的组不占清单
+    // tools.load 的说明带分组索引（每组一行）与「先加载」指引
+    const loadTool = req.tools.find((t) => t.id === 'tools.load');
+    expect(loadTool?.description).toContain('必须先加载');
+    expect(loadTool?.description).toMatch(/order（\d+）/);
+    // 常驻高频工具保持完整说明，常见查询不用先加载
     expect(req.tools.find((t) => t.id === 'wms.inventory.query')?.description).toContain('byLocation');
     // 默认 actor（无 nodeId 后缀）
     expect(agent.actor).toBe('ai:general');
@@ -150,7 +159,8 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     expect(system).toContain('profile.propose');
     expect(system).toContain('wms.numbering.preview');
     expect(system).toContain('无权代替用户确认');
-    expect(system).toContain('chat.attachment.apply');
+    // 没上传附件时不带附件规则
+    expect(system).not.toContain('chat.attachment.apply');
     expect(system).toContain('不要自己编');
     expect(system).not.toContain('{yyyyMMdd}');
     expect(system).toContain('不要在 wms.order.create 上传 allocation');
@@ -285,6 +295,7 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
       {
         text: '',
         toolCalls: [
+          { callId: 'c0', toolId: 'tools.load', args: { group: 'profile' } },
           {
             callId: 'c1',
             toolId: 'profile.propose',
@@ -303,7 +314,7 @@ describe('createAgentFromDef：端到端（快通道全链路）', () => {
     const result = await agent.run('帮我把规格字段隐藏了');
 
     // ① 提议成功，返回影响报告并等待确认——但零事件落账（提议不是事实）
-    expect(result.invocations[0].ok).toBe(true);
+    expect(result.invocations[1].ok).toBe(true);
     expect(EVENTS().length).toBe(before);
 
     // ② 提议登记为 pending，actor 是 AI（可审计：哪个助手提的）
@@ -381,6 +392,8 @@ describe('createAgentFromDef：授权过滤与委托口子（M16）', () => {
     for await (const ev of streaming.stream('看看附件')) events.push(ev);
     expect(streamed.requests[0].tools.map((t) => t.id)).toContain('chat.attachment.read');
     expect(streamed.requests[0].tools.map((t) => t.id)).toContain('ui.ask');
+    expect(streamed.requests[0].system).toContain('chat.attachment.apply');
+    expect(requests[0].system).not.toContain('chat.attachment.apply');
     expect(seenActor).toBe('ai:general');
     expect(events.some((ev) => ev.type === 'tool-result' && ev.ok === true)).toBe(true);
   });

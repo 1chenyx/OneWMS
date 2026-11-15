@@ -10,8 +10,8 @@ import type { ReactNode } from 'react';
  * 提议确认不设独立页：慢通道拍板在 AI 对话页弹窗里完成。
  */
 
-/** 默认落地页：SKU 管理——「无 AI 也能用」是管理界面的主张，AI 是增强不是入口 */
-export const DEFAULT_PAGE: Page = 'skus';
+/** 刷新后的落地页：看板里的运营看板 */
+export const DEFAULT_PAGE: Page = 'dashboard';
 
 export type BuiltinPage =
   | 'dashboard'
