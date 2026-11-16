@@ -1,5 +1,29 @@
 import { request } from './request';
 
+/** GET /api/connection —— 这台服务的界面连局域网还是平台 */
+export interface ConnectionView {
+  mode: 'lan' | 'platform';
+  /** 平台根地址，不含 /api。局域网模式下也可能留着上次填的地址 */
+  platformBaseUrl: string;
+  /** false = 内存宿主，重启后回到局域网 */
+  persisted: boolean;
+}
+
+/** POST /api/auth/login 成功时平台返回的会话。token 只在这一次出现 */
+export interface PlatformLoginResult {
+  token: string;
+  user: { id: string; email: string; displayName: string };
+  workspace: { id: string; name: string; role: string } | null;
+  memberships: { workspaceId: string; name: string; role: string }[];
+}
+
+/** GET /api/auth/me */
+export interface PlatformMe {
+  user: { id: string; email: string; displayName: string };
+  workspace: { id: string; name: string; role: string } | null;
+  memberships: { workspaceId: string; name: string; role: string }[];
+}
+
 /** GET /api/sync/hello——节点名片 */
 export interface NodeHello {
   nodeId: string;
@@ -139,4 +163,11 @@ export const settingsApi = {
     }),
   backupRemove: (name: string) =>
     request<BackupListResult>(`/api/backups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  connectionGet: () => request<ConnectionView>('/api/connection'),
+  connectionSave: (body: { mode: 'lan' | 'platform'; platformBaseUrl?: string }) =>
+    request<ConnectionView>('/api/connection', { method: 'PUT', body: JSON.stringify(body) }),
+  platformLogin: (body: { email: string; password: string }) =>
+    request<PlatformLoginResult>('/api/auth/login', { method: 'POST', body: JSON.stringify(body) }),
+  platformLogout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST', body: '{}' }),
+  platformMe: () => request<PlatformMe>('/api/auth/me'),
 };

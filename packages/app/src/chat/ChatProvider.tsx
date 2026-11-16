@@ -20,7 +20,7 @@ import type { ChatAttachmentPayload, ChatStreamEvent, ChatThreadSummary, ChatThr
  *  - agentId（M16）：当前助手。切换时先存档，再换新 sessionId 并清空画面；
  *  - profileId：这一次对话选用的已保存接入点（地址和密钥）。没选时不传，服务端用当前配置；
  *    model：只在同一条上改模型名时才传。切换厂商或模型都不换会话；
- *  - contextLength：这一窗送给模型的上下文长度。短只留上一句回复；标准或长在所选字数里附上更早对话的短行。
+ *  - contextLength：这一窗的上下文窗口上限（64K 到 2M）。没超过就留更早的原话，超过后从最旧的一轮压缩。
  *    屏幕上的气泡和存档仍是全文。换长度不改历史时间；
  *  - 可以同时开多段。每一段各自流式，停止只打断这一段；
  *  - send() 消费这一段的 SSE。事件归约到这一段的最后一轮；
@@ -46,8 +46,12 @@ export const CHAT_CONTEXT_KEY = 'onewms.chat.contextLength';
 /** 同时摆开的对话窗口上限。再多就会挡住仓库页面 */
 export const MAX_CHAT_WINDOWS = 4;
 
-/** 短只留上一句。标准和长在大约两千、四千字里附上更早对话的短行 */
-export type ChatContextLength = 'short' | 'medium' | 'long';
+/** 上下文窗口上限。默认 128K */
+export type ChatContextLength = '64k' | '128k' | '256k' | '512k' | '1m' | '2m';
+
+const CONTEXT_LENGTHS = new Set<ChatContextLength>(['64k', '128k', '256k', '512k', '1m', '2m']);
+
+export const DEFAULT_CHAT_CONTEXT: ChatContextLength = '128k';
 
 interface ChatWindowData {
   id: string;
@@ -146,11 +150,11 @@ function writeOpenThread(id: string | null): void {
 export function readContextLength(): ChatContextLength {
   try {
     const raw = localStorage.getItem(CHAT_CONTEXT_KEY);
-    if (raw === 'short' || raw === 'medium' || raw === 'long') return raw;
+    if (raw && CONTEXT_LENGTHS.has(raw as ChatContextLength)) return raw as ChatContextLength;
   } catch {
-    // 读不到就用短，和没选过一样
+    // 读不到就用 128K
   }
-  return 'short';
+  return DEFAULT_CHAT_CONTEXT;
 }
 
 function writeContextLength(value: ChatContextLength): void {
@@ -668,7 +672,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         patchWin(windowId, (item) => ({ ...item, turns: localTurns }));
       };
       try {
-        if (contextLength === 'short') {
+        if (contextLength === DEFAULT_CHAT_CONTEXT) {
           await streamChatMessage(threadId, trimmed, agentId, onEvent, files, profileId, model, controller.signal);
         } else {
           await streamChatMessage(

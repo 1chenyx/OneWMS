@@ -211,7 +211,7 @@ describe('ChatPage：SSE 流式', () => {
     );
   });
 
-  it('上下文选标准后，这条消息带上 medium', async () => {
+  it('上下文选 256K 后，这条消息带上 256k', async () => {
     streamMock.mockImplementationOnce(async (_sid: string, _msg: string, _agentId: string, onEvent: (ev: ChatStreamEvent) => void) => {
       onEvent({ type: 'text-delta', text: '好。' });
       onEvent({ type: 'turn-done', steps: 1 });
@@ -219,9 +219,10 @@ describe('ChatPage：SSE 流式', () => {
     const user = userEvent.setup();
     render(wrap(<ChatProvider><ChatPage /></ChatProvider>));
 
+    expect(screen.getByRole('button', { name: '上下文：128K' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /上下文/ }));
-    await user.click(await screen.findByRole('menuitem', { name: /标准/ }));
-    expect(screen.getByRole('button', { name: '上下文：标准' })).toBeInTheDocument();
+    await user.click(await screen.findByRole('menuitem', { name: '256K' }));
+    expect(screen.getByRole('button', { name: '上下文：256K' })).toBeInTheDocument();
     await user.click(screen.getByRole('textbox'));
     await user.keyboard('查一下');
     await user.click(screen.getByRole('button', { name: /发送/ }));
@@ -235,9 +236,9 @@ describe('ChatPage：SSE 流式', () => {
       undefined,
       undefined,
       expect.any(AbortSignal),
-      'medium',
+      '256k',
     );
-    expect(localStorage.getItem(CHAT_CONTEXT_KEY)).toBe('medium');
+    expect(localStorage.getItem(CHAT_CONTEXT_KEY)).toBe('256k');
   });
 
   it('输入框展示本段 token 消耗，下一轮累加', async () => {

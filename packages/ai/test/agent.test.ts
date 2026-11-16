@@ -505,7 +505,7 @@ describe('streamAgent：事件序与终态', () => {
     expect((result.messages[1] as { text?: string }).text).toBe('好的，我查一下');
   });
 
-  it('历史参数：模型只看到上一句回复和这句请求，会话记录仍是全文', async () => {
+  it('历史参数：窗口内留更早的原话和上一句回复，会话记录仍是全文', async () => {
     const history = [
       { role: 'user' as const, text: 'A-1 还剩多少？' },
       { role: 'assistant' as const, text: '5 个' },
@@ -529,11 +529,11 @@ describe('streamAgent：事件序与终态', () => {
       }),
     );
 
-    expect(seen).toEqual(['上一句回复：\n5 个\n\n用户请求：\n是这批新到的吗？']);
+    expect(seen).toEqual(['更早的对话：\n用户：A-1 还剩多少？\n\n上一句回复：\n5 个\n\n用户请求：\n是这批新到的吗？']);
     expect(result.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
   });
 
-  it('标准长度把更早的对话压进任务框，会话记录仍是全文', async () => {
+  it('更大的窗口仍把更早的原话放进任务框，会话记录仍是全文', async () => {
     const history = [
       { role: 'user' as const, text: '第一问' },
       { role: 'assistant' as const, text: '第一答' },
@@ -556,11 +556,11 @@ describe('streamAgent：事件序与终态', () => {
         tools: demoTools,
         invoke: noopInvoke,
         history,
-        contextLength: 'medium',
+        contextLength: '256k',
       }),
     );
 
-    expect(seen[0]).toContain('更早的对话：\n用户：第二问\n用户：第一问 → 第一答');
+    expect(seen[0]).toContain('更早的对话：\n用户：第一问\n助手：第一答\n\n用户：第二问');
     expect(seen[0]).toContain('上一句回复：\n第二答');
     expect(seen[0]).toContain('用户请求：\n第三问');
     expect(result.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
@@ -656,7 +656,7 @@ describe('streamAgent：事件序与终态', () => {
     await expect(collect(gen)).rejects.toBeInstanceOf(AgentStepLimitError);
   });
 
-  it('更早轮次的工具结果进模型时收成一句，返回的历史仍是全文', async () => {
+  it('更早轮次的原话留在窗口里，工具结果不进模型，返回的历史仍是全文', async () => {
     const full = { skuCode: 'OLD', quantity: 9, rows: [{ skuCode: 'OLD' }], total: 1 };
     const { provider, requests } = scriptedProvider([{ text: '第三答', toolCalls: [] }]);
     const { result } = await collect(
@@ -680,9 +680,10 @@ describe('streamAgent：事件序与终态', () => {
     );
     const sent = frameText(requests[0].messages);
     expect(sent).toContain('上一句回复：\n第二答');
+    expect(sent).toContain('用户：第一问');
+    expect(sent).toContain('助手：第一答');
     expect(sent).toContain('第三问');
     expect(sent).not.toContain('OLD');
-    expect(sent).not.toContain('第一问');
     const stored = result.messages[2];
     expect(stored.role).toBe('tool-results');
     if (stored.role !== 'tool-results') return;

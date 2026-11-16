@@ -1,5 +1,14 @@
+import { useSyncExternalStore } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
+import type { ConnectionView } from './client';
+import { ApiError } from './request';
+import {
+  noteConnectionMode,
+  readPlatformToken,
+  subscribePlatformToken,
+  writePlatformToken,
+} from '../lib/connection';
 import type { DynListQuery, InventoryListPage, InventoryRow, InventorySlicePage, Location, Order, Partner, Sku, UiPageRecord } from './client';
 import type { ListPage } from './page';
 import { isConnectorId } from '../lib/integration-draft';
@@ -966,9 +975,110 @@ export function useDeleteIntegrationSecret() {
 // ── 设置页（M8）──────────────────────────────────────
 
 /** 节点名片（切页挂载即刷新——同步回合后计数会变）。
- *  pollMs：轮询间隔（全局顶栏状态灯传 15s 常驻刷新；不传 = 不轮询，设置页行为不变）。 */
-export function useNodeHello(pollMs?: number) {
-  return useQuery({ queryKey: ['node-hello'], queryFn: api.nodeHello, refetchInterval: pollMs });
+ *  pollMs：轮询间隔（全局顶栏状态灯传 15s 常驻刷新；不传 = 不轮询，设置页行为不变）。
+ *  enabled：平台模式下不要打局域网握手。 */
+export function useNodeHello(pollMs?: number, enabled = true) {
+  return useQuery({
+    queryKey: ['node-hello'],
+    queryFn: api.nodeHello,
+    refetchInterval: enabled ? pollMs : false,
+    enabled,
+  });
+}
+
+const connectionKey = ['connection'] as const;
+
+function forgetOtherQueries(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'connection' });
+}
+
+/** 这台服务连的是局域网还是平台。读到平台后，其它请求重发并带上令牌。 */
+export function useConnection() {
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: connectionKey,
+    queryFn: async () => {
+      const data = await api.connectionGet();
+      const prev = qc.getQueryData<ConnectionView>(connectionKey);
+      noteConnectionMode(data.mode);
+      if (prev && (prev.mode !== data.mode || prev.platformBaseUrl !== data.platformBaseUrl)) {
+        forgetOtherQueries(qc);
+      } else if (!prev && data.mode === 'platform') {
+        forgetOtherQueries(qc);
+      }
+      return data;
+    },
+  });
+}
+
+export function useSaveConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.connectionSave,
+    onSuccess: (data) => {
+      const prev = qc.getQueryData<ConnectionView>(connectionKey);
+      const switched = !prev || prev.mode !== data.mode || prev.platformBaseUrl !== data.platformBaseUrl;
+      if (switched) writePlatformToken(null);
+      noteConnectionMode(data.mode);
+      qc.setQueryData(connectionKey, data);
+      forgetOtherQueries(qc);
+    },
+  });
+}
+
+export function usePlatformToken() {
+  return useSyncExternalStore(subscribePlatformToken, readPlatformToken, () => null);
+}
+
+/** 平台登录身份。没选平台或还没有令牌时不请求。 */
+export function usePlatformMe() {
+  const connection = useConnection();
+  const token = usePlatformToken();
+  return useQuery({
+    queryKey: ['platform-me'],
+    enabled: connection.data?.mode === 'platform' && !!token,
+    queryFn: async () => {
+      try {
+        return await api.platformMe();
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) writePlatformToken(null);
+        throw err;
+      }
+    },
+  });
+}
+
+export function usePlatformLogin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.platformLogin,
+    onSuccess: (data) => {
+      writePlatformToken(data.token);
+      qc.setQueryData(['platform-me'], {
+        user: data.user,
+        workspace: data.workspace,
+        memberships: data.memberships,
+      });
+      forgetOtherQueries(qc);
+    },
+  });
+}
+
+export function usePlatformLogout() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      try {
+        await api.platformLogout();
+      } finally {
+        writePlatformToken(null);
+      }
+    },
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: ['platform-me'] });
+      forgetOtherQueries(qc);
+    },
+  });
 }
 
 export function useSyncRun() {

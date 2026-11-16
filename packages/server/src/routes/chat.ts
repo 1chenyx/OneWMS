@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import {
   OLLAMA_DEFAULT_BASE_URL,
+  CONTEXT_BUDGET,
   createAgentFromDef,
   createVercelLlmProvider,
   readAgentDefs,
@@ -107,11 +108,11 @@ function readRequestedModel(raw: unknown): { ok: true; model?: string } | { ok: 
   return { ok: true, model: raw.trim() };
 }
 
-function readContextLength(
-  raw: unknown,
-): { ok: true; context?: Exclude<ContextLength, 'short'> } | { ok: false; message: string } {
-  if (raw === undefined || raw === null || raw === '' || raw === 'short') return { ok: true };
-  if (raw === 'medium' || raw === 'long') return { ok: true, context: raw };
+function readContextLength(raw: unknown): { ok: true; context?: ContextLength } | { ok: false; message: string } {
+  if (raw === undefined || raw === null || raw === '') return { ok: true };
+  if (typeof raw === 'string' && Object.prototype.hasOwnProperty.call(CONTEXT_BUDGET, raw)) {
+    return { ok: true, context: raw as ContextLength };
+  }
   return { ok: false, message: '上下文长度无效' };
 }
 

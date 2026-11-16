@@ -27,6 +27,9 @@ import { dynRoutes } from './routes/dyn.js';
 import { toolRoutes } from './routes/tools.js';
 import { uiRoutes } from './routes/ui.js';
 import { lanIPv4, syncRoutes } from './routes/sync.js';
+import { connectionRoutes } from './routes/connection.js';
+import { resolveConnectionPath } from './connection/connection-store.js';
+import { proxyPlatform } from './connection/proxy.js';
 import { migrationRoutes } from './routes/migration.js';
 import { backupRoutes, backupSnapshot } from './routes/backups.js';
 import { runSyncRound } from './sync/sync-client.js';
@@ -58,6 +61,20 @@ export type { PendingWrite } from './tool-confirm.js';
 export function createApp(ctx: AppContext): Hono {
   const app = new Hono();
   app.onError(apiErrorHandler);
+  // 平台模式下其余 /api 转到平台。连接设置和静态页面留在本机，否则界面改不回来，壳也打不开。
+  app.use('*', async (c, next) => {
+    const path = c.req.path;
+    if (path === '/api/connection' || !path.startsWith('/api/')) return next();
+    const current = ctx.connection.current();
+    if (current.mode !== 'platform') return next();
+    try {
+      return await proxyPlatform(current.platformBaseUrl, c.req.raw);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return c.json({ code: 'PLATFORM_UNREACHABLE', message: `连不上平台：${detail}` }, 502);
+    }
+  });
+  app.route('/api/connection', connectionRoutes(ctx));
   app.get('/api/health', (c) => c.json({ ok: true, nodeId: ctx.core.nodeId }));
   app.route('/api/profile', profileRoutes(ctx));
   app.route('/api/proposals', proposalRoutes(ctx));
@@ -106,6 +123,7 @@ export function start(): void {
     backupIntervalMs: resolveBackupIntervalMs(),
     backupKeep: resolveBackupKeep(),
     peersPath: resolvePeersPath(dbPath),
+    connectionPath: resolveConnectionPath(dbPath),
     chatThreadsPath: resolveChatThreadsPath(dbPath),
   });
   const app = createApp(ctx);
@@ -114,6 +132,12 @@ export function start(): void {
     ctx.listeningPort = info.port; // 记端口：/api/sync/lan-address 要拼出「对端能访问的我」
     console.log(
       `[one-server] http://localhost:${info.port}  workspace=${workspaceId}  db=${dbPath}  ai=${ai ? ai.model : 'off'}${fileAi ? '（页面配置）' : ''}`,
+    );
+    const link = ctx.connection.current();
+    console.log(
+      link.mode === 'platform'
+        ? `[one-server] 连接方式：平台 ${link.platformBaseUrl}`
+        : '[one-server] 连接方式：局域网（本机）',
     );
     console.log(
       ctx.backupDir === null
@@ -176,6 +200,7 @@ function startIntegrationTimer(ctx: AppContext): ReturnType<typeof setInterval> 
  * 逐 peer 拉取回合，单败只记日志（下一轮自然重试）；空集合直接跳过。
  */
 async function syncAllPeers(ctx: AppContext): Promise<void> {
+  if (ctx.connection.current().mode === 'platform') return;
   const peers = mergePeerUrls(
     ctx.peers.list().map((p) => p.url),
     envPeers(),

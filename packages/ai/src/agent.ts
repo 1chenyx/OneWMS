@@ -152,7 +152,7 @@ export interface StreamAgentDeps extends RunAgentDeps {
   history?: AgentMessage[];
   /** 用户停止或连接断开。当前这次模型调用会被取消，未完成的一轮不提交 */
   signal?: AbortSignal;
-  /** 短只留上一句回复。标准或长在所选字数里附上更早对话的短行。缺省为短 */
+  /** 更早对话的窗口上限。缺省 128K；超出后从最旧的一轮开始压缩 */
   contextLength?: ContextLength;
 }
 

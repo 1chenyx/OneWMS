@@ -38,7 +38,7 @@ import { face } from '../theme';
  *  - 成功的操作展开后仍可去对应管理页；
  *  - 输入区可以带上 Excel、CSV 或文本，用户说怎么处理，助手就怎么处理。
  *    发送在输入框内的右下角，和助手、模型、上下文、导入文件同一行。
- *    上下文决定送给模型的长度：短只留上一句，标准大约两千字，长大约四千字。气泡和存档仍是全文。
+ *    上下文是窗口上限：64K、128K、256K、512K、1M、2M。没超过就留更早的原话，超过后从最旧的一轮压缩。气泡和存档仍是全文。
  *    模型回报的 token 显示在底栏上方，是本段各轮的合计。
  *    每一轮记下用时：回复过程中显示已运行多久，结束后留在这轮气泡下面。
  *  - variant=dock：右侧浮窗里的面板。顶栏可拖动，多段对话用页签切换，输入框矮一档。
@@ -57,17 +57,18 @@ function configuredVendors(profiles: AiProfilePublic[]): { vendorId: string; nam
   return out;
 }
 
-const CONTEXT_LABEL: Record<ChatContextLength, string> = {
-  short: '短',
-  medium: '标准',
-  long: '长',
-};
-
 const CONTEXT_MENU: { key: ChatContextLength; label: string }[] = [
-  { key: 'short', label: '短 · 只留上一句' },
-  { key: 'medium', label: '标准 · 大约 2000 字' },
-  { key: 'long', label: '长 · 大约 4000 字' },
+  { key: '64k', label: '64K' },
+  { key: '128k', label: '128K' },
+  { key: '256k', label: '256K' },
+  { key: '512k', label: '512K' },
+  { key: '1m', label: '1M' },
+  { key: '2m', label: '2M' },
 ];
+
+function contextLabel(length: ChatContextLength): string {
+  return CONTEXT_MENU.find((item) => item.key === length)?.label ?? '128K';
+}
 
 /** 这个厂商用来带地址和密钥的那一条：模型名对上优先，其次有密钥的，否则第一条。 */
 function credentialFor(profiles: AiProfilePublic[], vendorId: string, modelId: string): AiProfilePublic | undefined {
@@ -757,15 +758,16 @@ function ChatPageBody({
                   selectedKeys: [chat.contextLength],
                   items: CONTEXT_MENU,
                   onClick: ({ key }) => {
-                    if (key === 'short' || key === 'medium' || key === 'long') chat.setContextLength(key);
+                    const picked = CONTEXT_MENU.find((item) => item.key === key);
+                    if (picked) chat.setContextLength(picked.key);
                   },
                 }}
               >
                 <ComposerChip
-                  title={`上下文：${CONTEXT_LABEL[chat.contextLength]}`}
+                  title={`上下文上限 ${contextLabel(chat.contextLength)}，超出后压缩更早的对话`}
                   style={{ flex: 'none', ...(dock ? { paddingInline: 8 } : {}) }}
                 >
-                  <ChipText>{`上下文：${CONTEXT_LABEL[chat.contextLength]}`}</ChipText>
+                  <ChipText>{`上下文：${contextLabel(chat.contextLength)}`}</ChipText>
                   <DownOutlined aria-hidden style={{ flex: 'none' }} />
                 </ComposerChip>
               </Dropdown>

@@ -34,7 +34,7 @@ describe('frameForModel', () => {
     expect(frameForModel(messages)).toEqual([messages[0]]);
   });
 
-  it('只带上一句回复和这句请求，更早的对话和工具结果不带', () => {
+  it('默认 128K 窗口留更早的原话，工具结果不带', () => {
     const full = { skuCode: 'OLD', quantity: 9, rows: [{ skuCode: 'OLD' }], total: 1 };
     const text = frame([
       user('第一问'),
@@ -44,10 +44,9 @@ describe('frameForModel', () => {
       { role: 'assistant', text: '第二答' },
       user('第三问'),
     ]);
+    expect(text).toContain('更早的对话：\n用户：第一问\n助手：第一答\n\n用户：第二问');
     expect(text).toContain('上一句回复：\n第二答');
     expect(text).toContain('用户请求：\n第三问');
-    expect(text).not.toContain('第一问');
-    expect(text).not.toContain('第一答');
     expect(text).not.toContain('OLD');
   });
 
@@ -170,7 +169,7 @@ describe('frameForModel', () => {
     expect(text).toContain('回答：20 个');
   });
 
-  it('标准和长把更早的对话压成短行，工具原文和时间前缀不带', () => {
+  it('没超过窗口时保留更早的原话，工具原文和时间前缀不带', () => {
     const earlier = [
       user('当前时间：2026-01-01T00:00:00.000Z\n【附件 a】表.xlsx\n\n用户说：第一问'),
       results({ skuCode: 'SECRET-SKU', rows: [{ skuCode: 'SECRET-SKU' }] }),
@@ -179,32 +178,29 @@ describe('frameForModel', () => {
       { role: 'assistant' as const, text: '第二答' },
       user('第三问'),
     ];
-    const text = frame(earlier, 'medium');
-    expect(text).toContain('更早的对话：\n用户：第二问\n用户：第一问 → 第一答');
+    const text = frame(earlier, '1m');
+    expect(text).toContain('更早的对话：\n用户：第一问\n助手：第一答\n\n用户：第二问');
     expect(text).toContain('上一句回复：\n第二答');
     expect(text).toContain('用户请求：\n第三问');
     expect(text).not.toContain('SECRET-SKU');
     expect(text).not.toContain('当前时间');
     expect(text).not.toContain('表.xlsx');
-    expect(frame(earlier, 'long')).toContain('用户：第一问 → 第一答');
-    expect(frame(earlier)).not.toContain('第一问');
   });
 
-  it('超出所选字数时丢掉最旧的短行，上一句回复仍单独占上限', () => {
+  it('超过所选窗口时压缩最旧的轮次', () => {
     const messages: AgentMessage[] = [];
-    for (let i = 0; i < 30; i++) {
-      const n = String(i).padStart(2, '0');
-      messages.push(user(`旧问题${n}${'甲'.repeat(80)}`));
-      messages.push({ role: 'assistant', text: `旧回答${n}${'乙'.repeat(100)}` });
+    for (let i = 0; i < 4; i++) {
+      messages.push(user(`${'甲'.repeat(20_000)}问尾${i}`));
+      messages.push({ role: 'assistant', text: `${'乙'.repeat(20_000)}答尾${i}` });
     }
     messages.push(user('现在问'));
-    const medium = frame(messages, 'medium');
-    const long = frame(messages, 'long');
-    expect(medium).toContain('旧问题28');
-    expect(medium).not.toContain('旧问题00');
-    expect(long).toContain('旧问题00');
-    expect(sectionLengths(medium).total).toBeLessThanOrEqual(CONTEXT_BUDGET.medium);
-    expect(sectionLengths(long).total).toBeLessThanOrEqual(CONTEXT_BUDGET.long);
+    const text = frame(messages, '64k');
+    expect(text).toContain('问尾3');
+    expect(text).toContain('问尾2');
+    expect(text).toContain(' → ');
+    expect(text).not.toContain('问尾0');
+    expect(text).not.toContain('答尾0');
+    expect(sectionLengths(text).total).toBeLessThanOrEqual(CONTEXT_BUDGET['64k']);
   });
 });
 

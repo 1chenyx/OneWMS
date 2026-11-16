@@ -17,6 +17,7 @@ import {
   writeAiCatalog,
   type AiConfigCatalog,
 } from './ai-config-store.js';
+import { createConnectionStore, type ConnectionStore } from './connection/connection-store.js';
 import { createPeerStore, type PeerStore } from './sync/peer-store.js';
 import { createChatThreadStore, type ChatThreadStore } from './chat-threads.js';
 import { ConfirmGate } from './tool-confirm.js';
@@ -69,6 +70,8 @@ export interface AppContext {
   readonly backupIntervalMs: number;
   /** 备份滚动保留份数 */
   readonly backupKeep: number;
+  /** 界面连本机局域网还是平台（path=null 时只在进程内有效） */
+  readonly connection: ConnectionStore;
   /** 已配对同步节点清单（扫码组网；path=null 时只在进程内有效） */
   readonly peers: PeerStore;
   /** AI 对话存档（path=null 时只在进程内有效；最近 50 段，刷新和重启后可接着聊） */
@@ -111,6 +114,8 @@ export function createAppContext(options: {
   backupIntervalMs?: number;
   /** 缺省保留 7 份 */
   backupKeep?: number;
+  /** 缺省纯内存（测试宿主不落盘）；真实宿主传 resolveConnectionPath(dbPath) */
+  connectionPath?: string | null;
   /** 缺省纯内存清单（测试宿主不落盘）；真实宿主传 resolvePeersPath(dbPath) */
   peersPath?: string | null;
   /** 缺省纯内存存档（测试宿主不落盘）；真实宿主传 resolveChatThreadsPath(dbPath) */
@@ -163,6 +168,7 @@ export function createAppContext(options: {
     backupDir,
     backupIntervalMs: options.backupIntervalMs ?? DEFAULT_BACKUP_INTERVAL_MS,
     backupKeep: options.backupKeep ?? DEFAULT_BACKUP_KEEP,
+    connection: createConnectionStore(options.connectionPath ?? null),
     peers: createPeerStore(options.peersPath ?? null),
     chatThreads: createChatThreadStore(options.chatThreadsPath ?? null),
     confirmations: new ConfirmGate(options.confirmTokenTtlMs),

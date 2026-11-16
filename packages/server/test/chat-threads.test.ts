@@ -105,7 +105,7 @@ describe('对话存档', () => {
     const text = seen[0]?.messages[0]?.role === 'user' ? seen[0].messages[0].text : '';
     expect(text).toContain('上一句回复：\n还有 5 个');
     expect(text).toContain('是这批新到的吗？');
-    expect(text).not.toContain('A-1 还剩多少？');
+    expect(text).toContain('用户：A-1 还剩多少？');
   });
 
   it('气泡写回后标题用用户原文；resume 带回气泡，不把整表存进去', async () => {

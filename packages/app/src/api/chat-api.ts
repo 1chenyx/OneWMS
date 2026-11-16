@@ -1,4 +1,4 @@
-import { ApiError, request } from './request';
+import { ApiError, connectionHeaders, request } from './request';
 
 /** 与 @one/ai 的 AgentStreamEvent 同形（前端不依赖 ai 包类型，只镜像 SSE 契约） */
 export type ChatStreamEvent =
@@ -43,7 +43,7 @@ export interface ChatAttachmentChip {
  * 发送一条消息并逐事件消费 SSE 流（agentId 选助手，缺省 'general'）。
  * profileId 有值时用用户保存的那一条接入点（地址和密钥）。
  * model 只在同一条上改模型名时才传；不传 profileId 则由服务端用当前配置。
- * context 只在用户选了标准或长时传入。不传时服务端按短处理，只把上一句回复送给模型。
+ * context 是上下文窗口上限。不传时服务端按 128K。只有选了别的档位才放进请求。
  * 非流式错误（503/400/404/409 等 JSON 响应）统一抛 ApiError——UI 按 code 分支提示。
  */
 export async function streamChatMessage(
@@ -55,11 +55,11 @@ export async function streamChatMessage(
   profileId?: string,
   model?: string,
   signal?: AbortSignal,
-  context?: 'medium' | 'long',
+  context?: '64k' | '128k' | '256k' | '512k' | '1m' | '2m',
 ): Promise<void> {
   const res = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/message`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: connectionHeaders(),
     signal,
     body: JSON.stringify({
       message,

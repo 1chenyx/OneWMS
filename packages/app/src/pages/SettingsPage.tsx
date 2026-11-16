@@ -29,29 +29,36 @@ import type { BackupEntry, SyncPeerRecord } from '../api/client';
 import {
   useAddSyncPeer,
   useBackups,
+  useConnection,
   useCreateBackup,
   useDeleteBackup,
   useLanAddress,
   useMigrationImport,
   useNodeHello,
+  usePlatformLogin,
+  usePlatformLogout,
+  usePlatformMe,
+  usePlatformToken,
   useRemoveSyncPeer,
   useRestoreBackup,
+  useSaveConnection,
   useSyncPeers,
   useSyncRun,
 } from '../api/hooks';
+import { roleLabel, SUGGESTED_PLATFORM_BASE } from '../lib/connection';
 import PageHeader from '../components/PageHeader';
 import { useClientPagination } from '../components/table-style';
 
 /**
- * 设置页——设备（本机身份 + 局域网配对）、数据（本机备份 + 导出导入）。
+ * 设置页——设备（连接方式 + 局域网配对）、数据（本机备份 + 导出导入）。
+ * 连接方式决定界面读写平台还是这台机器。局域网配对只在局域网模式下出现。
  * 收发做法在「流程」页，仓库能力在「模块」页，不放在这里。
- * 定位：触发器 + 状态显示器（节点清单与备份清单都由服务端持久化，页面只读写它）。
  */
 
 export default function SettingsPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
-      <PageHeader title="设置" subtitle="多台设备一起用，以及本机备份和导出" />
+      <PageHeader title="设置" subtitle="选择连平台还是局域网，以及本机备份和导出" />
       <Tabs
         defaultActiveKey="devices"
         items={[
@@ -59,12 +66,7 @@ export default function SettingsPage() {
             key: 'devices',
             icon: <LinkOutlined />,
             label: '设备',
-            children: (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <NodeTab />
-                <SyncTab />
-              </div>
-            ),
+            children: <DevicesTab />,
           },
           {
             key: 'data',

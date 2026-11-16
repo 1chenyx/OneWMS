@@ -229,7 +229,7 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     expect(actors.has(`ai:general@${ctx!.core.nodeId}`)).toBe(true);
   });
 
-  it('同一会话多轮：turn-done 后历史提交，第二轮只带上一句回复和这句请求', async () => {
+  it('同一会话多轮：turn-done 后历史提交，第二轮在窗口里带上更早的原话', async () => {
     const requests: LlmTurnRequest[] = [];
     let i = 0;
     const turns: LlmTurnResponse[] = [
@@ -261,12 +261,14 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     const msgs = requests[2].messages;
     expect(msgs).toHaveLength(1);
     const text = msgs[0]?.role === 'user' ? msgs[0].text : '';
+    expect(text).toContain('用户：A-1 还剩多少？');
     expect(text).toContain('上一句回复：\nA-1 还有 5 个。');
     expect(text).toContain('是这批新到的吗？');
     expect(text).not.toContain('tool-results');
+    expect(text).not.toMatch(/用户：当前时间/);
   });
 
-  it('上下文选长时第三轮带上更早的短行；无效长度在占用会话前拒绝', async () => {
+  it('上下文选 1M 时第三轮带上更早的原话；无效长度在占用会话前拒绝', async () => {
     const requests: LlmTurnRequest[] = [];
     let i = 0;
     const provider: LlmProvider = {
@@ -290,14 +292,15 @@ describe('POST /api/chat/sessions/:id/message（SSE 流式）', () => {
     expect(parseSse(await first.text()).at(-1)?.event).toBe('turn-done');
     const second = await post(app, '/api/chat/sessions/s-ctx/message', { message: '第二问' });
     expect(parseSse(await second.text()).at(-1)?.event).toBe('turn-done');
-    const third = await post(app, '/api/chat/sessions/s-ctx/message', { message: '第三问', context: 'long' });
+    const third = await post(app, '/api/chat/sessions/s-ctx/message', { message: '第三问', context: '1m' });
     expect(parseSse(await third.text()).at(-1)?.event).toBe('turn-done');
 
     const chat = requests.filter((req) => !req.system.includes('记忆提取器'));
     const framed = chat[2]?.messages[0];
     const text = framed?.role === 'user' ? framed.text : '';
     expect(text).toContain('更早的对话');
-    expect(text).toContain('用户：第一问 → 第一答');
+    expect(text).toContain('用户：第一问\n助手：第一答');
+    expect(text).toContain('用户：第二问');
     expect(text).toContain('上一句回复：\n第二答');
     expect(text).not.toMatch(/用户：当前时间/);
   });

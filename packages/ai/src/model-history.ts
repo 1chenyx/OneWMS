@@ -8,7 +8,7 @@ import type { AgentMessage, ToolCallRequest, ToolCallResult } from './types.js';
  * 每一次模型调用不重放这段记录，只新组任务框：
  *  - 这一句用户请求
  *  - 上一句助手回复（接「改刚才那单」，超长留结尾）
- *  - 短：再往前的对话不带。标准或长：更早的对话压成短行，和上一句回复一起放进所选字数，装不下就丢掉最旧的
+ *  - 更早的对话：放进用户选的窗口（64K 到 2M）。装得下就留原话，超出后从最旧的一轮压成短行，再装不下就丢掉
  *  - 这一轮已经做成的事，每件一行（单号、数量）。还没用过的 tools.load 说明只出现一次
  *  - 还没处理的最新一批结果
  * 没有这些补充时，原样送出用户消息。不改入参。
@@ -17,18 +17,23 @@ import type { AgentMessage, ToolCallRequest, ToolCallResult } from './types.js';
 /** 上一句回复的字符上限。超长留结尾，单号通常写在句末 */
 export const PREVIOUS_REPLY_MAX = 800;
 
-/** 用户选的上下文长度。短是默认，不带更早的对话 */
-export type ContextLength = 'short' | 'medium' | 'long';
-
 /**
- * 上一句回复加上更早短行的合计字数（不含栏目标题）。
- * 短为 0：即使上一句回复没写满，也不把更早的对话补进来。
+ * 上下文窗口上限，单位是 token。按字符估算（约一字一个 token），用来守住所选窗口。
+ * 上一句回复和更早对话的正文一起算，栏目标题不算。
  */
 export const CONTEXT_BUDGET = {
-  short: 0,
-  medium: 2000,
-  long: 4000,
+  '64k': 64_000,
+  '128k': 128_000,
+  '256k': 256_000,
+  '512k': 512_000,
+  '1m': 1_000_000,
+  '2m': 2_000_000,
 } as const;
+
+/** 用户选的最大上下文。默认 128K */
+export type ContextLength = keyof typeof CONTEXT_BUDGET;
+
+export const DEFAULT_CONTEXT_LENGTH: ContextLength = '128k';
 
 /** 更早一轮的用户原话，压成一行时的字数 */
 const DIGEST_USER_MAX = 40;
@@ -55,7 +60,7 @@ const CONCLUSION_MAX = 120;
 /** 从完整历史做出这一步的任务框。窗口外的内容不进模型。 */
 export function frameForModel(
   messages: readonly AgentMessage[],
-  contextLength: ContextLength = 'short',
+  contextLength: ContextLength = DEFAULT_CONTEXT_LENGTH,
 ): AgentMessage[] {
   const turnAt = lastUserIndex(messages);
   if (turnAt < 0) return [{ role: 'user', text: '' }];
@@ -115,8 +120,9 @@ interface SpokenTurn {
 }
 
 /**
- * 这一句之前的对话，压成短行。从最近一轮往前装，装不下就停，更旧的整行丢掉。
- * 字数只算短行正文和上一句回复，不算「更早的对话」「上一句回复」这几个字。
+ * 这一句之前的对话。从最近一轮往前装进所选窗口：整轮放得下就留原话，
+ * 放不下就改成短行，短行也放不下就停，更旧的丢掉。
+ * 字数只算正文和上一句回复，不算「更早的对话」「上一句回复」这几个字。
  */
 function earlierDigest(
   messages: readonly AgentMessage[],
@@ -124,23 +130,36 @@ function earlierDigest(
   contextLength: ContextLength,
   priorLength: number,
 ): string | undefined {
-  if (contextLength === 'short') return undefined;
   const room = CONTEXT_BUDGET[contextLength] - priorLength;
   if (room <= 0) return undefined;
   const turns = turnsBefore(messages, turnAt);
-  const lines: string[] = [];
+  const full: string[] = [];
   let used = 0;
-  for (let i = turns.length - 1; i >= 0; i--) {
-    const turn = turns[i];
+  let index = turns.length - 1;
+  for (; index >= 0; index--) {
+    const turn = turns[index];
     if (!turn) continue;
-    const line = digestLine(turn, i < turns.length - 1);
-    if (!line) continue;
-    const next = used + line.length + (lines.length > 0 ? 1 : 0);
-    if (next > room) break;
-    lines.push(line);
-    used = next;
+    const block = fullBlock(turn, index < turns.length - 1);
+    const extra = block.length + (full.length > 0 ? 2 : 0);
+    if (used + extra > room) break;
+    full.push(block);
+    used += extra;
   }
-  return lines.length > 0 ? lines.join('\n') : undefined;
+  const compressed: string[] = [];
+  for (; index >= 0; index--) {
+    const turn = turns[index];
+    if (!turn) continue;
+    const line = compressedLine(turn, index < turns.length - 1);
+    if (!line) continue;
+    const extra = line.length + (compressed.length > 0 ? 1 : full.length > 0 ? 2 : 0);
+    if (used + extra > room) break;
+    compressed.push(line);
+    used += extra;
+  }
+  const older = compressed.reverse().join('\n');
+  const recent = full.reverse().join('\n\n');
+  if (older && recent) return `${older}\n\n${recent}`;
+  return recent || older || undefined;
 }
 
 /** 当前这句之前的每一轮用户原话，以及那一轮的助手回复。工具结果不收进来 */
@@ -170,8 +189,14 @@ function spokenUser(text: string): string {
   return said.replace(/\s+/g, ' ').trim();
 }
 
-/** 上一轮只留用户原话，回复在「上一句回复」里。更早的轮次带上回复短行 */
-function digestLine(turn: SpokenTurn, includeReply: boolean): string | undefined {
+/** 窗口还装得下时，留这一轮的原话。紧挨着的上一轮回复在「上一句回复」里，这里只留用户原话 */
+function fullBlock(turn: SpokenTurn, includeReply: boolean): string {
+  if (!includeReply || !turn.reply) return `用户：${turn.user}`;
+  return `用户：${turn.user}\n助手：${turn.reply.trim()}`;
+}
+
+/** 这一轮原话放不下时压成一行。上一轮的回复仍不重复 */
+function compressedLine(turn: SpokenTurn, includeReply: boolean): string | undefined {
   const user = clip(turn.user, DIGEST_USER_MAX);
   if (!user) return undefined;
   if (!includeReply) return `用户：${user}`;
@@ -179,7 +204,7 @@ function digestLine(turn: SpokenTurn, includeReply: boolean): string | undefined
   return reply ? `用户：${user} → ${reply}` : `用户：${user}`;
 }
 
-/** 紧挨着这句请求的上一条助手回复。短上下文里，再往前的用户轮不带 */
+/** 紧挨着这句请求的上一条助手回复。超长留结尾 */
 function previousReply(messages: readonly AgentMessage[], turnAt: number): string | undefined {
   for (let i = turnAt - 1; i >= 0; i--) {
     const message = messages[i];
