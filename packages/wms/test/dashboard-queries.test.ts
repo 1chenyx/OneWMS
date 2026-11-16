@@ -229,6 +229,18 @@ describe('运营看板：库存结构', () => {
     expect(focus.lowStock[0]).toMatchObject({ skuCode: 'A-1', available: 5, shortage: 5 });
     expect(focus.holds[0]).toMatchObject({ skuCode: 'A-1', quantity: 3, reason: '质检' });
   });
+
+  it('full 展开全部低库存，顺序与计数相同', async () => {
+    for (let i = 1; i <= 9; i++) {
+      await ws.tools.invoke('wms.sku.create', { skuCode: `L-${i}`, name: `低${i}`, reorderPoint: 10 + i });
+    }
+    const brief = getDashboardStock(ws);
+    const full = getDashboardStock(ws, true);
+    expect(brief.lowStockCount).toBe(9);
+    expect(brief.lowStock).toHaveLength(8);
+    expect(full.lowStock.map((row) => row.skuCode)).toEqual(['L-9', 'L-8', 'L-7', 'L-6', 'L-5', 'L-4', 'L-3', 'L-2', 'L-1']);
+    expect(brief.lowStock.map((row) => row.skuCode)).toEqual(full.lowStock.slice(0, 8).map((row) => row.skuCode));
+  });
 });
 
 describe('运营看板：临期批次与最近流水', () => {

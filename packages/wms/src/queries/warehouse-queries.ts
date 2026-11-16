@@ -1,5 +1,6 @@
 import type { WmsWorkspace } from '../wms.js';
 import { WarehouseDisabledError, WarehouseNotFoundError } from '../errors.js';
+import { DEFAULT_LOCATION_ID } from '../events/catalog.js';
 import type { LocationRecord } from '../views/location-view.js';
 import { zoneKindLabel } from '../zone-kinds.js';
 
@@ -41,6 +42,26 @@ export function presentLocation(ws: WmsWorkspace, location: LocationRecord) {
     zoneName: zone?.name ?? null,
     zoneKind: zone?.kind ?? null,
     zoneKindLabel: zone ? zoneKindLabel(zone.kind) : null,
+  };
+}
+
+/**
+ * 虚拟默认库位。它不在 wms_location 里，扫 code=DEFAULT 时仍返回这一行。
+ * 容量不限，所以不带 capacity。仓库和库区都是 null。
+ */
+export function presentDefaultLocation() {
+  return {
+    id: DEFAULT_LOCATION_ID,
+    locationCode: DEFAULT_LOCATION_ID,
+    name: '默认库位',
+    warehouseId: null as string | null,
+    zoneId: null as string | null,
+    warehouseCode: null as string | null,
+    warehouseName: null as string | null,
+    zoneCode: null as string | null,
+    zoneName: null as string | null,
+    zoneKind: null as string | null,
+    zoneKindLabel: null as string | null,
   };
 }
 

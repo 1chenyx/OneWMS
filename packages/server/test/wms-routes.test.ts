@@ -199,8 +199,10 @@ describe('单据端点', () => {
         quantity: 100,
         unit: null,
         locationCode: 'DEFAULT',
+        warehouseCode: null,
         batchNo: 'DEFAULT',
         batchExpiryDate: null,
+        serialTracked: false,
         fulfilledQty: null,
       },
       {
@@ -209,8 +211,10 @@ describe('单据端点', () => {
         quantity: 50,
         unit: null,
         locationCode: 'DEFAULT',
+        warehouseCode: null,
         batchNo: 'DEFAULT',
         batchExpiryDate: null,
+        serialTracked: false,
         fulfilledQty: null,
       },
     ]);
@@ -1482,5 +1486,234 @@ describe('报表端点', () => {
     expect(removed.status).toBe(200);
     const left = (await (await app.request('/api/reports')).json()) as { reportId: string }[];
     expect(left.find((row) => row.reportId === reportId)).toBeUndefined();
+  });
+});
+
+describe('现场扫码精确查询', () => {
+  it('skuCode 全等，停用档也返回，带 limit 仍是裸数组', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝', barcode: '6901' });
+    await post(app, '/api/skus', { skuCode: 'A-10', name: '螺母', barcode: '6902' });
+    await app.request('/api/skus/A-1/archive', { method: 'POST' });
+
+    const hit = await app.request('/api/skus?skuCode=A-1&limit=1&offset=5&q=螺母&barcode=6902');
+    expect(hit.status).toBe(200);
+    const body = (await hit.json()) as { skuCode: string; status: string; rows?: unknown }[];
+    expect(Array.isArray(body)).toBe(true);
+    expect(body).toHaveLength(1);
+    expect(body[0]).toMatchObject({ skuCode: 'A-1', status: 'archived' });
+    expect(body[0]).not.toHaveProperty('rows');
+
+    const fuzzy = (await (await app.request('/api/skus?skuCode=A-')).json()) as unknown[];
+    expect(fuzzy).toHaveLength(0);
+    const none = (await (await app.request('/api/skus?skuCode=')).json()) as unknown[];
+    expect(none).toHaveLength(0);
+  });
+
+  it('库位 code 全等；DEFAULT 是虚拟行；容量为空时不带这个键', async () => {
+    const app = setup();
+    await post(app, '/api/warehouses', { warehouseCode: 'WH-1', name: '一号仓' });
+    await post(app, '/api/locations', { locationCode: 'A-01', name: '一号架', warehouseCode: 'WH-1', capacity: 10 });
+    await post(app, '/api/locations', { locationCode: 'Z-01', name: '散货' });
+
+    const exact = await app.request('/api/locations?code=A-01&limit=1&offset=9&q=散货&warehouseCode=NOPE');
+    expect(exact.status).toBe(200);
+    const rows = (await exact.json()) as { locationCode: string; capacity?: number; warehouseCode: string | null }[];
+    expect(Array.isArray(rows)).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ locationCode: 'A-01', capacity: 10, warehouseCode: 'WH-1' });
+
+    const open = (await (await app.request('/api/locations?code=Z-01')).json()) as {
+      locationCode: string;
+      capacity?: number;
+      warehouseCode: string | null;
+    }[];
+    expect(open).toHaveLength(1);
+    expect(open[0]!.locationCode).toBe('Z-01');
+    expect(open[0]).not.toHaveProperty('capacity');
+    expect(open[0]!.warehouseCode).toBeNull();
+
+    const virtual = (await (await app.request('/api/locations?code=DEFAULT&limit=1')).json()) as {
+      locationCode: string;
+      warehouseCode: string | null;
+      warehouseName: string | null;
+      zoneCode: string | null;
+      zoneName: string | null;
+      zoneKind: string | null;
+      zoneKindLabel: string | null;
+      capacity?: number;
+    }[];
+    expect(virtual).toHaveLength(1);
+    expect(virtual[0]).toMatchObject({
+      locationCode: 'DEFAULT',
+      warehouseCode: null,
+      warehouseName: null,
+      zoneCode: null,
+      zoneName: null,
+      zoneKind: null,
+      zoneKindLabel: null,
+    });
+    expect(virtual[0]).not.toHaveProperty('capacity');
+
+    const missing = (await (await app.request('/api/locations?code=NOPE')).json()) as unknown[];
+    expect(missing).toHaveLength(0);
+  });
+});
+
+describe('现场待收列表', () => {
+  function setEnabled(id: string, enabled: boolean) {
+    const snapshot = ctx!.ws.profile.getSnapshot();
+    if ((snapshot.modules[id]?.enabled === true) === enabled) return;
+    const proposed = ctx!.ws.profile.propose(
+      'user:tester',
+      [{ op: 'replace', path: `/modules/${id}/enabled`, value: enabled }],
+      '测试开关',
+    );
+    ctx!.ws.profile.confirm(proposed.proposalId, 'user:tester');
+  }
+
+  it('created,announced 可用，不存在的状态是 BAD_QUERY', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    const created = (await (await post(app, '/api/orders', { direction: 'in', lines: [{ skuCode: 'A-1', quantity: 1 }] })).json()) as {
+      orderNo: string;
+    };
+    await post(app, '/api/orders', { direction: 'in', asn: true, lines: [{ skuCode: 'A-1', quantity: 1 }] });
+
+    const page = await app.request('/api/orders?direction=in&state=created,announced&sort=updatedAtAsc&limit=20');
+    expect(page.status).toBe(200);
+    const body = (await page.json()) as { total: number; hasMore: boolean; rows: { orderNo: string; state: string }[] };
+    expect(body.total).toBe(2);
+    expect(body.hasMore).toBe(false);
+    expect(body.rows.map((row) => row.state).sort()).toEqual(['announced', 'created']);
+    expect(body.rows.some((row) => row.orderNo === created.orderNo)).toBe(true);
+
+    const bad = await app.request('/api/orders?direction=in&state=not-a-state&limit=20');
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { code: string }).code).toBe('BAD_QUERY');
+
+    const bare = await app.request('/api/orders?direction=in&state=created');
+    expect(bare.status).toBe(400);
+  });
+
+  it('预报关掉后，已预报的单仍能收货并加库存', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    const created = (await (await post(app, '/api/orders', {
+      direction: 'in',
+      asn: true,
+      lines: [{ skuCode: 'A-1', quantity: 3 }],
+    })).json()) as { orderNo: string; state: string };
+    expect(created.state).toBe('announced');
+
+    setEnabled('module.asn', false);
+    const listed = await app.request('/api/orders?direction=in&state=created,announced&limit=20');
+    expect(listed.status).toBe(200);
+    const rows = ((await listed.json()) as { rows: { orderNo: string; state: string }[] }).rows;
+    expect(rows).toEqual([expect.objectContaining({ orderNo: created.orderNo, state: 'announced' })]);
+
+    const received = await post(app, `/api/orders/${created.orderNo}/transition`, { to: 'received' });
+    expect(received.status).toBe(200);
+    const stock = (await (await app.request('/api/inventory?limit=10')).json()) as { rows: { skuCode: string; quantity: number }[] };
+    expect(stock.rows.find((row) => row.skuCode === 'A-1')?.quantity).toBe(3);
+  });
+
+  it('混仓单不进当前仓，未分仓仍在，按更新时间升序', async () => {
+    const app = setup();
+    await post(app, '/api/skus', { skuCode: 'A-1', name: '螺丝' });
+    await post(app, '/api/warehouses', { warehouseCode: 'WH-1', name: '一号仓' });
+    await post(app, '/api/warehouses', { warehouseCode: 'WH-2', name: '二号仓' });
+    await post(app, '/api/locations', { locationCode: 'A-01', name: '一号架', warehouseCode: 'WH-1' });
+    await post(app, '/api/locations', { locationCode: 'B-01', name: '二号架', warehouseCode: 'WH-2' });
+    await post(app, '/api/locations', { locationCode: 'Z-01', name: '散货' });
+
+    const loose = (await (await post(app, '/api/orders', { direction: 'in', lines: [{ skuCode: 'A-1', quantity: 1 }] })).json()) as {
+      orderNo: string;
+    };
+    const here = (await (await post(app, '/api/orders', {
+      direction: 'in',
+      lines: [{ skuCode: 'A-1', quantity: 1, locationCode: 'A-01' }],
+    })).json()) as { orderNo: string };
+    const there = (await (await post(app, '/api/orders', {
+      direction: 'in',
+      lines: [{ skuCode: 'A-1', quantity: 1, locationCode: 'B-01' }],
+    })).json()) as { orderNo: string };
+    const mixed = (await (await post(app, '/api/orders', {
+      direction: 'in',
+      lines: [
+        { skuCode: 'A-1', quantity: 1, locationCode: 'A-01' },
+        { skuCode: 'A-1', quantity: 1, locationCode: 'B-01' },
+      ],
+    })).json()) as { orderNo: string };
+    const partial = (await (await post(app, '/api/orders', {
+      direction: 'in',
+      lines: [
+        { skuCode: 'A-1', quantity: 1, locationCode: 'A-01' },
+        { skuCode: 'A-1', quantity: 1, locationCode: 'Z-01' },
+      ],
+    })).json()) as { orderNo: string };
+
+    await post(app, `/api/orders/${here.orderNo}/revise`, { note: '后改的单' });
+
+    const query = '/api/orders?direction=in&state=created,announced&sort=updatedAtAsc&warehouseCode=WH-1&limit=10';
+    const page = (await (await app.request(query)).json()) as { total: number; rows: { orderNo: string }[] };
+    expect(page.rows.map((row) => row.orderNo)).toEqual([loose.orderNo, partial.orderNo, here.orderNo]);
+    expect(page.total).toBe(3);
+    expect(page.rows.map((row) => row.orderNo)).not.toContain(there.orderNo);
+    expect(page.rows.map((row) => row.orderNo)).not.toContain(mixed.orderNo);
+
+    const strict = (await (await app.request(`${query}&includeUnassigned=0`)).json()) as { rows: { orderNo: string }[] };
+    expect(strict.rows.map((row) => row.orderNo)).toEqual([partial.orderNo, here.orderNo]);
+
+    const first = (await (await app.request(`${query.replace('limit=10', 'limit=1')}`)).json()) as {
+      hasMore: boolean;
+      rows: { orderNo: string }[];
+    };
+    expect(first.hasMore).toBe(true);
+    expect(first.rows[0]!.orderNo).toBe(loose.orderNo);
+
+    const unknown = await app.request('/api/orders?direction=in&warehouseCode=NOPE&limit=10');
+    expect(unknown.status).toBe(400);
+    expect(((await unknown.json()) as { code: string }).code).toBe('BAD_QUERY');
+
+    const one = await app.request(`/api/orders/${here.orderNo}`);
+    expect(one.status).toBe(200);
+    const detail = (await one.json()) as { lines: { locationCode: string; warehouseCode: string | null }[] };
+    expect(detail.lines[0]).toMatchObject({ locationCode: 'A-01', warehouseCode: 'WH-1' });
+
+    const gone = await app.request('/api/orders/NO-SUCH');
+    expect(gone.status).toBe(400);
+    expect(((await gone.json()) as { code: string }).code).toBe('WMS_ORDER_NOT_FOUND');
+
+    setEnabled('module.warehouse', false);
+    const disabled = await app.request(query);
+    expect(disabled.status).toBe(400);
+    expect(((await disabled.json()) as { code: string }).code).toBe('WMS_WAREHOUSE_DISABLED');
+  });
+});
+
+describe('看板低库存全量', () => {
+  it('缺省只留 8 行，full=1 与计数同一套，非法 full 是 400', async () => {
+    const app = setup();
+    for (let i = 1; i <= 9; i++) {
+      const res = await post(app, '/api/skus', { skuCode: `L-${i}`, name: `低${i}`, reorderPoint: 10 + i });
+      expect(res.status).toBe(201);
+    }
+    const briefRes = await app.request('/api/dashboard/stock');
+    expect(briefRes.status).toBe(200);
+    const brief = (await briefRes.json()) as { lowStockCount: number; lowStock: { skuCode: string }[] };
+    expect(brief.lowStockCount).toBe(9);
+    expect(brief.lowStock).toHaveLength(8);
+
+    const fullRes = await app.request('/api/dashboard/stock?full=1');
+    const full = (await fullRes.json()) as { lowStock: { skuCode: string }[] };
+    expect(full.lowStock.map((row) => row.skuCode)).toEqual(['L-9', 'L-8', 'L-7', 'L-6', 'L-5', 'L-4', 'L-3', 'L-2', 'L-1']);
+    expect(brief.lowStock.map((row) => row.skuCode)).toEqual(full.lowStock.slice(0, 8).map((row) => row.skuCode));
+
+    const zero = (await (await app.request('/api/dashboard/stock?full=0')).json()) as { lowStock: unknown[] };
+    expect(zero.lowStock).toHaveLength(8);
+    const bad = await app.request('/api/dashboard/stock?full=2');
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { code: string }).code).toBe('BAD_QUERY');
   });
 });

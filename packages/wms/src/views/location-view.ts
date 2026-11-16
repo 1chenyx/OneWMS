@@ -137,8 +137,12 @@ export class LocationView {
    * warehouseId 不传 = 不按仓库滤；null = 只要未分仓；字符串 = 该仓库。
    * zoneId 同样：不传 = 不按库区滤；null = 只要未分区。
    */
-  list(q?: string, warehouseId?: string | null, zoneId?: string | null): LocationRecord[] {
-    const { where, args } = this.#match({ q, warehouseId, zoneId });
+  /**
+   * code 是编码全等，给扫码用。和 q 不要同时传：模糊条件会把精确命中滤掉。
+   * DEFAULT 不在本表，调用方要自己补虚拟行。
+   */
+  list(q?: string, warehouseId?: string | null, zoneId?: string | null, code?: string): LocationRecord[] {
+    const { where, args } = this.#match({ q, warehouseId, zoneId, code });
     const rows = this.db
       .prepare<unknown[], LocationRow>(`SELECT * FROM wms_location WHERE ${where} ORDER BY location_code`)
       .all(...args) as unknown as LocationRow[];
@@ -167,9 +171,16 @@ export class LocationView {
     return { rows: rows.map(rowToRecord), total };
   }
 
-  #match(opts?: { q?: string; warehouseId?: string | null; zoneId?: string | null }): { where: string; args: unknown[] } {
+  #match(opts?: { q?: string; warehouseId?: string | null; zoneId?: string | null; code?: string }): {
+    where: string;
+    args: unknown[];
+  } {
     const where = ['workspace_id = ?'];
     const args: unknown[] = [this.workspaceId];
+    if (opts?.code) {
+      where.push('location_code = ?');
+      args.push(opts.code);
+    }
     const q = opts?.q;
     if (q) {
       where.push(`(location_code LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\')`);

@@ -161,10 +161,11 @@ export class SkuView {
   }
 
   /**
-   * barcode 精确，q 对编码/名称/条码做包含匹配。
-   * includeArchived 缺省 false：不带条码时排除已停用。扫码（带 barcode）由调用方传 true。
+   * barcode、skuCode 都是全等。q 对编码/名称/条码做包含匹配。
+   * includeArchived 缺省 false：不带条码、也不带 skuCode 时排除已停用。
+   * 扫码（barcode 或 skuCode）包含停用档，避免把旧码说成没有这个货。
    */
-  listMatching(opts: { barcode?: string; q?: string; includeArchived?: boolean }): SkuRecord[] {
+  listMatching(opts: { barcode?: string; skuCode?: string; q?: string; includeArchived?: boolean }): SkuRecord[] {
     const { where, args } = this.#match(opts);
     const rows = this.db
       .prepare<unknown[], SkuRow>(`SELECT * FROM wms_sku WHERE ${where} ORDER BY sku_code`)
@@ -175,6 +176,7 @@ export class SkuView {
   /** 与 listMatching 同一套条件，SQL LIMIT/OFFSET。total 用同一 WHERE。 */
   listMatchingPage(opts: {
     barcode?: string;
+    skuCode?: string;
     q?: string;
     includeArchived?: boolean;
     limit: number;
@@ -194,7 +196,7 @@ export class SkuView {
     return { rows: rows.map(rowToRecord), total };
   }
 
-  #match(opts: { barcode?: string; q?: string; includeArchived?: boolean }): {
+  #match(opts: { barcode?: string; skuCode?: string; q?: string; includeArchived?: boolean }): {
     where: string;
     args: unknown[];
   } {
@@ -204,7 +206,11 @@ export class SkuView {
       where.push('barcode = ?');
       args.push(opts.barcode);
     }
-    if (!opts.includeArchived && !opts.barcode) {
+    if (opts.skuCode) {
+      where.push('sku_code = ?');
+      args.push(opts.skuCode);
+    }
+    if (!opts.includeArchived && !opts.barcode && !opts.skuCode) {
       where.push(`(status = 'active' OR status IS NULL)`);
     }
     if (opts.q) {

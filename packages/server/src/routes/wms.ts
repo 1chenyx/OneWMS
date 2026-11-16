@@ -24,7 +24,9 @@ import {
   listWarehouses,
   listWarehouseStock,
   listZones,
+  presentDefaultLocation,
   presentLocation,
+  DEFAULT_LOCATION_ID,
   listSerials,
   querySerial,
   listLpns,
@@ -33,6 +35,9 @@ import {
   isNumberPlace,
   listOrdersWithLines,
   listOrdersWithLinesPage,
+  withOrderLines,
+  OrderNotFoundError,
+  WarehouseDisabledError,
   listPickingsWithLines,
   listWaves,
   getWave,
@@ -119,6 +124,49 @@ function readLocationZoneId(
   return zone.id;
 }
 
+/** 状态必须是该方向流程里的 id。不拿种子联合类型挡 announced 这类模块状态。 */
+function readOrderStates(
+  ws: AppContext['ws'],
+  direction: 'in' | 'out' | undefined,
+  raw: string | undefined,
+): string[] | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const ids = raw.split(',').map((part) => part.trim()).filter((part) => part !== '');
+  if (ids.length === 0) throw new BadQueryError('state 不能是空的');
+  const snapshot = ws.profile.getSnapshot();
+  const inbound = new Set((snapshot.workflows.inbound?.states ?? []).map((state) => state.id));
+  const outbound = new Set((snapshot.workflows.outbound?.states ?? []).map((state) => state.id));
+  for (const id of ids) {
+    const known = direction === 'in' ? inbound.has(id) : direction === 'out' ? outbound.has(id) : inbound.has(id) || outbound.has(id);
+    if (!known) throw new BadQueryError(`没有这个状态：${id}`);
+  }
+  return ids;
+}
+
+function readOrderSort(raw: string | undefined): 'updatedAtAsc' | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  if (raw !== 'updatedAtAsc') throw new BadQueryError('sort 只接受 updatedAtAsc');
+  return 'updatedAtAsc';
+}
+
+function readOrderWarehouse(
+  ws: AppContext['ws'],
+  warehouseCode: string | undefined,
+  includeUnassigned: string | undefined,
+): { warehouseId: string; includeUnassigned: boolean } | undefined {
+  const code = warehouseCode?.trim() ?? '';
+  const flag = includeUnassigned?.trim() ?? '';
+  if (flag !== '' && flag !== '0' && flag !== '1') throw new BadQueryError('includeUnassigned 只能是 0 或 1');
+  if (code === '') return undefined;
+  if (ws.profile.getSnapshot().modules['module.warehouse']?.enabled !== true) {
+    throw new WarehouseDisabledError();
+  }
+  ws.sync();
+  const warehouse = ws.warehouses.byCode(code);
+  if (!warehouse) throw new BadQueryError(`仓库不存在：${code}`);
+  return { warehouseId: warehouse.id, includeUnassigned: flag !== '0' };
+}
+
 export type { ExpiryBatchRow, ExpiryLevel, OrderWithLines } from '@one/wms';
 
 /**
@@ -142,6 +190,13 @@ export function wmsRoutes(ctx: AppContext): Hono {
     // A2 软停用：默认只回启用档（选择器/下拉零改动自动排除停用）；includeArchived=1 回全量；
     // barcode 精确查询不过滤——扫码定位语义（停用 SKU 的存量库存照常可扫）。
     .get('/skus', (c) => {
+      // skuCode 与编码全等，给现场扫码。始终裸数组，忽略 limit / offset / q / barcode。停用档也返回。
+      const skuCode = c.req.query('skuCode');
+      if (skuCode !== undefined) {
+        const code = skuCode.trim();
+        const rows = code ? ctx.ws.skus.listMatching({ skuCode: code, includeArchived: true }) : [];
+        return c.json(rows);
+      }
       const barcode = c.req.query('barcode');
       const q = c.req.query('q');
       const includeArchived = c.req.query('includeArchived') === '1';
@@ -296,7 +351,13 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/dashboard/orders', (c) => c.json(getOrderStats(ctx.ws)))
     .get('/dashboard/alerts', (c) => c.json(getAlertSummary(ctx.ws)))
     .get('/dashboard/workload', (c) => c.json(getDashboardWorkload(ctx.ws)))
-    .get('/dashboard/stock', (c) => c.json(getDashboardStock(ctx.ws)))
+    .get('/dashboard/stock', (c) => {
+      const full = c.req.query('full');
+      if (full !== undefined && full !== '' && full !== '0' && full !== '1') {
+        throw new BadQueryError('full 只能是 0 或 1');
+      }
+      return c.json(getDashboardStock(ctx.ws, full === '1'));
+    })
     .get('/dashboard/activity', (c) => {
       const limit = Number(c.req.query('limit') ?? '12');
       return c.json(getDashboardActivity(ctx.ws, Number.isInteger(limit) ? limit : 12));
@@ -355,14 +416,38 @@ export function wmsRoutes(ctx: AppContext): Hono {
       const q = c.req.query('direction');
       const direction = q === 'in' || q === 'out' ? (q as OrderDirection) : undefined;
       const page = readListPage(c.req.query('limit'), c.req.query('offset'));
+      const stateRaw = c.req.query('state');
+      const sortRaw = c.req.query('sort');
+      const warehouseRaw = c.req.query('warehouseCode');
+      const unassignedRaw = c.req.query('includeUnassigned');
+      const hasFieldFilter =
+        (stateRaw !== undefined && stateRaw !== '') ||
+        (sortRaw !== undefined && sortRaw !== '') ||
+        (warehouseRaw !== undefined && warehouseRaw !== '') ||
+        (unassignedRaw !== undefined && unassignedRaw !== '');
+      if (hasFieldFilter && !page) {
+        throw new BadQueryError('state、sort、warehouseCode 要和 limit 一起用');
+      }
       if (!page) return c.json(listOrdersWithLines(ctx.ws, direction));
+      const states = readOrderStates(ctx.ws, direction, stateRaw);
+      const sort = readOrderSort(sortRaw);
+      const warehouse = readOrderWarehouse(ctx.ws, warehouseRaw, unassignedRaw);
       return c.json(
         listOrdersWithLinesPage(ctx.ws, {
           direction,
           q: c.req.query('q') || undefined,
+          states,
+          sort,
+          warehouseId: warehouse?.warehouseId,
+          includeUnassigned: warehouse?.includeUnassigned,
           ...page,
         }),
       );
+    })
+    .get('/orders/:orderNo', (c) => {
+      const order = ctx.ws.orders.byNo(c.req.param('orderNo'));
+      if (!order) throw new OrderNotFoundError(c.req.param('orderNo'));
+      return c.json(withOrderLines(ctx.ws, order));
     })
     .get('/orders/:orderNo/returnable', (c) => c.json(getReturnable(ctx.ws, c.req.param('orderNo'))))
     .post('/orders', async (c) => {
@@ -521,6 +606,15 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .get('/inventory/expiry', (c) => c.json(getExpiryBoard(ctx.ws)))
     // ── 库位（M10 实体；GET 是 M17 盘点范围勾选的数据源）──
     .get('/locations', (c) => {
+      // code 与库位编码全等。始终裸数组，忽略 limit / offset / q 和仓库筛选。
+      // 忽略仓库筛选是为了区分「没有这个库位」和「库位不在当前仓库」。
+      const codeQuery = c.req.query('code');
+      if (codeQuery !== undefined) {
+        const code = codeQuery.trim();
+        if (code === DEFAULT_LOCATION_ID) return c.json([presentDefaultLocation()]);
+        const rows = code ? ctx.ws.locations.list(undefined, undefined, undefined, code) : [];
+        return c.json(rows.map((location) => presentLocation(ctx.ws, location)));
+      }
       const q = c.req.query('q') || undefined;
       const page = readListPage(c.req.query('limit'), c.req.query('offset'));
       const warehouseId = readLocationWarehouseId(ctx.ws, c.req.query('unassigned'), c.req.query('warehouseCode'));

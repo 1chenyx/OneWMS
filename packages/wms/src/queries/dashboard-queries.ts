@@ -238,7 +238,7 @@ export interface DashboardHoldBrief {
   createdAt: string;
 }
 
-/** ⑦ 库存结构：可用量拆分、余量最高的 SKU、低库存、活动冻结。清单最多 8 行，计数是全量。 */
+/** ⑦ 库存结构：可用量拆分、余量最高的 SKU、低库存、活动冻结。缺省清单最多 8 行，计数是全量。 */
 export interface DashboardStockFocus {
   /** 实物余量，负桶按 0，与总览 totalQuantity 同口径 */
   onHand: number;
@@ -251,7 +251,11 @@ export interface DashboardStockFocus {
   holds: DashboardHoldBrief[];
 }
 
-export function getDashboardStock(ws: WmsWorkspace): DashboardStockFocus {
+/**
+ * 缺省 lowStock 只留 8 行，lowStockCount 仍是全量。
+ * full 为真时 lowStock 改为 listLowStock 的全部行，集合和顺序与计数相同。
+ */
+export function getDashboardStock(ws: WmsWorkspace, full = false): DashboardStockFocus {
   const inventory = ws.inventory.list();
   const onHand = inventory.reduce((sum, row) => sum + Math.max(0, row.quantity), 0);
   const held = ws.inventory.listHolds().reduce((sum, row) => sum + row.quantity, 0);
@@ -288,7 +292,7 @@ export function getDashboardStock(ws: WmsWorkspace): DashboardStockFocus {
     reserved,
     available: onHand - held - reserved,
     lowStockCount: lowStock.length,
-    lowStock: lowStock.slice(0, BOARD_LIMIT),
+    lowStock: full ? lowStock : lowStock.slice(0, BOARD_LIMIT),
     topSkus,
     holds,
   };

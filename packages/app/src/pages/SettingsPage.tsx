@@ -88,7 +88,200 @@ export default function SettingsPage() {
   );
 }
 
-/** ① 节点名片（只读——/api/sync/hello 既是握手端点也是节点自省）+ 供对端扫码的局域网地址 */
+/** 设备页：先选连接方式。局域网才显示本机地址和配对；平台只显示登录。 */
+function DevicesTab() {
+  const connection = useConnection();
+  if (connection.isLoading || !connection.data) return <Card loading />;
+  const platform = connection.data.mode === 'platform';
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <ConnectionCard />
+      {platform ? (
+        <Alert
+          type="info"
+          showIcon
+          message="平台连接不使用局域网配对"
+          description="别的设备要和这台机器互相同步账本时，先改回局域网。平台上的账号和这里的配对节点不是一回事。"
+        />
+      ) : (
+        <>
+          <NodeTab />
+          <SyncTab />
+        </>
+      )}
+    </div>
+  );
+}
+
+function ConnectionCard() {
+  const { message } = AntApp.useApp();
+  const connection = useConnection();
+  const save = useSaveConnection();
+  const login = usePlatformLogin();
+  const logout = usePlatformLogout();
+  const me = usePlatformMe();
+  const token = usePlatformToken();
+  const current = connection.data;
+  const platform = current?.mode === 'platform';
+  const [urlText, setUrlText] = useState(current?.platformBaseUrl || SUGGESTED_PLATFORM_BASE);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  if (!current) return <Card loading />;
+
+  const connectPlatform = async () => {
+    const platformBaseUrl = urlText.trim();
+    if (!platformBaseUrl) {
+      message.warning('请先填写平台地址');
+      return;
+    }
+    try {
+      await save.mutateAsync({ mode: 'platform', platformBaseUrl });
+      message.success('已改为连接平台。请登录平台账号。');
+    } catch (err) {
+      message.error(err instanceof ApiError ? err.message : `切换失败：${String(err)}`);
+    }
+  };
+
+  const connectLan = async () => {
+    try {
+      await save.mutateAsync({ mode: 'lan', platformBaseUrl: urlText.trim() || undefined });
+      message.success('已改回局域网。界面重新读写这台机器上的账。');
+    } catch (err) {
+      message.error(err instanceof ApiError ? err.message : `切换失败：${String(err)}`);
+    }
+  };
+
+  const doLogin = async () => {
+    if (!email.trim() || !password) {
+      message.warning('请填写邮箱和密码');
+      return;
+    }
+    try {
+      const result = await login.mutateAsync({ email: email.trim(), password });
+      setPassword('');
+      const where = result.workspace?.name ?? '尚未选择工作区';
+      message.success(`已登录 ${result.user.email}，当前工作区：${where}`);
+    } catch (err) {
+      message.error(err instanceof ApiError ? err.message : `登录失败：${String(err)}`);
+    }
+  };
+
+  return (
+    <Card
+      title="连接方式"
+      extra={
+        platform ? (
+          <Tag color="purple">平台</Tag>
+        ) : (
+          <Tag color="blue">局域网</Tag>
+        )
+      }
+    >
+      {platform ? (
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Paragraph style={{ marginBottom: 0 }}>
+            界面正在通过这台机器把请求转到平台。本地账本还在，改回局域网就能再看到。平台不和局域网里的设备对等同步。
+          </Typography.Paragraph>
+          <Typography.Text code>{current.platformBaseUrl}</Typography.Text>
+          {token && me.data ? (
+            <Descriptions column={1} bordered size="small">
+              <Descriptions.Item label="账号">{me.data.user.email}</Descriptions.Item>
+              <Descriptions.Item label="显示名">{me.data.user.displayName}</Descriptions.Item>
+              <Descriptions.Item label="工作区">
+                {me.data.workspace ? me.data.workspace.name : '还没选定'}
+              </Descriptions.Item>
+              <Descriptions.Item label="角色">
+                {me.data.workspace ? roleLabel(me.data.workspace.role) : '—'}
+              </Descriptions.Item>
+            </Descriptions>
+          ) : (
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Typography.Text type="secondary">登录平台账号后才能看这个仓库的数据。</Typography.Text>
+              <Input
+                aria-label="平台邮箱"
+                placeholder="邮箱"
+                autoComplete="username"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+              <Input.Password
+                aria-label="平台密码"
+                placeholder="密码"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                onPressEnter={doLogin}
+              />
+              <Button type="primary" loading={login.isPending} onClick={doLogin}>
+                登录
+              </Button>
+            </Space>
+          )}
+          {token && me.data ? (
+            <Button
+              loading={logout.isPending}
+              onClick={async () => {
+                try {
+                  await logout.mutateAsync();
+                  message.success('已退出平台账号');
+                } catch (err) {
+                  message.error(err instanceof ApiError ? err.message : `退出失败：${String(err)}`);
+                }
+              }}
+            >
+              退出平台
+            </Button>
+          ) : null}
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            平台的出入库接口若还没接通，业务页会提示账本存储还没接通。这和地址填错不是一回事。
+          </Typography.Paragraph>
+          <Popconfirm
+            title="改回局域网？"
+            description="界面改回这台机器上的账，并恢复局域网配对。"
+            okText="改回局域网"
+            onConfirm={connectLan}
+          >
+            <Button loading={save.isPending}>改回局域网</Button>
+          </Popconfirm>
+        </Space>
+      ) : (
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Paragraph style={{ marginBottom: 0 }}>
+            现在连的是这台机器。下面的地址和「添加节点」只用于局域网配对，不是平台登录。
+          </Typography.Paragraph>
+          <Input
+            aria-label="平台地址"
+            placeholder="平台根地址，如 http://主机/onewms，不要带 /api"
+            value={urlText}
+            onChange={(event) => setUrlText(event.target.value)}
+          />
+          <Popconfirm
+            title="改为连接平台？"
+            description="界面改去读写平台上的数据。这台机器上的本地账还留着。平台不和局域网设备对等同步。"
+            okText="连接平台"
+            onConfirm={connectPlatform}
+          >
+            <Button type="primary" loading={save.isPending}>
+              改为连接平台
+            </Button>
+          </Popconfirm>
+        </Space>
+      )}
+      {current.persisted === false && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginTop: 12 }}
+          message="当前宿主的连接方式不会保存"
+          description="服务端用的是内存库，重启后会回到局域网。"
+        />
+      )}
+    </Card>
+  );
+}
+
+/** 本机身份 + 供对端扫码的局域网地址。只在局域网连接下出现。 */
 function NodeTab() {
   const { data: hello, isLoading } = useNodeHello();
   const { data: lan, isLoading: lanLoading } = useLanAddress();
@@ -268,8 +461,8 @@ function SyncTab() {
         </Descriptions>
       )}
       <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-        同步 = 全量事件交换 + 投影重建（本地优先，无服务器依赖）。配对清单保存在服务端数据目录的
-        peers.json 里，重启仍在；服务端 ONE_SYNC_PEERS 里的地址每次也会一并参与同步。
+        这是局域网配对：两台设备交换事件账本。它和上面的「连接平台」不是一条路。
+        配对清单保存在服务端数据目录的 peers.json 里，重启仍在；服务端 ONE_SYNC_PEERS 里的地址每次也会一并参与同步。
       </Typography.Paragraph>
     </Card>
   );

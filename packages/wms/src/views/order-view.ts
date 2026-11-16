@@ -369,12 +369,18 @@ export class OrderView {
   }
 
   /**
-   * 界面清单分页。排序与 list() 相同（updated_at DESC, order_no），过滤只认单号包含。
-   * AI 工具的 listPage 仍按创建时间倒序，两套排序不要并成一个。
+   * 界面清单分页。不传 sort 时仍是 updated_at DESC, order_no。
+   * states 和仓库条件写在 LIMIT 之前。AI 工具的 listPage 仍按创建时间倒序。
    */
   listPageByNo(opts: {
     direction?: OrderDirection;
     q?: string;
+    states?: string[];
+    sort?: 'updatedAtAsc';
+    /** 排除任一行落在别的仓库的单。未分仓和 DEFAULT 不算别的仓库。 */
+    warehouseId?: string;
+    /** false 时，整单都未分仓的不列入这个仓库。缺省列入。 */
+    includeUnassigned?: boolean;
     limit: number;
     offset: number;
   }): { rows: OrderRecord[]; total: number } {
@@ -384,11 +390,39 @@ export class OrderView {
       where.push('direction = ?');
       args.push(opts.direction);
     }
+    if (opts.states && opts.states.length > 0) {
+      where.push(`state IN (${opts.states.map(() => '?').join(', ')})`);
+      args.push(...opts.states);
+    }
     if (opts.q) {
       where.push(`order_no LIKE ? ESCAPE '\\'`);
       args.push(likeContains(opts.q));
     }
+    if (opts.warehouseId) {
+      where.push(`NOT EXISTS (
+        SELECT 1 FROM wms_order_line AS line
+        JOIN wms_location AS loc
+          ON loc.workspace_id = line.workspace_id AND loc.id = line.location_id
+        WHERE line.workspace_id = wms_order.workspace_id
+          AND line.order_id = wms_order.id
+          AND loc.warehouse_id IS NOT NULL
+          AND loc.warehouse_id != ?
+      )`);
+      args.push(opts.warehouseId);
+      if (opts.includeUnassigned === false) {
+        where.push(`EXISTS (
+          SELECT 1 FROM wms_order_line AS line
+          JOIN wms_location AS loc
+            ON loc.workspace_id = line.workspace_id AND loc.id = line.location_id
+          WHERE line.workspace_id = wms_order.workspace_id
+            AND line.order_id = wms_order.id
+            AND loc.warehouse_id = ?
+        )`);
+        args.push(opts.warehouseId);
+      }
+    }
     const whereSql = where.join(' AND ');
+    const orderBy = opts.sort === 'updatedAtAsc' ? 'updated_at ASC, order_no' : 'updated_at DESC, order_no';
     const total = (
       this.db.prepare(`SELECT COUNT(*) AS total FROM wms_order WHERE ${whereSql}`).get(...args) as {
         total: number;
@@ -396,7 +430,7 @@ export class OrderView {
     ).total;
     const rows = this.db
       .prepare<unknown[], OrderRow>(
-        `SELECT * FROM wms_order WHERE ${whereSql} ORDER BY updated_at DESC, order_no LIMIT ? OFFSET ?`,
+        `SELECT * FROM wms_order WHERE ${whereSql} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
       )
       .all(...args, opts.limit, opts.offset) as unknown as OrderRow[];
     return { rows: rows.map(rowToRecord), total };

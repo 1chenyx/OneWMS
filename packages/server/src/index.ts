@@ -75,7 +75,9 @@ export function createApp(ctx: AppContext): Hono {
     }
   });
   app.route('/api/connection', connectionRoutes(ctx));
-  app.get('/api/health', (c) => c.json({ ok: true, nodeId: ctx.core.nodeId }));
+  app.get('/api/health', (c) =>
+    c.json({ ok: true, nodeId: ctx.core.nodeId, workspaceId: ctx.workspaceId }),
+  );
   app.route('/api/profile', profileRoutes(ctx));
   app.route('/api/proposals', proposalRoutes(ctx));
   app.route('/api/chat', chatRoutes(ctx));

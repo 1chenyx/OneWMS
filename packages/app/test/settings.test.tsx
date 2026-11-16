@@ -19,6 +19,9 @@ const migrationImportMock = vi.fn();
 const backupCreateMock = vi.fn();
 const backupRestoreMock = vi.fn();
 const backupRemoveMock = vi.fn();
+const saveConnectionMock = vi.fn();
+const platformLoginMock = vi.fn();
+const platformLogoutMock = vi.fn();
 
 const nodeHelloFixture = {
   nodeId: 'node-abc-123',
@@ -62,9 +65,22 @@ let syncRunResult: { results: unknown[] } | undefined = undefined;
 let peersResult: unknown = peersFixture;
 let lanAddressResult: unknown = lanAddressFixture;
 let backupListResult: unknown = backupListFixture;
+let connectionResult: { mode: 'lan' | 'platform'; platformBaseUrl: string; persisted: boolean } = {
+  mode: 'lan',
+  platformBaseUrl: '',
+  persisted: true,
+};
+let platformToken: string | null = null;
+let platformMe: unknown = undefined;
 
 vi.mock('../src/api/hooks', () => ({
-  useNodeHello: () => ({ isLoading: false, data: nodeHelloFixture }),
+  useNodeHello: () => ({ isLoading: false, isPending: false, isError: false, data: nodeHelloFixture }),
+  useConnection: () => ({ isLoading: false, isError: false, data: connectionResult }),
+  useSaveConnection: () => ({ mutateAsync: saveConnectionMock, isPending: false }),
+  usePlatformToken: () => platformToken,
+  usePlatformMe: () => ({ isLoading: false, isPending: false, isError: false, data: platformMe }),
+  usePlatformLogin: () => ({ mutateAsync: platformLoginMock, isPending: false }),
+  usePlatformLogout: () => ({ mutateAsync: platformLogoutMock, isPending: false }),
   useLanAddress: () => ({ isLoading: false, data: lanAddressResult }),
   useSyncPeers: () => ({ isLoading: false, data: peersResult }),
   useAddSyncPeer: () => ({ mutateAsync: addPeerMock, isPending: false }),
@@ -103,6 +119,12 @@ beforeEach(() => {
   peersResult = peersFixture;
   lanAddressResult = lanAddressFixture;
   backupListResult = backupListFixture;
+  connectionResult = { mode: 'lan', platformBaseUrl: '', persisted: true };
+  platformToken = null;
+  platformMe = undefined;
+  saveConnectionMock.mockReset();
+  platformLoginMock.mockReset();
+  platformLogoutMock.mockReset();
 });
 
 describe('节点名片：hello 数据渲染', () => {
@@ -136,6 +158,69 @@ describe('节点名片：hello 数据渲染', () => {
     expect(screen.getByText('没拿到本机局域网地址')).toBeInTheDocument();
     expect(screen.getByText(/另一台设备连不过来/)).toBeInTheDocument();
     expect(screen.queryByRole('img', { name: /局域网地址二维码/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('设备页：连接方式', () => {
+  it('默认是局域网：看得到本机配对，也标明这不是平台登录', () => {
+    render(wrap(<SettingsPage />));
+    expect(screen.getByText('局域网')).toBeInTheDocument();
+    expect(screen.getByText(/下面的地址和「添加节点」只用于局域网配对/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '改为连接平台' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '添加节点' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '登录' })).not.toBeInTheDocument();
+  });
+
+  it('确认后把平台根地址交给服务端', async () => {
+    saveConnectionMock.mockResolvedValueOnce({
+      mode: 'platform',
+      platformBaseUrl: 'http://49.235.83.195/onewms',
+      persisted: true,
+    });
+    const user = userEvent.setup();
+    render(wrap(<SettingsPage />));
+    await user.click(screen.getByRole('button', { name: '改为连接平台' }));
+    await user.click(await screen.findByRole('button', { name: '连接平台' }));
+    expect(saveConnectionMock).toHaveBeenCalledWith({
+      mode: 'platform',
+      platformBaseUrl: 'http://49.235.83.195/onewms',
+    });
+  });
+
+  it('平台模式：登录，不出现局域网配对', () => {
+    connectionResult = {
+      mode: 'platform',
+      platformBaseUrl: 'http://49.235.83.195/onewms',
+      persisted: true,
+    };
+    render(wrap(<SettingsPage />));
+    expect(screen.getByText('平台')).toBeInTheDocument();
+    expect(screen.getByText('http://49.235.83.195/onewms')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '登录' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '改回局域网' })).toBeInTheDocument();
+    expect(screen.getByText('平台连接不使用局域网配对')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '添加节点' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /局域网地址二维码/ })).not.toBeInTheDocument();
+  });
+
+  it('平台已登录：显示账号、工作区和角色', () => {
+    connectionResult = {
+      mode: 'platform',
+      platformBaseUrl: 'http://49.235.83.195/onewms',
+      persisted: true,
+    };
+    platformToken = 'tok';
+    platformMe = {
+      user: { id: 'u1', email: 'a@b.c', displayName: '张三' },
+      workspace: { id: 'w1', name: '一号仓', role: 'owner' },
+      memberships: [],
+    };
+    render(wrap(<SettingsPage />));
+    expect(screen.getByText('a@b.c')).toBeInTheDocument();
+    expect(screen.getByText('一号仓')).toBeInTheDocument();
+    expect(screen.getByText('所有者')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '退出平台' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '登录' })).not.toBeInTheDocument();
   });
 });
 

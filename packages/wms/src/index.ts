@@ -171,7 +171,7 @@ export { listOrdersWithLines, listOrdersWithLinesPage, withOrderLines } from './
 export { getReturnable } from './queries/return-queries.js';
 export { getReplenishment } from './queries/replenish-queries.js';
 export type { ReplenishmentSuggestion } from './queries/replenish-queries.js';
-export { listWarehouses, listWarehouseStock, presentLocation } from './queries/warehouse-queries.js';
+export { listWarehouses, listWarehouseStock, presentDefaultLocation, presentLocation } from './queries/warehouse-queries.js';
 export { listZones } from './queries/zone-queries.js';
 export type { ZoneListRow } from './queries/zone-queries.js';
 export { ZONE_KINDS, isZoneKind, readEnabledZoneKinds, zoneKindLabel } from './zone-kinds.js';

@@ -7,11 +7,12 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @one/core -w @one/wms -w @one/memory -w @one/ai -w @one/server -w @one/app",
-    "test": "npm run test -w @one/core -w @one/wms -w @one/memory -w @one/ai -w @one/server -w @one/app",
-    "typecheck": "npm run typecheck -w @one/core -w @one/wms -w @one/memory -w @one/ai -w @one/server -w @one/app",
+    "build": "npm run build -w @one/core -w @one/wms -w @one/memory -w @one/ai -w @one/server -w @one/app -w @one/field",
+    "test": "npm run test -w @one/core -w @one/wms -w @one/memory -w @one/ai -w @one/server -w @one/app -w @one/field",
+    "typecheck": "npm run typecheck -w @one/core -w @one/wms -w @one/memory -w @one/ai -w @one/server -w @one/app -w @one/field",
     "dev:server": "npm run dev -w @one/server",
     "dev:app": "npm run dev -w @one/app",
+    "dev:field": "npm run dev -w @one/field",
     "package:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File packages/desktop/build.ps1",
     "package:desktop:fast": "powershell -NoProfile -ExecutionPolicy Bypass -File packages/desktop/build.ps1 -SkipInstaller"
   },

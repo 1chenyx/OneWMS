@@ -2,25 +2,24 @@ import type { Context } from 'hono';
 import type { AppContext } from './context.js';
 
 /**
- * 人操作 actor 的唯一解析点（扩展性方案 Phase 0.2：审计口子）。
+ * 人操作 actor 的唯一解析点。
  *
- * **今天**：本仓库（单机版 / 私有部署服务器版）没有任何认证中间件，所有人类操作
- * 统一记为 `user:local@{nodeId}`。节点后缀不是装饰——oplog 的
- * `(workspace_id, actor, seq)` 唯一约束要求每个同步通道单写者。
+ * 单机版没有登录，记为 `user:local@{nodeId}`。oplog 的
+ * `(workspace_id, actor, seq)` 要求每个通道只有一个写者。
  *
- * **将来**：私有部署版本身就有多用户（局域网多个瘦客户端连同一锚点节点，
- * 「谁改的库存」是真实审计需求）。届时只改这里——从 `c.req` 取身份拼成
- * `user:{userId}@{nodeId}`，全部调用点一行不改。这也是把 `c` 现在就放进签名的
- * 唯一理由：不预留请求面，将来仍要改三十多处调用点。
+ * 平台进程设置 `ONE_TRUST_ACTOR_HEADER=1` 后，才读取它自己写入的
+ * `x-one-user-id` 与 `x-one-node-id`，拼成 `user:{userId}@{nodeId}`。
+ * 这两个头都是 uuid。客户端直接带来的头，在单机版里被忽略。
  *
- * ③ SaaS 平台版另起代码但复用账本模型，actor 命名规范必须跨代码库一致。
- *
- * ⚠️ 账本不可变：已落盘的 `user:local` 事件永远洗不掉，本函数只能影响新事件。
- * 改历史事件 = 破坏账本完整性 = 同步指纹全变，绝对禁止。
- *
- * @param c 触发本次写操作的 HTTP 上下文（身份尚未接入，占位以固定调用点签名）
+ * 已落盘的 `user:local` 事件不改写。
  */
+const ACTOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function resolveActor(ctx: AppContext, c: Context): string {
-  void c; // 身份接入前不读请求——占位，保证调用点签名稳定
+  if (process.env.ONE_TRUST_ACTOR_HEADER === '1') {
+    const userId = c.req.header('x-one-user-id')?.trim() ?? '';
+    const nodeId = c.req.header('x-one-node-id')?.trim() ?? '';
+    if (ACTOR_ID.test(userId) && ACTOR_ID.test(nodeId)) return `user:${userId}@${nodeId}`;
+  }
   return `user:local@${ctx.core.nodeId}`;
 }

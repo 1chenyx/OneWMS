@@ -57,13 +57,14 @@ function parseSse(text: string): Array<{ event: string; data: Record<string, unk
 }
 
 describe('GET /api/health 与 /api/profile/snapshot', () => {
-  it('health 返回 nodeId', async () => {
+  it('health 返回 nodeId 和 workspaceId', async () => {
     const app = setup();
     const res = await app.request('/api/health');
     expect(res.status).toBe(200);
-    const data = (await res.json()) as { ok: boolean; nodeId: string };
+    const data = (await res.json()) as { ok: boolean; nodeId: string; workspaceId: string };
     expect(data.ok).toBe(true);
     expect(data.nodeId).toBeTruthy();
+    expect(data.workspaceId).toBe('ws-server-test');
   });
 
   it('快照携带 wms 种子（扩展字段 + 默认流程）', async () => {

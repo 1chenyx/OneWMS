@@ -17,6 +17,10 @@ export interface OrderWithLines extends OrderRecord {
     locationCode: string;
     /** 行批次（DEFAULT = 虚拟批次） */
     batchNo: string;
+    /** 库位所属仓库。DEFAULT 和未分仓都是 null */
+    warehouseCode: string | null;
+    /** 这行货要按件扫序列号 */
+    serialTracked: boolean;
     /** 行批次效期（A1 打印凭据用）：null = 未声明（OrderLineRecord 有但此前未映射） */
     batchExpiryDate: string | null;
     /** 序列号。没有时不出现 */
@@ -41,8 +45,10 @@ export function withOrderLines(ws: WmsWorkspace, order: OrderRecord): OrderWithL
       fulfilledQty: line.fulfilledQty,
       unit: sku?.unit ?? null,
       locationCode: location?.locationCode ?? line.locationId,
+      warehouseCode: (location?.warehouseId ? ws.warehouses.byId(location.warehouseId)?.warehouseCode : undefined) ?? null,
       batchNo: line.batchNo,
       batchExpiryDate: line.batchExpiryDate ?? null,
+      serialTracked: sku?.serialTracked === true,
       ...(line.serials && line.serials.length > 0 ? { serials: line.serials } : {}),
     };
   });
@@ -64,10 +70,23 @@ export function listOrdersWithLines(
   return ws.orders.list(direction).map((order) => withOrderLines(ws, order));
 }
 
-/** 界面清单分页：排序与 list() 相同（更新时间倒序），q 只匹配单号。明细仍按页装配。 */
+/**
+ * 界面清单分页。不传 sort 时仍是更新时间倒序。
+ * states、sort、warehouseId 给现场列表用，桌面不传就和以前一样。
+ * 仓库条件在 LIMIT 之前，避免把别的仓的单算进 hasMore。
+ */
 export function listOrdersWithLinesPage(
   ws: WmsWorkspace,
-  opts: { direction?: OrderDirection; q?: string; limit: number; offset: number },
+  opts: {
+    direction?: OrderDirection;
+    q?: string;
+    states?: string[];
+    sort?: 'updatedAtAsc';
+    warehouseId?: string;
+    includeUnassigned?: boolean;
+    limit: number;
+    offset: number;
+  },
 ): ListPage<OrderWithLines> {
   const { rows, total } = ws.orders.listPageByNo(opts);
   return toListPage(
