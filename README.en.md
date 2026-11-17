@@ -4,7 +4,7 @@ English | [中文](README.md)
 
 > Download one app, tell the AI your warehousing needs in natural language, and it assembles fields, workflows and feature modules step by step — into a WMS that is truly yours.
 
-![OneWMS UI: querying inventory through AI chat, multi-node sync status shown at top right](onewms界面.png)
+![OneWMS AI chat: ask for low-stock SKUs in one sentence; the AI calls tools and summarizes the answer](docs/images/ai-chat-inventory.gif)
 
 ## What is this
 
@@ -12,16 +12,20 @@ A **local-first** warehouse management system. It looks like a standard WMS app 
 
 - **Offline means complete software** — every node is a full system with data stored in local SQLite; no central server required;
 - **Usable without AI** — complete form / barcode-scanning screens work out of the box; AI is an enhancement, not a dependency;
-- **Manage the warehouse by chat** — say "check the inventory" in the AI Assistant and it returns SKU-level summaries (totals, batches, bin occupancy, restock hints); inbound, outbound and stocktaking are just as conversational;
+- **Manage the warehouse by chat** — say "check the inventory" in the AI Assistant and the AI decides which tools to call, returning SKU-level summaries (totals, batches, bin occupancy, restock hints); inbound, outbound and stocktaking are just as conversational;
 - **Personalization is data, not code** — modules declare their fields, tools and workflow nodes via manifests; all customization is stored as data and can be exported as a migration package that moves freely between devices.
 
 ## Key Features
 
 ### 🗣️ Manage the Warehouse in Natural Language
 
-Inbound, outbound, inventory queries and stocktaking — all via conversation:
+Conversation is the interface. The AI uses Tool Calling through the tool bus — every query / write is a real business call, never raw SQL:
 
+> "Which SKUs are below their safety stock?"
 > "Put those 3 boxes of A4 paper into bin B-05 in warehouse zone 2"
+> "Wave OUT-20261117-0001 and start picking"
+
+![AI chat inventory query: tool calls and the summarized answer](docs/images/15-chat-inventory.png)
 
 ### 🤖 AI Is a Configuration Agent, Not a "Code Editor"
 
@@ -29,8 +33,12 @@ The AI never gets SQL access. All of its operations go through two channels:
 
 | Channel | Purpose | Safeguards |
 |---|---|---|
-| **Slow channel (change config)** | Hide fields, enable modules, adjust workflows | AI generates a config patch → validation pipeline → **human confirmation** → hot-apply, no restart needed |
+| **Slow channel (change config)** | Hide fields, enable modules, adjust workflows | AI generates a config patch → validation pipeline → **human confirmation dialog** → hot-apply, no restart needed |
 | **Fast channel (change data)** | Inbound/outbound, queries, stocktaking | Tool Calling through the tool bus; business rules (no negative stock, valid state transitions) are walls it cannot bypass |
+
+Config changes pop a confirmation dialog stating exactly what will change and what it affects — the final call always stays with a human:
+
+![Slow channel: the AI proposes a config change; a human confirms before hot-apply](docs/images/16-ai-propose.png)
 
 ### 📴 Local-First + Multi-Node Sync
 
@@ -39,20 +47,53 @@ Nodes sync through an event ledger (oplog) and stay consistent automatically wit
 - **LAN**: on the "Settings → Devices" page, share your LAN address with another device (or let it scan the QR code), then it just clicks "Add Node". The pairing is stored server-side and survives restarts;
 - **Over the internet**: set up a VPN such as Tailscale / WireGuard and the same LAN protocol applies.
 
+![Settings: connection mode, this node and paired devices](docs/images/12-settings.png)
+
+### 🧩 Pluggable Modules, Capabilities on Demand
+
+21 built-in modules (putaway, QC, wave, picking, review, packing, loading, serials, LPN, replenishment, scrap, shelf-life…) each declare their fields / tools / workflow nodes. Enable and they take effect; disable and they retract — navigation and forms follow:
+
+![Modules page: built-in module list with enable/disable switches](docs/images/11-modules.png)
+
 ### 🖥️ One Frontend, Multiple Forms
 
 A Tauri desktop app (~46 MB with an embedded Node.js runtime, zero environment setup) or browser access to the local service — data always lands in local SQLite.
 
+## UI Tour
+
+| Operations dashboard: stock / work / in-out / exceptions in one screen | Workbench: process todos as the entry point |
+|---|---|
+| ![Dashboard](docs/images/01-dashboard.png) | ![Workbench](docs/images/14-workbench.png) |
+
+| Inventory: on-hand / frozen / reserved / batches at a glance | Shelf-life board: expired / urgent / warning tiers |
+|---|---|
+| ![Inventory](docs/images/02-inventory.png) | ![Expiry board](docs/images/08-expiry.png) |
+
+| Inbound orders: state-machine-driven receiving | Outbound orders: from creation to shipping |
+|---|---|
+| ![Inbound](docs/images/03-inbound.png) | ![Outbound](docs/images/04-outbound.png) |
+
+| Waves: merge orders for picking | Picking lists: pick and confirm by bin |
+|---|---|
+| ![Wave](docs/images/05-wave.png) | ![Picking](docs/images/06-picking.png) |
+
+| Stocktakes: open/blind count and difference handling | SKU records: dynamic fields driven by config |
+|---|---|
+| ![Stocktake](docs/images/07-stocktake.png) | ![SKU management](docs/images/09-skus.png) |
+
+| Locations: zone → bin tree | Integrations: external system bindings |
+|---|---|
+| ![Locations](docs/images/10-locations.png) | ![Integrations](docs/images/13-integrations.png) |
+
 ## Feature Overview
 
-| Module | Description |
+| Area | Pages |
 |---|---|
-| Inventory / SKU / Partners | Core warehousing capabilities |
-| Outbound orders / Picking | State-machine-driven workflow engine |
-| Stocktaking | Inventory verification |
-| Shelf-life alerts | Example of modular extension |
-| AI chat / agents / memory | Built-in, configurable AI workbench |
-| Multi-node sync | oplog event ledger, direct LAN/VPN connectivity |
+| Dashboard | Operations dashboard, shelf-life board, reports |
+| Operations | Workbench, inbound, QC, putaway, outbound, wave, picking, review, packing, loading, inventory, serials, pallets, stocktakes, transfers, scraps |
+| Records | SKU management, locations, partners, barcode labels |
+| AI Assistant | AI chat, agent management, AI memory, AI models |
+| System | Workflows, rules, modules, integrations, settings |
 
 ## Quick Start (Development)
 
@@ -90,7 +131,7 @@ Without AI configured the system still runs normally — only the AI entry is di
 
 ## Download & Use (No Dev Environment)
 
-Download the Windows build from the [Releases](../../releases) page, either one:
+Download the Windows build from the [Releases](https://github.com/1chenyx/OneWMS/releases) page, either one:
 
 - `OneWMS-<version>-setup-win-x64.exe`: double-click to install (recommended)
 - `OneWMS-<version>-portable-win-x64.zip`: extract and double-click `OneWMS.exe`; no registry changes
@@ -156,7 +197,7 @@ git tag v0.2.0
 git push --tags
 ```
 
-GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) automatically builds the installer + portable + `latest.json` + checksums and publishes them to the Releases page; pushes / PRs are also checked by [ci.yml](.github/workflows/ci.yml) with type checks and the full unit test suite.
+GitHub Actions (`.github/workflows/release.yml`) automatically builds the installer + portable + `latest.json` + checksums and publishes them to the Releases page; pushes / PRs are also checked by `ci.yml` with type checks and the full unit test suite.
 
 ## More Docs
 
