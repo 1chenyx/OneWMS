@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -11,7 +11,21 @@ import type { UiPageDescriptor } from '../src/api/client';
 
 /**
  * 左侧大类：点击立刻浮出功能网格，悬停约 0.4 秒也会浮出。点功能才切页。
+ *
+ * 第一个用例渲染完整 <App />：AppShell 现在包着 AuthGate（module.rbac），
+ * jsdom 里没有服务端，不打桩的话 useAuthStatus 永远停在加载态、整页空白。
+ * 桩成 rbac 停用（单人免登录）——正是默认形态，AuthGate 应直接放行。
  */
+vi.mock('../src/api/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/api/auth')>();
+  return {
+    ...actual,
+    useAuthStatus: () => ({
+      data: { enabled: false, bootstrapped: false, sessionTimeoutMinutes: 240 },
+      isLoading: false,
+    }),
+  };
+});
 
 afterEach(() => {
   cleanup();
