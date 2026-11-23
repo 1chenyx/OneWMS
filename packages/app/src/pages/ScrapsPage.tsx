@@ -27,7 +27,7 @@ import {
   useScraps,
   useSkus,
 } from '../api/hooks';
-import { ApiError } from '../api/client';
+import { ApiError, skuLabel } from '../api/client';
 import type { Scrap, ScrapDetailLine, InventoryBucketRow } from '../api/client';
 import { filledCode, useSeededField } from '../components/use-seeded-code';
 import PageHeader from '../components/PageHeader';
@@ -184,7 +184,7 @@ function CreateScrapModal({ open, onClose }: { open: boolean; onClose: () => voi
   }, [open, form]);
   useSeededField(form, 'scrapNo', open ? 'scrap' : null);
 
-  const skuOptions = (skus ?? []).map((s) => ({ value: s.skuCode, label: `${s.skuCode} · ${s.name}` }));
+  const skuOptions = (skus ?? []).map((s) => ({ value: s.skuCode, label: `${s.skuCode} · ${skuLabel(s)}` }));
   const locationOptions = [
     { value: 'DEFAULT', label: 'DEFAULT · 默认库位' },
     ...(locations ?? []).map((l) => ({

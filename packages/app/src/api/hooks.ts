@@ -9,7 +9,7 @@ import {
   subscribePlatformToken,
   writePlatformToken,
 } from '../lib/connection';
-import type { DynListQuery, InventoryListPage, InventoryRow, InventorySlicePage, Location, Order, Partner, Sku, UiPageRecord } from './client';
+import type { DynListQuery, InventoryListPage, InventoryRow, InventorySlicePage, Location, Order, Partner, Product, ProductSpecDim, Sku, UiPageRecord } from './client';
 import type { ListPage } from './page';
 import { isConnectorId } from '../lib/integration-draft';
 
@@ -94,6 +94,8 @@ export function useUpdateSku() {
         reorderPoint?: number;
         unit?: string;
         serialTracked?: boolean;
+        productCode?: string;
+        variantAttrs?: Record<string, string>;
         extData?: Record<string, unknown>;
       };
     }) => api.updateSku(params.skuCode, params.body),
@@ -124,6 +126,93 @@ export function useUnarchiveSku() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['skus'] });
       void qc.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
+// ── 商品（多规格 SPU：SKU 的上一级归组）──────────────
+
+/** 商品清单（q = 编码/名称模糊；默认只回启用档）。分页重载与 useSkus 同款 */
+export function useProducts(q?: string, includeArchived?: boolean): ReturnType<typeof useQuery<Product[]>>;
+export function useProducts(
+  q: string | undefined,
+  includeArchived: boolean | undefined,
+  page: { limit: number; offset: number },
+): ReturnType<typeof useQuery<ListPage<Product>>>;
+export function useProducts(
+  q?: string,
+  includeArchived?: boolean,
+  page?: { limit: number; offset: number },
+): ReturnType<typeof useQuery<Product[]>> | ReturnType<typeof useQuery<ListPage<Product>>> {
+  const base = {
+    ...(q ? { q } : {}),
+    ...(includeArchived ? { includeArchived } : {}),
+  };
+  return useQuery({
+    queryKey: page
+      ? ['products', q ?? '', includeArchived ? 'all' : 'active', page.limit, page.offset]
+      : ['products', q ?? '', includeArchived ? 'all' : 'active'],
+    queryFn: async (): Promise<Product[] | ListPage<Product>> =>
+      page ? api.products({ ...base, limit: page.limit, offset: page.offset }) : api.products(base),
+    placeholderData: page ? keepPreviousData : undefined,
+  }) as ReturnType<typeof useQuery<Product[]>> | ReturnType<typeof useQuery<ListPage<Product>>>;
+}
+
+/**
+ * 某商品下挂的规格 SKU（矩阵视图）。key 挂在 ['skus'] 前缀下——建/改/停用 SKU
+ * 的 invalidate 天然覆盖到它，商品页不必再失效一遍。productCode 为空时不发请求。
+ */
+export function useProductSkus(productCode: string | undefined, includeArchived?: boolean) {
+  return useQuery({
+    queryKey: ['skus', 'byProduct', productCode ?? '', includeArchived ? 'all' : 'active'],
+    queryFn: () =>
+      api.skus({ productCode: productCode!, ...(includeArchived ? { includeArchived } : {}) }),
+    enabled: Boolean(productCode),
+  });
+}
+
+export function useCreateProduct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.createProduct,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['products'] });
+      void qc.invalidateQueries({ queryKey: ['numbering'] });
+    },
+  });
+}
+
+/** 改商品（名称 / specDims 整体替换）：删在用的维度或取值会被服务端拒（WMS_SPEC_DIM_IN_USE） */
+export function useUpdateProduct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: {
+      productCode: string;
+      body: { name?: string; specDims?: ProductSpecDim[]; extData?: Record<string, unknown> };
+    }) => api.updateProduct(params.productCode, params.body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['products'] });
+    },
+  });
+}
+
+/** 停用/恢复商品：列表隐藏，SKU 表单的商品选择器随之少/多一个可挂项 */
+export function useArchiveProduct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (productCode: string) => api.archiveProduct(productCode),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['products'] });
+    },
+  });
+}
+
+export function useUnarchiveProduct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (productCode: string) => api.unarchiveProduct(productCode),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['products'] });
     },
   });
 }
@@ -444,6 +533,15 @@ export function useOrders(
   }) as ReturnType<typeof useQuery<Order[]>> | ReturnType<typeof useQuery<ListPage<Order>>>;
 }
 
+/** 单据详情（含行）。orderNo 为空不请求——场景作业扫单前没有目标。 */
+export function useOrderDetail(orderNo: string | null) {
+  return useQuery({
+    queryKey: ['order', orderNo ?? ''],
+    queryFn: () => api.orderDetail(orderNo!),
+    enabled: !!orderNo,
+  });
+}
+
 export function useCreateOrder() {
   const qc = useQueryClient();
   return useMutation({
@@ -576,6 +674,20 @@ export function useAdjustInventory() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['inventory'] });
       void qc.invalidateQueries({ queryKey: ['expiry-board'] });
+    },
+  });
+}
+
+/** 移库：改桶的库位归属（实物总量不变，分布变）。场景作业的移库向导用它。 */
+export function useMoveInventory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.moveInventory,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['inventory'] });
+      void qc.invalidateQueries({ queryKey: ['expiry-board'] });
+      void qc.invalidateQueries({ queryKey: ['locations'] });
+      void qc.invalidateQueries({ queryKey: ['dashboard'] });
     },
   });
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { MinusCircleOutlined, PlusOutlined, PrinterOutlined } from '@ant-design/icons';
 import { Alert, App as AntApp, Button, Drawer, Input, InputNumber, Select, Space, Table, Typography } from 'antd';
-import { ApiError } from '../api/client';
+import { ApiError, skuLabel } from '../api/client';
 import type { InventoryBucketRow, Location, Order, OrderLine } from '../api/client';
 import { useInventoryBuckets, useLocations, usePartners, useProfileSnapshot, useReviseOrder, useSkus } from '../api/hooks';
 import { orderEditPolicy } from '@one/wms/order-edit-policy';
@@ -276,7 +276,7 @@ export default function OrderDetailDrawer({
                     }
                     options={(skus ?? []).map((item) => ({
                       value: item.skuCode,
-                      label: `${item.skuCode} · ${item.name}`,
+                      label: `${item.skuCode} · ${skuLabel(item)}`,
                     }))}
                   />
                   <InputNumber

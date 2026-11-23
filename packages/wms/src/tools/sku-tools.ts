@@ -5,7 +5,7 @@ import { SkuAlreadyExistsError, SkuNotFoundError } from '../errors.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 import { assertCanTrack, rejectSerialTrackedWhenOff } from '../state/serial-policy.js';
 import { allocateCode } from '../numbering/allocate.js';
-import { assertBarcodeFree, normalizeBarcode } from './tool-guards.js';
+import { assertBarcodeFree, normalizeBarcode, resolveVariantAttachment } from './tool-guards.js';
 
 export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
   const skuCreate: ToolDefinition<{
@@ -15,12 +15,14 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     reorderPoint?: number;
     unit?: string;
     serialTracked?: boolean;
+    productCode?: string;
+    variantAttrs?: Record<string, string>;
     extData?: Record<string, unknown>;
   }> = {
     id: 'wms.sku.create',
     label: '创建 SKU',
     description:
-      '创建一个新的 SKU（库存商品）。skuCode 是全库唯一的商品编码，不传或空着则按编号规则（sku）生成，传了就用传入的；name 是商品名称；可选 barcode 条码（扫码枪识读用，同库唯一，多个 SKU 不可共用）；可选 reorderPoint 安全库存（低库存预警阈值，可用量低于它时进预警清单，0 或不传 = 不预警）；可选 unit 数量单位（如 kg / 箱 / 件，散装称重商品建议填写，单据与标签会跟随显示）；可选 extData 携带自定义扩展字段（如规格、保质期）。',
+      '创建一个新的 SKU（库存商品）。skuCode 是全库唯一的商品编码，不传或空着则按编号规则（sku）生成；挂多规格商品时不传 skuCode 会自动生成「商品码-取值」样式（如 T-SHIRT-红-S）。name 是商品名称；可选 barcode 条码（扫码枪识读用，同库唯一，多个 SKU 不可共用）；可选 reorderPoint 安全库存（低库存预警阈值，可用量低于它时进预警清单，0 或不传 = 不预警）；可选 unit 数量单位（如 kg / 箱 / 件，散装称重商品建议填写，单据与标签会跟随显示）；多规格：productCode 挂到所属商品（wms.product.create 先建并声明 specDims），variantAttrs 声明规格组合（如 {"颜色":"红","尺码":"S"}，键值须与商品维度对齐，同商品下组合唯一）；可选 extData 携带自定义扩展字段（如规格、保质期）。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -42,6 +44,15 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
           type: 'boolean',
           description: '按序列号管理（可选，module.serial）。true = 之后收发必须写每一件的序列号。不传 = 否',
         },
+        productCode: {
+          type: 'string',
+          description: '所属商品编码（可选，多规格）。先用 wms.product.create 建商品并声明规格维度',
+        },
+        variantAttrs: {
+          type: 'object',
+          description:
+            '规格组合（可选，多规格）：维度名→取值，如 {"颜色":"红","尺码":"S"}；须与商品 specDims 对齐，同商品下组合唯一',
+        },
         extData: { type: 'object', description: '扩展字段键值对（字段注册表声明的自定义字段）' },
       },
       required: ['name'],
@@ -53,7 +64,8 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
       if (params.serialTracked !== undefined && typeof params.serialTracked !== 'boolean') {
         throw new Error('TOOL_REJECTED: serialTracked 必须是布尔值');
       }
-      const skuCode = allocateCode(ws, 'sku', params.skuCode);
+      const attach = resolveVariantAttachment(ws, params);
+      const skuCode = allocateCode(ws, 'sku', params.skuCode ?? attach?.defaultSkuCode ?? undefined);
       if (ws.skus.byCode(skuCode)) {
         throw new SkuAlreadyExistsError(skuCode);
       }
@@ -70,6 +82,12 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         reorderPoint: params.reorderPoint ?? 0,
         unit,
         ...(params.serialTracked === true ? { serialTracked: true } : {}),
+        ...(attach
+          ? {
+              productId: attach.product.id,
+              ...(attach.variantAttrs ? { variantAttrs: attach.variantAttrs } : {}),
+            }
+          : {}),
         extData: params.extData,
       });
       ws.sync();
@@ -80,6 +98,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         barcode,
         reorderPoint: params.reorderPoint ?? 0,
         unit: unit ?? null,
+        ...(attach ? { productCode: attach.product.productCode, variantAttrs: attach.variantAttrs } : {}),
       };
     },
   };
@@ -91,12 +110,14 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     reorderPoint?: number;
     unit?: string;
     serialTracked?: boolean;
+    productCode?: string;
+    variantAttrs?: Record<string, string>;
     extData?: Record<string, unknown>;
   }> = {
     id: 'wms.sku.update',
     label: '更新 SKU',
     description:
-      '更新已有 SKU 的名称、条码、安全库存、单位或扩展字段。只传需要修改的字段，未传字段保持不变。barcode 条码同库唯一（已绑定其他 SKU 的条码会被拒绝）；reorderPoint 显式传才改（传 0 = 关闭该 SKU 的低库存预警）；unit 传空串 = 清空单位。停用/启用走 wms.sku.archive / wms.sku.unarchive。',
+      '更新已有 SKU 的名称、条码、安全库存、单位、规格挂靠或扩展字段。只传需要修改的字段，未传字段保持不变。barcode 条码同库唯一（已绑定其他 SKU 的条码会被拒绝）；reorderPoint 显式传才改（传 0 = 关闭该 SKU 的低库存预警）；unit 传空串 = 清空单位；多规格：productCode 换挂商品（目标须启用中，组合对齐其 specDims 且同商品下不被占用），variantAttrs 改组合（不传 productCode 时沿用现挂商品）；不支持脱挂回独立商品——历史单据引用关系保持稳定。停用/启用走 wms.sku.archive / wms.sku.unarchive。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -118,6 +139,15 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
           type: 'boolean',
           description: '按序列号管理（可选，module.serial）。不传 = 不改。已有库存不能改成按号管理；还有在库序列号不能取消',
         },
+        productCode: {
+          type: 'string',
+          description: '换挂的商品编码（可选，多规格）。目标商品须启用中；不传 = 沿用现挂商品',
+        },
+        variantAttrs: {
+          type: 'object',
+          description:
+            '新的规格组合（可选，多规格）：维度名→取值。沿用现挂商品时不传 = 不改组合；换挂到别的商品必须重新给（目标商品无维度则自动清空旧组合）',
+        },
         extData: { type: 'object', description: '新的扩展字段（可选，整体替换）' },
       },
       required: ['skuCode'],
@@ -134,6 +164,11 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         }
         assertCanTrack(ws, sku.id, sku.skuCode, params.serialTracked);
       }
+      const attach = resolveVariantAttachment(ws, params, {
+        skuId: sku.id,
+        productId: sku.productId,
+        variantAttrs: sku.variantAttrs,
+      });
       const barcode = params.barcode === undefined ? undefined : normalizeBarcode(params.barcode);
       if (barcode) assertBarcodeFree(ws, barcode, sku.id);
       // 单位（A3）：undefined = 不改；trim 后空串 = 清空（存 ''，读取层归一成 null）
@@ -146,6 +181,17 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         reorderPoint: params.reorderPoint,
         unit,
         ...(Object.hasOwn(params, 'serialTracked') ? { serialTracked: params.serialTracked } : {}),
+        ...(attach
+          ? {
+              productId: attach.product.id,
+              // 换挂到无维度商品 = 显式清空旧组合（{} 在读取层归一成 null）
+              ...(attach.variantAttrs
+                ? { variantAttrs: attach.variantAttrs }
+                : sku.variantAttrs
+                  ? { variantAttrs: {} }
+                  : {}),
+            }
+          : {}),
         extData: params.extData,
       });
       ws.sync();
@@ -155,6 +201,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         barcode: barcode ?? sku.barcode,
         reorderPoint: params.reorderPoint ?? sku.reorderPoint,
         unit: unit === undefined ? sku.unit : unit || null,
+        ...(attach ? { productCode: attach.product.productCode, variantAttrs: attach.variantAttrs } : {}),
       };
     },
   };

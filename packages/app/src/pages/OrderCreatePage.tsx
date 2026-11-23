@@ -3,7 +3,7 @@ import { orderNumberPlace } from '@one/wms/numbering';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { App as AntApp, Button, Card, Input, InputNumber, Select, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { ApiError } from '../api/client';
+import { ApiError, skuLabel } from '../api/client';
 import type { InventoryBucketRow, InventoryRow, Location, Sku } from '../api/client';
 import {
   useCreateOrder,
@@ -151,7 +151,7 @@ export default function OrderCreatePage({
       setFocusKey(next.key);
       return next.lines;
     });
-    message.success(`已记入 ${sku.skuCode} · ${sku.name}`);
+    message.success(`已记入 ${sku.skuCode} · ${skuLabel(sku)}`);
   };
 
   const save = async () => {
@@ -196,7 +196,7 @@ export default function OrderCreatePage({
           }}
           options={skuRows.map((sku) => ({
             value: sku.skuCode,
-            label: inbound ? `${sku.skuCode} · ${sku.name}` : outboundSkuLabel(sku, stockRows),
+            label: inbound ? `${sku.skuCode} · ${skuLabel(sku)}` : outboundSkuLabel(sku, stockRows),
           }))}
         />
       ),
@@ -208,7 +208,7 @@ export default function OrderCreatePage({
         if (!sku) return <Typography.Text type="secondary">—</Typography.Text>;
         return (
           <div>
-            <div>{sku.name}</div>
+            <div>{skuLabel(sku)}</div>
             {sku.barcode ? (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {sku.barcode}
@@ -509,7 +509,7 @@ function StockBuckets({
   );
   return (
     <div style={{ marginTop: 16 }}>
-      <Typography.Text strong>{sku ? `${sku.skuCode} · ${sku.name}` : line.skuCode} 的库存</Typography.Text>
+      <Typography.Text strong>{sku ? `${sku.skuCode} · ${skuLabel(sku)}` : line.skuCode} 的库存</Typography.Text>
       <div style={{ fontSize: 13, lineHeight: 1.7, marginTop: 4 }}>
         {stock ? (
           <>
@@ -580,8 +580,8 @@ function StockBuckets({
 
 function outboundSkuLabel(sku: Sku, stockRows: InventoryRow[]): string {
   const stock = stockRows.find((row) => row.skuCode === sku.skuCode);
-  if (!stock) return `${sku.skuCode} · ${sku.name} · 无库存`;
-  return `${sku.skuCode} · ${sku.name} · 可用 ${fmtQty(stock.available, stock.unit)}`;
+  if (!stock) return `${sku.skuCode} · ${skuLabel(sku)} · 无库存`;
+  return `${sku.skuCode} · ${skuLabel(sku)} · 可用 ${fmtQty(stock.available, stock.unit)}`;
 }
 
 /** 出库行的库位只给看，要换库位就在下面点另一桶。 */

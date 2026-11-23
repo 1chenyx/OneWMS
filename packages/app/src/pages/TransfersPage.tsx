@@ -28,7 +28,7 @@ import {
   useTransferDetail,
   useTransfers,
 } from '../api/hooks';
-import { ApiError } from '../api/client';
+import { ApiError, skuLabel } from '../api/client';
 import type { Transfer, TransferDetailLine, InventoryBucketRow } from '../api/client';
 import { filledCode, useSeededField } from '../components/use-seeded-code';
 import PageHeader from '../components/PageHeader';
@@ -217,7 +217,7 @@ function CreateTransferModal({ open, onClose }: { open: boolean; onClose: () => 
   }, [open, form]);
   useSeededField(form, 'transferNo', open ? 'transfer' : null);
 
-  const skuOptions = (skus ?? []).map((s) => ({ value: s.skuCode, label: `${s.skuCode} · ${s.name}` }));
+  const skuOptions = (skus ?? []).map((s) => ({ value: s.skuCode, label: `${s.skuCode} · ${skuLabel(s)}` }));
   const locationOptions = [
     { value: 'DEFAULT', label: 'DEFAULT · 默认库位' },
     ...(locations ?? []).map((l) => ({

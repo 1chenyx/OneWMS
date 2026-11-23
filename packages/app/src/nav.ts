@@ -18,11 +18,13 @@ import {
   CarOutlined,
   EnvironmentOutlined,
   FieldTimeOutlined,
+  GoldOutlined,
   TableOutlined,
   PartitionOutlined,
   FileDoneOutlined,
   InboxOutlined,
   MessageOutlined,
+  MobileOutlined,
   PieChartOutlined,
   ExportOutlined,
   ImportOutlined,
@@ -94,6 +96,8 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
     items: [
       // 作业台是无分组的头名位：以流程待办为入口，先于一切功能清单
       { page: 'workbench', label: '作业台', icon: DeploymentUnitOutlined },
+      // 场景作业与作业台同处无分组头名段：现场扫码入口，不按出入库归类
+      { page: 'scenario', label: '场景作业', icon: MobileOutlined, moduleId: 'module.scenario' },
       { page: 'inbound', label: '入库单', icon: ImportOutlined, group: '入库' },
       { page: 'qc', label: '质检', icon: AuditOutlined, moduleId: 'module.qc', group: '入库' },
       { page: 'putaway', label: '上架', icon: VerticalAlignTopOutlined, moduleId: 'module.putaway', group: '入库' },
@@ -117,6 +121,7 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
     description: '基础主数据维护',
     icon: BookOutlined,
     items: [
+      { page: 'products', label: '商品（多规格）', icon: GoldOutlined },
       { page: 'skus', label: 'SKU 管理', icon: AppstoreOutlined },
       { page: 'locations', label: '库位管理', icon: EnvironmentOutlined },
       { page: 'partners', label: '往来单位', icon: TeamOutlined },
@@ -145,6 +150,8 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
       { page: 'rules', label: '规则', icon: SlidersOutlined },
       { page: 'modules', label: '模块', icon: ClusterOutlined },
       { page: 'integrations', label: '对接', icon: ApiOutlined },
+      // module.rbac 停用（默认）时整项不出现：单人作业不需要账号，也不该看到账号页
+      { page: 'users', label: '用户与角色', icon: TeamOutlined, moduleId: 'module.rbac' },
       { page: 'settings', label: '设置', icon: SettingOutlined },
     ],
   },
@@ -209,10 +216,12 @@ const NAV_ICONS: Record<string, NavIcon> = {
   ExportOutlined,
   FieldTimeOutlined,
   FileDoneOutlined,
+  GoldOutlined,
   TableOutlined,
   ImportOutlined,
   InboxOutlined,
   MessageOutlined,
+  MobileOutlined,
   PartitionOutlined,
   PieChartOutlined,
   ReconciliationOutlined,

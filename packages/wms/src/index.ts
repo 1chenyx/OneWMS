@@ -11,6 +11,7 @@
 export { WmsDomain, WmsWorkspace } from './wms.js';
 
 export { SkuView, type SkuRecord } from './views/sku-view.js';
+export { ProductView, type ProductRecord } from './views/product-view.js';
 export { LocationView, type LocationRecord } from './views/location-view.js';
 export { WarehouseView, type WarehouseRecord } from './views/warehouse-view.js';
 export { ZoneView, type ZoneRecord } from './views/zone-view.js';
@@ -73,6 +74,9 @@ export type {
   WmsEventType,
   SkuCreatedPayload,
   SkuUpdatedPayload,
+  ProductSpecDim,
+  ProductCreatedPayload,
+  ProductUpdatedPayload,
   LocationCreatedPayload,
   LocationUpdatedPayload,
   WarehouseCreatedPayload,
@@ -174,6 +178,8 @@ export type { ReplenishmentSuggestion } from './queries/replenish-queries.js';
 export { listWarehouses, listWarehouseStock, presentDefaultLocation, presentLocation } from './queries/warehouse-queries.js';
 export { listZones } from './queries/zone-queries.js';
 export type { ZoneListRow } from './queries/zone-queries.js';
+export { getProduct, listProducts, withProductCode, withSkuCount } from './queries/product-queries.js';
+export type { ProductListRow, SkuListRow } from './queries/product-queries.js';
 export { ZONE_KINDS, isZoneKind, readEnabledZoneKinds, zoneKindLabel } from './zone-kinds.js';
 export type { ZoneKind } from './zone-kinds.js';
 export { listSerials, querySerial } from './queries/serial-queries.js';
@@ -287,6 +293,12 @@ export {
   PartnerAlreadyExistsError,
   PartnerNotFoundError,
   PartnerKindMismatchError,
+  ProductAlreadyExistsError,
+  ProductNotFoundError,
+  ProductArchivedError,
+  VariantAttrsMismatchError,
+  VariantComboExistsError,
+  SpecDimInUseError,
   PutawayLineNotFoundError,
   PutawayQuantityError,
   PutawaySourceShortError,

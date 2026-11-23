@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react';
 import { Layout } from 'antd';
 import './app.css';
+import ProductsPage from './pages/ProductsPage';
 import SkusPage from './pages/SkusPage';
 import LocationsPage from './pages/LocationsPage';
 import PartnersPage from './pages/PartnersPage';
@@ -13,6 +14,7 @@ import PickingsPage from './pages/PickingsPage';
 import DashboardPage from './pages/DashboardPage';
 import ReportsPage from './pages/ReportsPage';
 import WorkbenchPage from './pages/WorkbenchPage';
+import ScenarioPage from './pages/ScenarioPage';
 import InventoryPage from './pages/InventoryPage';
 import SerialsPage from './pages/SerialsPage';
 import PalletsPage from './pages/PalletsPage';
@@ -28,12 +30,14 @@ import FlowsPage from './pages/FlowsPage';
 import RulesPage from './pages/RulesPage';
 import ModulesPage from './pages/ModulesPage';
 import IntegrationsPage from './pages/IntegrationsPage';
+import UsersPage from './pages/UsersPage';
 import SettingsPage from './pages/SettingsPage';
 import DynamicPage from './pages/DynamicPage';
 import { ChatProvider } from './chat/ChatProvider';
 import { AppNavProvider, useAppNav } from './app-nav';
 import type { BuiltinPage, Page } from './app-nav';
 import ModuleRail from './components/ModuleRail';
+import AuthGate from './components/AuthGate';
 import CommandPalette from './components/CommandPalette';
 import Topbar from './components/Topbar';
 import ChatDock from './components/ChatDock';
@@ -50,6 +54,8 @@ const PAGE_COMPONENTS: Record<BuiltinPage, ComponentType> = {
   dashboard: DashboardPage,
   reports: ReportsPage,
   workbench: WorkbenchPage,
+  scenario: ScenarioPage,
+  products: ProductsPage,
   skus: SkusPage,
   locations: LocationsPage,
   partners: PartnersPage,
@@ -78,6 +84,7 @@ const PAGE_COMPONENTS: Record<BuiltinPage, ComponentType> = {
   rules: RulesPage,
   modules: ModulesPage,
   integrations: IntegrationsPage,
+  users: UsersPage,
   settings: SettingsPage,
 };
 
@@ -109,35 +116,39 @@ function AppShell() {
   const ActivePage = (PAGE_COMPONENTS as Partial<Record<Page, ComponentType>>)[page] ?? DynamicPage;
 
   return (
-    // antd Layout 只有内部有 Sider 时才横向排。左侧是自定义 rail，
-    // 不写 row 的话导航会叠在主区上面。
-    // 高度锁在视口里：列表、详情、对话都在主区里滚，不能把整个窗口撑开。
-    <Layout className="app-shell" style={{ height: '100%', overflow: 'hidden', flexDirection: 'row' }}>
-      <ModuleRail />
-      {/* Ctrl+K 全局搜索：功能再多也有直达入口，挂在壳级与页面无关 */}
-      <CommandPalette />
-      <Layout style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
-        <Topbar />
-        <Layout.Content
-          className="app-content"
-          style={{
-            flex: 1,
-            minHeight: 0,
-            overflow: 'hidden',
-            padding: 24,
-            display: 'flex',
-            flexDirection: 'column',
-          }}
-        >
-          {/* ChatProvider 在页面壳级：AI 对话状态跨页存活（切页不丢）。浮窗和整页共用这一份。 */}
-          <ChatProvider>
-            <div className="app-page" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-              <ActivePage />
-            </div>
-            <ChatDock />
-          </ChatProvider>
-        </Layout.Content>
+    // AuthGate 在最外层：module.rbac 停用时它直接放行，界面和从前一模一样；
+    // 启用且未登录时整个壳（导航、顶栏、页面）都不渲染，只显示登录表单。
+    <AuthGate>
+      {/* antd Layout 只有内部有 Sider 时才横向排。左侧是自定义 rail，
+          不写 row 的话导航会叠在主区上面。
+          高度锁在视口里：列表、详情、对话都在主区里滚，不能把整个窗口撑开。 */}
+      <Layout className="app-shell" style={{ height: '100%', overflow: 'hidden', flexDirection: 'row' }}>
+        <ModuleRail />
+        {/* Ctrl+K 全局搜索：功能再多也有直达入口，挂在壳级与页面无关 */}
+        <CommandPalette />
+        <Layout style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+          <Topbar />
+          <Layout.Content
+            className="app-content"
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: 'hidden',
+              padding: 24,
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            {/* ChatProvider 在页面壳级：AI 对话状态跨页存活（切页不丢）。浮窗和整页共用这一份。 */}
+            <ChatProvider>
+              <div className="app-page" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                <ActivePage />
+              </div>
+              <ChatDock />
+            </ChatProvider>
+          </Layout.Content>
+        </Layout>
       </Layout>
-    </Layout>
+    </AuthGate>
   );
 }

@@ -14,7 +14,7 @@ import {
   useSkus,
   useWarehouses,
 } from '../api/hooks';
-import { ApiError, api } from '../api/client';
+import { ApiError, api, skuLabel } from '../api/client';
 import type { InventoryRow, InventorySliceDetail, InventorySliceRow, InventorySliceView } from '../api/client';
 import { isListPage, rowsOf, useListPage } from '../api/page';
 import type { InventoryListPage } from '../api/wms-api';
@@ -693,7 +693,7 @@ function AdjustModal({
             optionFilterProp="label"
             placeholder="选择 SKU"
             disabled={preset !== null}
-            options={(skus ?? []).map((s) => ({ value: s.skuCode, label: `${s.skuCode} · ${s.name}` }))}
+            options={(skus ?? []).map((s) => ({ value: s.skuCode, label: `${s.skuCode} · ${skuLabel(s)}` }))}
           />
         </Form.Item>
         <Form.Item

@@ -21,6 +21,8 @@ export const api = {
 };
 
 export { ApiError } from './request';
+/** SKU 展示名的两个纯函数（名称 + 规格），组件统一从 client 入口拿 */
+export { skuLabel, variantLabel } from './wms-api';
 export {
   answerChatAsk,
   clearChatThreads,
@@ -134,6 +136,8 @@ export type {
   OrderStateCount,
   Partner,
   Picking,
+  Product,
+  ProductSpecDim,
   WaveDetail,
   WaveSummary,
   WaveWalkLine,

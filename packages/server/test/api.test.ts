@@ -76,7 +76,7 @@ describe('GET /api/health 与 /api/profile/snapshot', () => {
       schema: { entities: Record<string, { extensions: Array<{ key: string }> }> };
       workflows: Record<string, unknown>;
     };
-    expect(snap.version).toBe(21); // core.wms + core.ai + core.memory + putaway + reversal + partial + reservation + return + asn + replenish + warehouse + zone + serial + lpn + picking + qc + wave + pack + load + review + report
+    expect(snap.version).toBe(24); // core.wms + core.ai + core.memory + putaway + reversal + partial + reservation + return + asn + replenish + warehouse + zone + serial + lpn + picking + qc + wave + pack + load + review + report + scenario + rbac（默认停用：装完还会被关一次，多一个版本）
     const keys = snap.schema.entities.sku!.extensions.map((f) => f.key).sort();
     expect(keys).toEqual(['category', 'spec', 'unit']);
     expect(Object.keys(snap.workflows).sort()).toEqual(['inbound', 'outbound']);

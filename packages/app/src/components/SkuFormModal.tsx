@@ -1,19 +1,22 @@
 import { useEffect, useMemo } from 'react';
-import { App as AntApp, Form, Input, InputNumber, Modal, Switch } from 'antd';
+import { App as AntApp, Form, Input, InputNumber, Modal, Select, Switch } from 'antd';
 import type { FieldExtension } from '@one/core';
-import { useCreateSku, useProfileSnapshot, useUpdateSku } from '../api/hooks';
+import { useCreateSku, useNextNumber, useProducts, useProfileSnapshot, useUpdateSku } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { Sku } from '../api/client';
 import { filledCode, useSeededField } from './use-seeded-code';
 
 /**
  * SKU 表单（动态表单，Profile 消费闭环的输入侧）——新建 / 编辑同一份：
- * 固定字段（编码/名称/条码/安全库存）+ 可见扩展字段按 type 映射控件，
+ * 固定字段（编码/名称/所属商品+规格/条码/安全库存）+ 可见扩展字段按 type 映射控件，
  * 隐藏字段连输入项都不出现（软删除的界面投影）。
  *
  * 编辑态（传入 sku）：skuCode 是业务键禁用（历史单据/流水按它引用）；
  * 扩展字段整体替换（wms.sku.update 语义），所以未填的扩展字段会被清掉——
  * 打开时按 sku.extData 回填，用户看到的是「改后结果」而不是「差异」。
+ *
+ * 多规格：选了商品才出现规格组合下拉（维度来自商品的 specDims）；没选商品
+ * 就一个字段都不下发（工具语义「两者都不传 = 不挂 / 不改挂」，不能取消挂靠）。
  */
 export default function SkuFormModal({
   open,
@@ -33,12 +36,43 @@ export default function SkuFormModal({
   const update = useUpdateSku();
   const editing = sku != null;
 
+  // 商品选择器只列启用档（停用商品不允许新挂 / 改挂）；skuSeed 用来认出「编码框还是系统建议值」
+  const products = useProducts();
+  const skuSeed = useNextNumber(open && !editing ? 'sku' : null);
+  const productCode = Form.useWatch('productCode', form) as string | undefined;
+  const variantAttrs = (Form.useWatch('variantAttrs', form) ?? {}) as Record<string, string | undefined>;
+  // 编码框的实时值：留空时把服务端会生成的编码预告出来（codeHint 要用）
+  const codeValue = Form.useWatch('skuCode', form) as string | undefined;
+  const specDims = (products.data ?? []).find((p) => p.productCode === productCode)?.specDims ?? [];
+
   // 扩展字段元数据（visible = false 的不出现：列与输入项同源）
-  // useMemo 保持引用稳定——下面的回填 effect 依赖它，逐渲染新数组会反复重置表单
   const extensions = useMemo(
     () => (snapshot.data?.schema.entities['sku']?.extensions ?? []).filter((e) => e.visible),
     [snapshot.data],
   );
+
+  /**
+   * 回填 effect 的依赖用「内容签名」而不是 extensions 数组本身。
+   * 编码/商品/规格三个 useWatch 会让父组件在每次敲键时重渲染，快照查询（或测试里的 mock）
+   * 逐渲染给新数组的话，effect 就跟着反复 resetFields —— 用户刚敲进编码框的字符会被清掉。
+   * 签名相同不重跑；profile 快照晚到（签名真的变了）仍会补填一次扩展字段。
+   */
+  const extSignature = extensions.map((e) => `${e.key}:${e.type}:${e.visible}`).join('|');
+
+  const productOptions = useMemo(() => {
+    const rows = (products.data ?? []).map((p) => ({
+      value: p.productCode,
+      label:
+        p.specDims.length > 0
+          ? `${p.productCode} · ${p.name}（${p.specDims.map((d) => d.name).join('×')}）`
+          : `${p.productCode} · ${p.name}`,
+    }));
+    // 编辑态挂在已停用商品下：清单里没有它，补一项免得选择器显示成裸编码
+    if (editing && sku.productCode && !rows.some((r) => r.value === sku.productCode)) {
+      rows.push({ value: sku.productCode, label: `${sku.productCode}（已停用）` });
+    }
+    return rows;
+  }, [products.data, editing, sku]);
 
   useEffect(() => {
     if (!open) return;
@@ -51,6 +85,8 @@ export default function SkuFormModal({
       barcode: sku.barcode ?? undefined,
       reorderPoint: sku.reorderPoint > 0 ? sku.reorderPoint : undefined,
       unit: sku.unit ?? undefined,
+      ...(sku.productCode ? { productCode: sku.productCode } : {}),
+      ...(sku.variantAttrs ? { variantAttrs: { ...sku.variantAttrs } } : {}),
       ...(serialOn ? { serialTracked: sku.serialTracked === true } : {}),
     };
     for (const ext of extensions) {
@@ -59,9 +95,21 @@ export default function SkuFormModal({
       values[ext.key] = ext.type === 'json' ? JSON.stringify(v) : v;
     }
     form.setFieldsValue(values);
-  }, [open, sku, form, extensions, serialOn]);
+  }, [open, sku, form, extSignature, serialOn]);
 
   useSeededField(form, 'skuCode', open && !editing ? 'sku' : null);
+
+  /**
+   * 换到带维度的商品：编码框若还是系统建议值就清空，交给服务端按「商品码-取值」生成
+   * （T-SHIRT + 红/S → T-SHIRT-红-S）。手改过的编码不动。
+   */
+  const onProductChange = (next: string | undefined) => {
+    if (editing) return;
+    const dims = (products.data ?? []).find((p) => p.productCode === next)?.specDims ?? [];
+    if (dims.length === 0) return;
+    const current = filledCode(form.getFieldValue('skuCode'));
+    if (current && current === skuSeed.data?.value) form.setFieldValue('skuCode', '');
+  };
 
   const submit = async (values: Record<string, unknown>) => {
     // 收集扩展字段值：空值跳过；json 类型提交前 parse
@@ -84,6 +132,20 @@ export default function SkuFormModal({
     const unit = (values.unit as string | undefined)?.trim();
     const reorderPoint =
       typeof values.reorderPoint === 'number' && values.reorderPoint >= 0 ? values.reorderPoint : 0;
+    // 挂商品：按维度顺序重建组合（无维度商品不带 variantAttrs，带了服务端会拒）
+    const picked = values.productCode as string | undefined;
+    const attachment = picked
+      ? {
+          productCode: picked,
+          ...(specDims.length > 0
+            ? {
+                variantAttrs: Object.fromEntries(
+                  specDims.map((d) => [d.name, (values.variantAttrs as Record<string, string>)?.[d.name] ?? '']),
+                ),
+              }
+            : {}),
+        }
+      : {};
     try {
       if (editing) {
         await update.mutateAsync({
@@ -96,6 +158,7 @@ export default function SkuFormModal({
             // 单位与条码不同：编辑态显式传（空串 = 清空），未改也幂等
             unit: unit ?? '',
             ...(serialOn ? { serialTracked: values.serialTracked === true } : {}),
+            ...attachment,
             extData,
           },
         });
@@ -109,6 +172,7 @@ export default function SkuFormModal({
           reorderPoint: reorderPoint > 0 ? reorderPoint : undefined,
           unit: unit || undefined,
           ...(serialOn && values.serialTracked === true ? { serialTracked: true } : {}),
+          ...attachment,
           extData: Object.keys(extData).length ? extData : undefined,
         });
         message.success(`SKU ${created.skuCode} 已创建`);
@@ -118,6 +182,12 @@ export default function SkuFormModal({
       message.error(e instanceof ApiError ? e.message : `${editing ? '保存' : '创建'}失败：${String(e)}`);
     }
   };
+
+  // 挂规格且编码留空时，把服务端会生成的编码预告出来（与 wms.sku.create 的默认编码同式）
+  const codeHint =
+    !editing && productCode && specDims.length > 0 && !filledCode(codeValue)
+      ? `留空自动生成「${productCode}-${specDims.map((d) => variantAttrs[d.name] || '？').join('-')}」`
+      : '已填入建议编号，可以改。留空则按编号规则生成。';
 
   return (
     <Modal
@@ -130,12 +200,40 @@ export default function SkuFormModal({
       destroyOnHidden
     >
       <Form form={form} layout="vertical" onFinish={submit}>
-        <Form.Item name="skuCode" label="SKU 编码" extra={editing ? undefined : '已填入建议编号，可以改。留空则按编号规则生成。'}>
+        <Form.Item name="skuCode" label="SKU 编码" extra={editing ? undefined : codeHint}>
           <Input placeholder="如 A-1001（全库唯一）" disabled={editing} />
         </Form.Item>
         <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
           <Input />
         </Form.Item>
+        <Form.Item
+          name="productCode"
+          label="所属商品（可选，多规格：同一商品下按规格分成多个 SKU）"
+          extra={
+            editing && sku.productCode
+              ? '已挂的商品不能取消挂靠；换到别的商品要重新选规格组合'
+              : undefined
+          }
+        >
+          <Select
+            allowClear={!editing || !sku.productCode}
+            showSearch
+            optionFilterProp="label"
+            placeholder="不挂 = 独立 SKU"
+            options={productOptions}
+            onChange={onProductChange}
+          />
+        </Form.Item>
+        {specDims.map((dim) => (
+          <Form.Item
+            key={dim.name}
+            name={['variantAttrs', dim.name]}
+            label={`规格 · ${dim.name}`}
+            rules={[{ required: true, message: `请选择${dim.name}` }]}
+          >
+            <Select placeholder={`选择${dim.name}`} options={dim.values.map((v) => ({ value: v, label: v }))} />
+          </Form.Item>
+        ))}
         <Form.Item name="unit" label="单位（可选，数量显示与打印会跟随，如 kg / 箱 / 件）">
           <Input placeholder="如 kg（散装称重建议填写）" style={{ width: '50%' }} />
         </Form.Item>

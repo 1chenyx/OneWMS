@@ -7,6 +7,7 @@ import { PartnerView } from './partner-view.js';
 import { PickingView } from './picking-view.js';
 import { WaveView } from './wave-view.js';
 import { SkuView } from './sku-view.js';
+import { ProductView } from './product-view.js';
 import { StocktakeView } from './stocktake-view.js';
 import { TransferView } from './transfer-view.js';
 import { ScrapView } from './scrap-view.js';
@@ -32,7 +33,7 @@ import { IntegrationCodeView } from './integration-code-view.js';
 export const WMS_PROJECTION_VERSION = 1;
 
 /**
- * WMS 投影组的元数据：组名 + 版本 + 本组拥有的 20 张表。
+ * WMS 投影组的元数据：组名 + 版本 + 本组拥有的 30 张表。
  *
  * **加一张投影表就在这个清单里加一行**（建表在 db/migrations.ts），clear() 不用碰——
  * 漏登记会被 wms/test/projection-group.test.ts 对着 sqlite_master 查出来。
@@ -43,6 +44,7 @@ export const WMS_PROJECTION_GROUP: ProjectionGroupSpec = {
   codeVersion: WMS_PROJECTION_VERSION,
   tables: [
     { table: 'wms_sku' },
+    { table: 'wms_product' },
     { table: 'wms_location' },
     { table: 'wms_zone' },
     { table: 'wms_warehouse' },
@@ -77,6 +79,7 @@ export const WMS_PROJECTION_GROUP: ProjectionGroupSpec = {
 /** WMS 投影组：统一事件应用顺序与投影清理，供增量追账和全量重放共用。 */
 export class WmsProjections {
   readonly skus: SkuView;
+  readonly products: ProductView;
   readonly locations: LocationView;
   readonly partners: PartnerView;
   readonly orders: OrderView;
@@ -98,6 +101,7 @@ export class WmsProjections {
     private readonly workspaceId: string,
   ) {
     this.skus = new SkuView(db, workspaceId);
+    this.products = new ProductView(db, workspaceId);
     this.locations = new LocationView(db, workspaceId);
     this.partners = new PartnerView(db, workspaceId);
     this.orders = new OrderView(db, workspaceId);
@@ -119,6 +123,7 @@ export class WmsProjections {
 
   applyEvent(envelope: EventEnvelope): void {
     this.skus.applyEvent(envelope);
+    this.products.applyEvent(envelope);
     this.locations.applyEvent(envelope);
     this.warehouses.applyEvent(envelope);
     this.zones.applyEvent(envelope);

@@ -28,6 +28,9 @@ import { toolRoutes } from './routes/tools.js';
 import { uiRoutes } from './routes/ui.js';
 import { lanIPv4, syncRoutes } from './routes/sync.js';
 import { connectionRoutes } from './routes/connection.js';
+import { authRoutes } from './routes/auth.js';
+import { authGuard, rbacEnabled } from './rbac/auth-middleware.js';
+import { resolveAuthPath } from './rbac/auth-store.js';
 import { resolveConnectionPath } from './connection/connection-store.js';
 import { proxyPlatform } from './connection/proxy.js';
 import { migrationRoutes } from './routes/migration.js';
@@ -56,6 +59,12 @@ export {
 export type { GateDecision, UpgradeGateReport } from './upgrade/upgrade-gate.js';
 export { ConfirmGate, ConfirmTokenError, CONFIRM_TOKEN_TTL_MS } from './tool-confirm.js';
 export type { PendingWrite } from './tool-confirm.js';
+export { authGuard, isPublicPath, rbacEnabled, requiredPermission, sessionTtlMs } from './rbac/auth-middleware.js';
+export type { AuthEnv } from './rbac/auth-middleware.js';
+export { AUTH_FILE, createAuthStore, hashPassword, resolveAuthPath, verifyPassword, AuthError } from './rbac/auth-store.js';
+export type { AuthRole, AuthSession, AuthStore, AuthUser, PublicUser } from './rbac/auth-store.js';
+export { BUILTIN_ROLES, hasPermission, isValidGrant, PERMISSION_KINDS, sanitizeGrants } from './rbac/permissions.js';
+export type { PermissionKind, RoleSeed } from './rbac/permissions.js';
 
 /** 组装 Hono 应用（测试口：不起端口，app.request 直测） */
 export function createApp(ctx: AppContext): Hono {
@@ -75,6 +84,11 @@ export function createApp(ctx: AppContext): Hono {
     }
   });
   app.route('/api/connection', connectionRoutes(ctx));
+  // 鉴权（module.rbac）：必须在平台代理之后——平台模式下的 /api 由平台自己鉴权，
+  // 本机不重复拦；也必须在各 route 之前，否则端点先跑起来了。
+  // rbac 停用时这一层是空转（直接 next），行为和从前完全一致。
+  app.use('*', authGuard(ctx));
+  app.route('/api/auth', authRoutes(ctx));
   app.get('/api/health', (c) =>
     c.json({ ok: true, nodeId: ctx.core.nodeId, workspaceId: ctx.workspaceId }),
   );
@@ -127,6 +141,7 @@ export function start(): void {
     peersPath: resolvePeersPath(dbPath),
     connectionPath: resolveConnectionPath(dbPath),
     chatThreadsPath: resolveChatThreadsPath(dbPath),
+    authPath: resolveAuthPath(dbPath),
   });
   const app = createApp(ctx);
 
@@ -140,6 +155,12 @@ export function start(): void {
       link.mode === 'platform'
         ? `[one-server] 连接方式：平台 ${link.platformBaseUrl}`
         : '[one-server] 连接方式：局域网（本机）',
+    );
+    const userCount = ctx.auth.users().length;
+    console.log(
+      rbacEnabled(ctx)
+        ? `[one-server] 用户与角色：已启用（${userCount} 个账号${userCount === 0 ? '——第一次登录页会让你建仓库经理' : ''}）`
+        : '[one-server] 用户与角色：停用（免登录单人作业）',
     );
     console.log(
       ctx.backupDir === null

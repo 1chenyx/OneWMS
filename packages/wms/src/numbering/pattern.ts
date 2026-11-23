@@ -27,6 +27,7 @@ export const NUMBERING_PLACES = [
   { id: 'transfer', label: '调拨单', group: '作业', fallback: 'TR-{yyyyMMdd}-{seq:3}' },
   { id: 'scrap', label: '报损单', group: '作业', fallback: 'SC-{yyyyMMdd}-{seq:3}' },
   { id: 'sku', label: '商品', group: '档案', fallback: 'SKU-{seq:5}' },
+  { id: 'product', label: '多规格商品', group: '档案', fallback: 'PRD-{seq:4}' },
   { id: 'partner.supplier', label: '供应商', group: '档案', fallback: 'SUP-{seq:4}' },
   { id: 'partner.customer', label: '客户', group: '档案', fallback: 'CUS-{seq:4}' },
   { id: 'location', label: '库位', group: '档案', fallback: 'LOC-{seq:4}' },

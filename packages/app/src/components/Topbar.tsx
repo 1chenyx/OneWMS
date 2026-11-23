@@ -1,5 +1,6 @@
-import { Badge, Button, Divider, Layout, Space, Tooltip, Typography } from 'antd';
+import { Badge, Button, Divider, Layout, Space, Tag, Tooltip, Typography } from 'antd';
 import { useConnection, useNodeHello, usePlatformMe, usePlatformToken } from '../api/hooks';
+import { logout, useSession } from '../api/auth';
 import { useAppNav } from '../app-nav';
 import { roleLabel } from '../lib/connection';
 import { face } from '../theme';
@@ -8,6 +9,9 @@ import { face } from '../theme';
  * 顶栏标明现在连的是平台还是局域网。
  * 局域网：本机 /api/sync/hello 通就是绿。平台：有登录身份就是绿，没登录是黄。
  * 点状态进设置，在那里切换。
+ *
+ * 右边再挂一个本机登录人（module.rbac 启用时才有）：
+ * 退出登录必须在任何页面都够得着——库工没有用户页权限，不能只把出口放那儿。
  */
 export default function Topbar() {
   const { navigate } = useAppNav();
@@ -16,6 +20,7 @@ export default function Topbar() {
   const hello = useNodeHello(15000, !connection.isLoading && !platform);
   const token = usePlatformToken();
   const me = usePlatformMe();
+  const { status: auth, user } = useSession();
 
   const status = platform
     ? !token
@@ -74,11 +79,23 @@ export default function Topbar() {
           {identity}
         </Typography.Text>
       </Space>
-      <Tooltip title={tip}>
-        <Button type="text" size="small" onClick={() => navigate('settings')}>
-          <Badge color={status.color} text={status.text} />
-        </Button>
-      </Tooltip>
+      <Space size={8} align="center">
+        {auth.enabled && user && (
+          <Space size={4} align="center">
+            <Tag color="blue" style={{ marginInlineEnd: 0 }}>
+              {user.displayName} · {user.roleName}
+            </Tag>
+            <Button type="text" size="small" onClick={() => void logout()}>
+              退出
+            </Button>
+          </Space>
+        )}
+        <Tooltip title={tip}>
+          <Button type="text" size="small" onClick={() => navigate('settings')}>
+            <Badge color={status.color} text={status.text} />
+          </Button>
+        </Tooltip>
+      </Space>
     </Layout.Header>
   );
 }

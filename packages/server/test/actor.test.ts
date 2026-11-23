@@ -8,7 +8,11 @@ const userId = '11111111-1111-4111-8111-111111111111';
 const nodeId = '22222222-2222-4222-8222-222222222222';
 
 function request(headers: Record<string, string>): Context {
-  return { req: { header: (name: string) => headers[name.toLowerCase()] } } as Context;
+  // authGuard 之外的最小桩：resolveActor 只会读 req.header 和 c.get('authUser')
+  return {
+    req: { header: (name: string) => headers[name.toLowerCase()] },
+    get: () => undefined,
+  } as Context;
 }
 
 describe('resolveActor', () => {

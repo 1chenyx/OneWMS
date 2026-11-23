@@ -20,6 +20,7 @@ import {
 import { createConnectionStore, type ConnectionStore } from './connection/connection-store.js';
 import { createPeerStore, type PeerStore } from './sync/peer-store.js';
 import { createChatThreadStore, type ChatThreadStore } from './chat-threads.js';
+import { createAuthStore, type AuthStore } from './rbac/auth-store.js';
 import { ConfirmGate } from './tool-confirm.js';
 
 /**
@@ -77,6 +78,12 @@ export interface AppContext {
   /** AI 对话存档（path=null 时只在进程内有效；最近 50 段，刷新和重启后可接着聊） */
   readonly chatThreads: ChatThreadStore;
   /**
+   * 用户 / 角色 / 登录会话（module.rbac）。path=null 时只在进程内有效。
+   * 与 profile.roles 无关（那是 v1 预留、恒空）：账号散列不进 oplog，
+   * 否则会同步到别的节点、还会被 AI 读到。
+   */
+  readonly auth: AuthStore;
+  /**
    * 写操作二次确认闸门（B.5）：通用工具端点在这里签发/校验待确认令牌。
    * 进程内存态，重启即清空——令牌是分钟级 UI 状态，不是业务真相。
    */
@@ -120,6 +127,8 @@ export function createAppContext(options: {
   peersPath?: string | null;
   /** 缺省纯内存存档（测试宿主不落盘）；真实宿主传 resolveChatThreadsPath(dbPath) */
   chatThreadsPath?: string | null;
+  /** 缺省纯内存用户档案（测试宿主不落盘）；真实宿主传 resolveAuthPath(dbPath) */
+  authPath?: string | null;
   /**
    * 写操作确认令牌的有效期（毫秒）。缺省 CONFIRM_TOKEN_TTL_MS（5 分钟）。
    * 测试注入极小值以复现「令牌过期」——与 appVersion 同属测试注入位。
@@ -171,6 +180,7 @@ export function createAppContext(options: {
     connection: createConnectionStore(options.connectionPath ?? null),
     peers: createPeerStore(options.peersPath ?? null),
     chatThreads: createChatThreadStore(options.chatThreadsPath ?? null),
+    auth: createAuthStore(options.authPath ?? null),
     confirmations: new ConfirmGate(options.confirmTokenTtlMs),
     upgradeGate,
     listeningPort: null,

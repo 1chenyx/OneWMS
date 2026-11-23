@@ -196,6 +196,8 @@ vi.mock('../src/api/hooks', () => ({
     },
   }),
   useSkus: () => ({ isLoading: false, data: skusFixture }),
+  // SkuFormModal 的「所属商品」选择器数据源；这些用例不测多规格，给空清单即可
+  useProducts: () => ({ isLoading: false, data: [] }),
   usePartners: () => ({ isLoading: false, data: [] }),
   useCreateSku: () => ({ mutateAsync: createSkuMock, isPending: false }),
   useNextNumber: () => ({ isLoading: false, data: undefined }),

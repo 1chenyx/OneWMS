@@ -24,6 +24,10 @@ import {
   listWarehouses,
   listWarehouseStock,
   listZones,
+  getProduct,
+  listProducts,
+  withProductCode,
+  withSkuCount,
   presentDefaultLocation,
   presentLocation,
   DEFAULT_LOCATION_ID,
@@ -185,17 +189,89 @@ export function wmsRoutes(ctx: AppContext): Hono {
       if (place && !isNumberPlace(place)) throw new BadQueryError(`没有这个编号位置：${place}`);
       return c.json(describeNumbering(ctx.ws, place));
     })
+    // ── 商品（多规格 SPU：SKU 的上一级归组，本身不记库存）──────────
+    // q = 编码/名称模糊；includeArchived=1 含停用档；limit/offset 走分页壳。
+    // 行形状由 @one/wms/queries 拼装（补 skuCount）；写全部经工具总线——
+    // specDims 与已挂 SKU 组合的对齐守卫在 wms.product.update handler 里，路由不重复校验。
+    .get('/products', (c) => {
+      const matched = {
+        q: c.req.query('q') || undefined,
+        includeArchived: c.req.query('includeArchived') === '1',
+      };
+      const page = readListPage(c.req.query('limit'), c.req.query('offset'));
+      if (!page) return c.json(listProducts(ctx.ws, matched));
+      const { rows, total } = ctx.ws.products.listMatchingPage({ ...matched, ...page });
+      return c.json({
+        total,
+        ...page,
+        hasMore: page.offset + rows.length < total,
+        rows: withSkuCount(ctx.ws, rows),
+      });
+    })
+    .get('/products/:productCode', (c) => {
+      ctx.ws.sync();
+      return c.json(getProduct(ctx.ws, c.req.param('productCode')));
+    })
+    .post('/products', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.product.create', body, resolveActor(ctx, c)), 201);
+    })
+    .put('/products/:productCode', async (c) => {
+      const body = await c.req.json();
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.product.update',
+          { ...body, productCode: c.req.param('productCode') },
+          resolveActor(ctx, c),
+        ),
+      );
+    })
+    .post('/products/:productCode/archive', async (c) => {
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.product.archive',
+          { productCode: c.req.param('productCode') },
+          resolveActor(ctx, c),
+        ),
+      );
+    })
+    .post('/products/:productCode/unarchive', async (c) => {
+      return c.json(
+        await ctx.ws.tools.invoke(
+          'wms.product.unarchive',
+          { productCode: c.req.param('productCode') },
+          resolveActor(ctx, c),
+        ),
+      );
+    })
     // ── SKU ─────────────────────────────────────────────
     // barcode = 精确匹配（扫码枪入口）；q = 三字段模糊（编码/名称/条码）。
     // A2 软停用：默认只回启用档（选择器/下拉零改动自动排除停用）；includeArchived=1 回全量；
     // barcode 精确查询不过滤——扫码定位语义（停用 SKU 的存量库存照常可扫）。
+    // 多规格：每行补 productCode（投影只存 product_id）；?productCode= 是商品下钻。
     .get('/skus', (c) => {
       // skuCode 与编码全等，给现场扫码。始终裸数组，忽略 limit / offset / q / barcode。停用档也返回。
       const skuCode = c.req.query('skuCode');
       if (skuCode !== undefined) {
         const code = skuCode.trim();
         const rows = code ? ctx.ws.skus.listMatching({ skuCode: code, includeArchived: true }) : [];
-        return c.json(rows);
+        return c.json(withProductCode(ctx.ws, rows));
+      }
+      // productCode = 该商品下的规格 SKU（矩阵视图）。同为裸数组，忽略 limit / offset / q / barcode——
+      // 一个商品的组合数本就有限。未知商品是查询参数错误，不伪装成「这商品没有规格」。
+      const productCode = c.req.query('productCode');
+      if (productCode !== undefined) {
+        const code = productCode.trim();
+        ctx.ws.sync();
+        const product = code ? ctx.ws.products.byCode(code) : undefined;
+        if (code && !product) throw new BadQueryError(`商品不存在：${code}`);
+        const includeArchived = c.req.query('includeArchived') === '1';
+        const rows = product
+          ? ctx.ws.skus
+              .byProduct(product.id)
+              .filter((sku) => includeArchived || (sku.status ?? 'active') === 'active')
+          : [];
+        return c.json(withProductCode(ctx.ws, rows));
       }
       const barcode = c.req.query('barcode');
       const q = c.req.query('q');
@@ -206,9 +282,14 @@ export function wmsRoutes(ctx: AppContext): Hono {
         includeArchived: includeArchived || Boolean(barcode),
       };
       const page = readListPage(c.req.query('limit'), c.req.query('offset'));
-      if (!page) return c.json(ctx.ws.skus.listMatching(matched));
+      if (!page) return c.json(withProductCode(ctx.ws, ctx.ws.skus.listMatching(matched)));
       const { rows, total } = ctx.ws.skus.listMatchingPage({ ...matched, ...page });
-      return c.json({ total, ...page, hasMore: page.offset + rows.length < total, rows });
+      return c.json({
+        total,
+        ...page,
+        hasMore: page.offset + rows.length < total,
+        rows: withProductCode(ctx.ws, rows),
+      });
     })
     .post('/skus', async (c) => {
       const body = await c.req.json();
@@ -586,6 +667,11 @@ export function wmsRoutes(ctx: AppContext): Hono {
     .post('/inventory/adjust', async (c) => {
       const body = await c.req.json();
       return c.json(await ctx.ws.tools.invoke('wms.inventory.adjust', body, resolveActor(ctx, c)));
+    })
+    /** 移库（module.scenario 移库场景的确认口）：同批次跨库位转移，产生一对 transfer 流水 */
+    .post('/inventory/move', async (c) => {
+      const body = await c.req.json();
+      return c.json(await ctx.ws.tools.invoke('wms.inventory.move', body, resolveActor(ctx, c)));
     })
     // ── 冻结（M19：活动清单 / 冻结 / 释放；写全走工具通道）──
     .get('/holds', (c) => c.json(listHoldRows(ctx.ws, c.req.query('skuCode'))))

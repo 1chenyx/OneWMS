@@ -74,7 +74,9 @@ export function migrateWms(db: SqliteDatabase): void {
     // ── SKU 主数据（业务键：workspace + sku_code；M18 加 barcode 条码列——
     //    同库唯一：扫码枪识读的物理标识不允许二义；SQLite 中多行 NULL 不冲突，
     //    无条码的 SKU 互不影响；M20 加 reorder_point 安全库存列——0 = 不预警；
-    //    A2 加 status 软停用列、A3 加 unit 单位列）──
+    //    A2 加 status 软停用列、A3 加 unit 单位列；多规格加 product_id /
+    //    variant_attrs 两列——每个规格组合仍是一行 SKU，库存/单据维度不动，
+    //    存量行两列为 NULL = 独立商品（不挂 SPU），完全兼容）──
     db.exec(`
       CREATE TABLE IF NOT EXISTS wms_sku (
         id             TEXT NOT NULL PRIMARY KEY,
@@ -82,6 +84,8 @@ export function migrateWms(db: SqliteDatabase): void {
         sku_code       TEXT NOT NULL,
         barcode        TEXT,
         name           TEXT NOT NULL,
+        product_id     TEXT,
+        variant_attrs  TEXT,
         reorder_point  INTEGER NOT NULL DEFAULT 0,
         status         TEXT NOT NULL DEFAULT 'active',
         unit           TEXT,
@@ -98,6 +102,37 @@ export function migrateWms(db: SqliteDatabase): void {
     if (skuColsNow.length > 0 && !skuColsNow.some((c) => c.name === 'serial_tracked')) {
       db.exec(`ALTER TABLE wms_sku ADD COLUMN serial_tracked INTEGER NOT NULL DEFAULT 0`);
     }
+    // 多规格两列可空：老库 ALTER 补列即可（serial_tracked 先例），NULL = 未挂 SPU
+    if (skuColsNow.length > 0 && !skuColsNow.some((c) => c.name === 'product_id')) {
+      db.exec(`ALTER TABLE wms_sku ADD COLUMN product_id TEXT`);
+    }
+    if (skuColsNow.length > 0 && !skuColsNow.some((c) => c.name === 'variant_attrs')) {
+      db.exec(`ALTER TABLE wms_sku ADD COLUMN variant_attrs TEXT`);
+    }
+    // 「一个商品下有哪些规格」下钻查询；列补齐后再建（老库首开时列刚 ALTER 出来）
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_wms_sku_product ON wms_sku (workspace_id, product_id)`);
+
+    // ── 商品主数据（多规格 SPU 层）：wms_sku 的上一级归组，业务键：
+    //    workspace + product_code。spec_dims 是规格维度定义（JSON 数组
+    //    [{name, values}]，顺序即展示序）；规格组合不占本表——每个组合仍是
+    //    一行 wms_sku（product_id + variant_attrs 挂回本表），条码/单位/安全
+    //    库存都在 SKU 上。纯新增表，老库 CREATE 即可，不触发整组 DROP；
+    //    引用完整性靠工具层守卫（无外键声明，partner 先例）。──
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wms_product (
+        id             TEXT NOT NULL PRIMARY KEY,
+        workspace_id   TEXT NOT NULL,
+        product_code   TEXT NOT NULL,
+        name           TEXT NOT NULL,
+        spec_dims      TEXT NOT NULL DEFAULT '[]',
+        status         TEXT NOT NULL DEFAULT 'active',
+        ext_data       TEXT NOT NULL DEFAULT '{}',
+        created_at     TEXT NOT NULL,
+        updated_at     TEXT NOT NULL,
+        UNIQUE (workspace_id, product_code)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wms_product_ws ON wms_product (workspace_id);
+    `);
 
     // ── 库位主数据（M10，业务键：workspace + location_code；扁平模型，层级是生长点）──
     db.exec(`

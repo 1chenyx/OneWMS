@@ -28,6 +28,10 @@ export interface SkuRecord {
   readonly unit: string | null;
   /** 按序列号管理（module.serial）。老数据缺省否 */
   readonly serialTracked: boolean;
+  /** 所属商品 id（多规格）：null = 独立商品（不挂 SPU，存量/单规格） */
+  readonly productId: string | null;
+  /** 规格组合（多规格）：null = 未声明；如 {"颜色":"红","尺码":"S"} */
+  readonly variantAttrs: Record<string, string> | null;
   readonly extData: Record<string, unknown>;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -38,6 +42,8 @@ interface SkuRow {
   sku_code: string;
   barcode: string | null;
   name: string;
+  product_id: string | null;
+  variant_attrs: string | null;
   reorder_point: number;
   status: string;
   unit: string | null;
@@ -47,12 +53,21 @@ interface SkuRow {
   updated_at: string;
 }
 
+/** 空对象 = 清空（换挂到无维度商品时事件写 {}），读取层归一成 null */
+function parseVariantAttrs(raw: string | null): Record<string, string> | null {
+  if (!raw) return null;
+  const parsed = JSON.parse(raw) as Record<string, string>;
+  return Object.keys(parsed).length === 0 ? null : parsed;
+}
+
 function rowToRecord(row: SkuRow): SkuRecord {
   return {
     id: row.id,
     skuCode: row.sku_code,
     barcode: row.barcode,
     name: row.name,
+    productId: row.product_id ?? null,
+    variantAttrs: parseVariantAttrs(row.variant_attrs),
     reorderPoint: row.reorder_point,
     status: row.status,
     unit: row.unit || null,
@@ -78,8 +93,8 @@ export class SkuView {
         // sku_code / barcode 唯一冲突不走 OR IGNORE 静默——那是业务冲突，必须显式炸出来
         this.db
           .prepare(
-            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, reorder_point, status, unit, serial_tracked, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, product_id, variant_attrs, reorder_point, status, unit, serial_tracked, ext_data, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             p.skuId,
@@ -87,6 +102,8 @@ export class SkuView {
             p.skuCode,
             p.barcode ?? null,
             p.name,
+            p.productId ?? null,
+            p.variantAttrs === undefined ? null : JSON.stringify(p.variantAttrs),
             p.reorderPoint ?? 0,
             'active',
             p.unit ?? null,
@@ -104,6 +121,8 @@ export class SkuView {
             `UPDATE wms_sku SET
                name = COALESCE(?, name),
                barcode = COALESCE(?, barcode),
+               product_id = COALESCE(?, product_id),
+               variant_attrs = COALESCE(?, variant_attrs),
                reorder_point = COALESCE(?, reorder_point),
                unit = COALESCE(?, unit),
                serial_tracked = COALESCE(?, serial_tracked),
@@ -115,6 +134,8 @@ export class SkuView {
           .run(
             p.name ?? null,
             p.barcode ?? null,
+            p.productId ?? null,
+            p.variantAttrs === undefined ? null : JSON.stringify(p.variantAttrs),
             p.reorderPoint ?? null,
             p.unit ?? null,
             p.serialTracked === undefined ? null : p.serialTracked ? 1 : 0,
@@ -153,6 +174,19 @@ export class SkuView {
   byId(id: string): SkuRecord | undefined {
     const row = this.#byIdRaw(id);
     return row ? rowToRecord(row) : undefined;
+  }
+
+  /**
+   * 某商品下的全部规格 SKU（多规格下钻）。含已停用——组合唯一性守卫
+   * 要看见同商品下的所有行（工具层校验用），界面过滤交给消费端。
+   */
+  byProduct(productId: string): SkuRecord[] {
+    const rows = this.db
+      .prepare<unknown[], SkuRow>(
+        `SELECT * FROM wms_sku WHERE workspace_id = ? AND product_id = ? ORDER BY sku_code`,
+      )
+      .all(this.workspaceId, productId) as unknown as SkuRow[];
+    return rows.map(rowToRecord);
   }
 
   /** 全部 SKU，含已停用。界面清单用 listMatching 排除停用档 */

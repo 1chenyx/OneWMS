@@ -1,4 +1,5 @@
 import { clientConnectionMode, readPlatformToken } from '../lib/connection';
+import { clearSession, noteSessionUser, readSessionToken } from '../lib/session';
 
 /** JSON 请求唯一封装；非 2xx 统一抛 ApiError，UI 按 code 分支提示。 */
 export class ApiError extends Error {
@@ -11,14 +12,17 @@ export class ApiError extends Error {
   }
 }
 
-/** 平台模式下带上登录令牌。局域网模式不带，本机接口不认这个头。 */
+/**
+ * 平台模式下带平台登录令牌；局域网模式下带本机登录令牌（module.rbac）。
+ * rbac 停用时本机接口不认这个头，带上也无害——服务端直接放行。
+ */
 export function connectionHeaders(extra?: HeadersInit): Headers {
   const headers = new Headers(extra);
   if (!headers.has('content-type')) headers.set('content-type', 'application/json');
-  if (clientConnectionMode() === 'platform') {
-    const token = readPlatformToken();
-    if (token && !headers.has('authorization')) headers.set('authorization', `Bearer ${token}`);
-  }
+  if (headers.has('authorization')) return headers;
+  const token =
+    clientConnectionMode() === 'platform' ? readPlatformToken() : readSessionToken();
+  if (token) headers.set('authorization', `Bearer ${token}`);
   return headers;
 }
 
@@ -29,6 +33,11 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string };
+    // 会话过期 / 被停用：清掉本地令牌并退回登录门，别让后续请求继续拿着死令牌刷 401
+    if (res.status === 401 && body.code === 'UNAUTHORIZED' && readSessionToken() !== null) {
+      clearSession();
+      noteSessionUser(null);
+    }
     throw new ApiError(body.code ?? 'UNKNOWN', body.message ?? `请求失败（${res.status}）`, res.status);
   }
   return (await res.json()) as T;

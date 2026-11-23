@@ -4,16 +4,17 @@ import { App, Button, Card, Checkbox, Input, Popconfirm, Table, Tag, Typography 
 import type { ColumnsType } from 'antd/es/table';
 import type { FieldExtension } from '@one/core';
 import { useArchiveSku, useProfileSnapshot, useSkus, useUnarchiveSku } from '../api/hooks';
+import { variantLabel } from '../api/client';
 import type { Sku } from '../api/client';
 import { rowsOf, totalOf, useListPage, type ListPage } from '../api/page';
 import SkuFormModal from '../components/SkuFormModal';
 import PageHeader from '../components/PageHeader';
 import { SkuSheetPort } from '../components/sheet-specs';
-import { serverPagination, monoCell, numCell } from '../components/table-style';
+import { serverPagination, monoCell, numCell, MONO_STYLE } from '../components/table-style';
 
 /**
  * SKU 管理页——动态列是 Profile 配置的第一个真实消费闭环：
- * 列 = 固定列（编码/名称/条码/单位/安全库存/状态/更新时间）+ schema.entities.sku.extensions
+ * 列 = 固定列（编码/名称/所属商品·规格/条码/单位/安全库存/状态/更新时间）+ schema.entities.sku.extensions
  * 中 visible !== false 的扩展列（dataIndex 指向 extData[key]）。
  * 在 AI 对话页确认「隐藏字段」提议后切回本页，列即消失（数据保留）。
  * 搜索框（M18）：编码/名称/条码 三字段模糊（服务端 q 参数），回车/点按钮触发。
@@ -21,6 +22,8 @@ import { serverPagination, monoCell, numCell } from '../components/table-style';
  * 单位列（A3）：kg / 箱 / 件…，空显 -。
  * 软停用（A2）：默认只列启用档；勾「显示已停用」拉全量；停用档灰 Tag + 恢复按钮——
  * 建错的档案从此有归宿（隐藏 + 退出预警），数据一条不删、可随时恢复。
+ * 多规格：挂了商品的 SKU 在「所属商品 · 规格」列显示商品码 + 组合（红 / S）；
+ * 独立 SKU 显 -。商品与维度的定义在「商品（多规格）」页。
  */
 export default function SkusPage() {
   const [query, setQuery] = useState('');
@@ -75,6 +78,20 @@ export default function SkusPage() {
       ),
     },
     { title: '名称', dataIndex: 'name', key: 'name' },
+    {
+      // 多规格：挂了商品的 SKU 显示「商品码 + 规格组合」；独立 SKU 显 -
+      title: '所属商品 · 规格',
+      key: 'product',
+      render: (_, r) =>
+        r.productCode ? (
+          <>
+            <span style={MONO_STYLE}>{r.productCode}</span>{' '}
+            {variantLabel(r) ? <Tag color="blue">{variantLabel(r)}</Tag> : null}
+          </>
+        ) : (
+          <Typography.Text type="secondary">-</Typography.Text>
+        ),
+    },
     {
       title: '条码',
       dataIndex: 'barcode',

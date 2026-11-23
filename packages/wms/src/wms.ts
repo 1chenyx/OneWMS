@@ -13,6 +13,7 @@ import {
 } from '@one/core';
 import { migrateWms } from './db/migrations.js';
 import { SkuView } from './views/sku-view.js';
+import { ProductView } from './views/product-view.js';
 import { LocationView } from './views/location-view.js';
 import { PartnerView } from './views/partner-view.js';
 import { OrderView } from './views/order-view.js';
@@ -59,6 +60,8 @@ import { ReportView } from './views/report-view.js';
 import { IntegrationCodeView } from './views/integration-code-view.js';
 import { reportManifest } from './report-manifest.js';
 import { createReportTools } from './tools/report-tools.js';
+import { scenarioManifest } from './scenario-manifest.js';
+import { rbacManifest } from './rbac-manifest.js';
 
 /**
  * WmsDomain —— 领域装配器：把仓储领域「挂载」到一个内核实例上。
@@ -91,6 +94,8 @@ export class WmsDomain {
   readonly #loadManifest: ModuleManifest;
   readonly #reviewManifest: ModuleManifest;
   readonly #reportManifest: ModuleManifest;
+  readonly #scenarioManifest: ModuleManifest;
+  readonly #rbacManifest: ModuleManifest;
   readonly #cache = new Map<string, WmsWorkspace>();
 
   private constructor(core: OneCore) {
@@ -143,6 +148,8 @@ export class WmsDomain {
     this.#loadManifest = loadManifest();
     this.#reviewManifest = reviewManifest();
     this.#reportManifest = reportManifest(reportToolDefs);
+    this.#scenarioManifest = scenarioManifest();
+    this.#rbacManifest = rbacManifest();
     core.exposeModuleRegistry().registerManifest(this.#manifest);
     core.exposeModuleRegistry().registerManifest(this.#putawayManifest);
     core.exposeModuleRegistry().registerManifest(this.#reversalManifest);
@@ -162,6 +169,8 @@ export class WmsDomain {
     core.exposeModuleRegistry().registerManifest(this.#loadManifest);
     core.exposeModuleRegistry().registerManifest(this.#reviewManifest);
     core.exposeModuleRegistry().registerManifest(this.#reportManifest);
+    core.exposeModuleRegistry().registerManifest(this.#scenarioManifest);
+    core.exposeModuleRegistry().registerManifest(this.#rbacManifest);
   }
 
   /** 把领域挂到内核上（幂等心智：attach 两次 = 工具覆盖注册 + 表 IF NOT EXISTS + 目录覆盖登记） */
@@ -196,6 +205,8 @@ export class WmsDomain {
         this.#loadManifest,
         this.#reviewManifest,
         this.#reportManifest,
+        this.#scenarioManifest,
+        this.#rbacManifest,
       );
       this.#cache.set(workspaceId, ws);
     }
@@ -226,6 +237,7 @@ export class WmsWorkspace {
 
   /** 领域五投影 */
   readonly skus: SkuView;
+  readonly products: ProductView;
   readonly locations: LocationView;
   readonly partners: PartnerView;
   readonly orders: OrderView;
@@ -264,6 +276,8 @@ export class WmsWorkspace {
   readonly #loadManifest: ModuleManifest;
   readonly #reviewManifest: ModuleManifest;
   readonly #reportManifest: ModuleManifest;
+  readonly #scenarioManifest: ModuleManifest;
+  readonly #rbacManifest: ModuleManifest;
   #cursor = -1;
 
   constructor(
@@ -289,6 +303,8 @@ export class WmsWorkspace {
     loadManifest: ModuleManifest,
     reviewManifest: ModuleManifest,
     reportManifest: ModuleManifest,
+    scenarioManifest: ModuleManifest,
+    rbacManifest: ModuleManifest,
   ) {
     this.#facade = core.workspace(workspaceId);
     this.#db = db;
@@ -312,6 +328,8 @@ export class WmsWorkspace {
     this.#loadManifest = loadManifest;
     this.#reviewManifest = reviewManifest;
     this.#reportManifest = reportManifest;
+    this.#scenarioManifest = scenarioManifest;
+    this.#rbacManifest = rbacManifest;
     this.events = this.#facade.events;
     this.fields = this.#facade.fields;
     this.tools = this.#facade.tools;
@@ -319,6 +337,7 @@ export class WmsWorkspace {
     this.modules = this.#facade.modules;
     this.dyn = this.#facade.dyn;
     this.skus = this.#projections.skus;
+    this.products = this.#projections.products;
     this.locations = this.#projections.locations;
     this.partners = this.#projections.partners;
     this.orders = this.#projections.orders;
@@ -365,6 +384,8 @@ export class WmsWorkspace {
     this.#installOptional(this.#loadManifest);
     this.#installOptional(this.#reviewManifest);
     this.#installOptional(this.#reportManifest);
+    this.#installOptional(this.#scenarioManifest);
+    this.#installOptIn(this.#rbacManifest, '用户与角色默认停用：单人本地作业不需要账号');
     this.#alignPickingGate();
     this.#alignPickedState();
     this.#alignPutawayGate();
@@ -479,6 +500,52 @@ export class WmsWorkspace {
         `[${manifest.id}] 安装降级（流程贡献校验未过，该模块不可用）：${
           e instanceof Error ? e.message : String(e)
         }`,
+      );
+    }
+  }
+
+  /**
+   * 装但默认停用的模块（module.rbac）：只在「首次装进这个工作区」时顺手关掉一次，
+   * 之后开关完全归用户——重开工作区不会把用户的选择按回去。
+   *
+   * 为什么不用「本地模式整体不注册」：连接模式在代码里只有 lan / platform 两种，
+   * 没有 local 这个事实态。单人作业的语义由「装但不启用」表达，效果一致：
+   * 导航按 enabled 收回入口，前端不出现登录门与用户页。
+   * 走慢通道（propose + confirm）而不是直改 profile，与设置页关模块同一条路。
+   */
+  #installOptIn(manifest: ModuleManifest, reason: string): void {
+    const actor = `module:${manifest.id}@${this.#nodeId}`;
+    let installed = false;
+    try {
+      installed = this.modules.install(manifest, { actor }).installed;
+    } catch (e) {
+      console.warn(
+        `[${manifest.id}] 安装降级（贡献校验未过，该模块不可用）：${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+      return;
+    }
+    if (!installed) return;
+    let proposalId: string | undefined;
+    try {
+      proposalId = this.profile
+        .propose(
+          actor,
+          [{ op: 'replace', path: `/modules/${manifest.id}/enabled`, value: false }],
+          reason,
+        ).proposalId;
+      this.profile.confirm(proposalId, actor);
+    } catch (e) {
+      if (proposalId) {
+        try {
+          this.profile.reject(proposalId);
+        } catch {
+          // 提议已经不在待确认里
+        }
+      }
+      console.warn(
+        `[${manifest.id}] 未能落默认停用：${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }

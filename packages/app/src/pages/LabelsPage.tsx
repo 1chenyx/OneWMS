@@ -15,6 +15,7 @@ import {
 import JsBarcode from 'jsbarcode';
 import QRCode from 'qrcode';
 import { useLocations, useLpns, useSkus } from '../api/hooks';
+import { skuLabel } from '../api/client';
 import PageHeader from '../components/PageHeader';
 
 /**
@@ -102,7 +103,7 @@ export default function LabelsPage() {
       key: s.skuCode,
       value: s.barcode?.trim() ? s.barcode.trim() : s.skuCode,
       code: s.skuCode,
-      title: s.name,
+      title: skuLabel(s),
       unit: s.unit,
       hint: s.barcode ? `条码 ${s.barcode}` : '无条码，用编码',
     }));

@@ -161,6 +161,175 @@ describe('SKU 端点', () => {
   });
 });
 
+describe('商品端点（多规格 SPU）', () => {
+  const specDims = [
+    { name: '颜色', values: ['红', '黑'] },
+    { name: '尺码', values: ['S', 'M'] },
+  ];
+
+  interface ProductRow {
+    productCode: string;
+    name: string;
+    specDims: Array<{ name: string; values: string[] }>;
+    status?: string;
+    skuCount: number;
+  }
+  interface SkuRow {
+    skuCode: string;
+    name: string;
+    status?: string;
+    productCode: string | null;
+    variantAttrs: Record<string, string> | null;
+  }
+
+  it('POST 建商品（含 specDims）→ GET 列表 / 单条直查投影，skuCount 从 0 起', async () => {
+    const app = setup();
+    const res = await post(app, '/api/products', { productCode: 'T-SHIRT', name: '圆领T恤', specDims });
+    expect(res.status).toBe(201);
+    const created = (await res.json()) as { productId: string; productCode: string };
+    expect(created.productCode).toBe('T-SHIRT');
+    expect(created.productId).toBeTruthy();
+
+    const list = (await (await app.request('/api/products')).json()) as ProductRow[];
+    expect(list).toHaveLength(1);
+    expect(list[0]!.specDims).toEqual(specDims);
+    expect(list[0]!.skuCount).toBe(0);
+
+    const one = await app.request('/api/products/T-SHIRT');
+    expect(one.status).toBe(200);
+    expect(((await one.json()) as ProductRow).name).toBe('圆领T恤');
+  });
+
+  it('重复编码 → 400 WMS_PRODUCT_EXISTS；查不存在 → 400 WMS_PRODUCT_NOT_FOUND', async () => {
+    const app = setup();
+    await post(app, '/api/products', { productCode: 'P-1', name: 'T恤' });
+    const dup = await post(app, '/api/products', { productCode: 'P-1', name: 'T恤二号' });
+    expect(dup.status).toBe(400);
+    expect(((await dup.json()) as { code: string }).code).toBe('WMS_PRODUCT_EXISTS');
+
+    const miss = await app.request('/api/products/P-9');
+    expect(miss.status).toBe(400);
+    expect(((await miss.json()) as { code: string }).code).toBe('WMS_PRODUCT_NOT_FOUND');
+  });
+
+  it('q 模糊 / includeArchived / limit+offset 分页壳', async () => {
+    const app = setup();
+    await post(app, '/api/products', { productCode: 'T-SHIRT', name: '圆领T恤' });
+    await post(app, '/api/products', { productCode: 'JEANS', name: '牛仔裤' });
+    await post(app, '/api/products', { productCode: 'CAP', name: '棒球帽' });
+
+    expect(((await (await app.request('/api/products?q=牛仔')).json()) as ProductRow[]).map((p) => p.productCode)).toEqual(['JEANS']);
+
+    await app.request('/api/products/CAP/archive', { method: 'POST' });
+    expect(((await (await app.request('/api/products')).json()) as ProductRow[]).map((p) => p.productCode)).toEqual(['JEANS', 'T-SHIRT']);
+    const all = (await (await app.request('/api/products?includeArchived=1')).json()) as ProductRow[];
+    expect(all).toHaveLength(3);
+    expect(all.find((p) => p.productCode === 'CAP')!.status).toBe('archived');
+
+    const page = await app.request('/api/products?includeArchived=1&limit=2&offset=0');
+    const paged = (await page.json()) as { total: number; limit: number; offset: number; hasMore: boolean; rows: ProductRow[] };
+    expect(paged.total).toBe(3);
+    expect(paged.rows).toHaveLength(2);
+    expect(paged.hasMore).toBe(true);
+
+    const bad = await app.request('/api/products?limit=0');
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { code: string }).code).toBe('BAD_QUERY');
+  });
+
+  it('SKU 挂规格：自动生成编码，?productCode= 下钻，列表行补 productCode', async () => {
+    const app = setup();
+    await post(app, '/api/products', { productCode: 'T-SHIRT', name: '圆领T恤', specDims });
+    const red = await post(app, '/api/skus', {
+      name: '圆领T恤',
+      productCode: 'T-SHIRT',
+      variantAttrs: { 颜色: '红', 尺码: 'S' },
+    });
+    expect(red.status).toBe(201);
+    expect(((await red.json()) as { skuCode: string }).skuCode).toBe('T-SHIRT-红-S');
+    await post(app, '/api/skus', { name: '圆领T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '黑', 尺码: 'M' } });
+    await post(app, '/api/skus', { skuCode: 'OIL-1', name: '机油' }); // 不挂商品
+
+    // 下钻：只回该商品的规格，按编码排序（BINARY 序：红 E7… 在 黑 E9… 前）
+    const drill = (await (await app.request('/api/skus?productCode=T-SHIRT')).json()) as SkuRow[];
+    expect(drill.map((s) => s.skuCode)).toEqual(['T-SHIRT-红-S', 'T-SHIRT-黑-M']);
+    expect(drill[0]!.variantAttrs).toEqual({ 颜色: '红', 尺码: 'S' });
+    expect(drill[0]!.productCode).toBe('T-SHIRT');
+
+    // 全量列表：挂了的带 productCode，没挂的是 null
+    const list = (await (await app.request('/api/skus')).json()) as SkuRow[];
+    expect(list.find((s) => s.skuCode === 'OIL-1')!.productCode).toBeNull();
+    expect(list.find((s) => s.skuCode === 'OIL-1')!.variantAttrs).toBeNull();
+
+    // 商品的 skuCount 跟着涨
+    const product = (await (await app.request('/api/products/T-SHIRT')).json()) as ProductRow;
+    expect(product.skuCount).toBe(2);
+
+    // 未知商品是查询参数错误，不伪装成「这商品没有规格」
+    const miss = await app.request('/api/skus?productCode=NOPE');
+    expect(miss.status).toBe(400);
+    expect(((await miss.json()) as { code: string }).code).toBe('BAD_QUERY');
+  });
+
+  it('规格组合冲突 / 缺维度取值 → 400（工具护栏经错误映射透传）', async () => {
+    const app = setup();
+    await post(app, '/api/products', { productCode: 'T-SHIRT', name: '圆领T恤', specDims });
+    await post(app, '/api/skus', { name: 'T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '红', 尺码: 'S' } });
+
+    const dup = await post(app, '/api/skus', { name: 'T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '红', 尺码: 'S' } });
+    expect(dup.status).toBe(400);
+    expect(((await dup.json()) as { code: string }).code).toBe('WMS_VARIANT_COMBO_EXISTS');
+
+    const partial = await post(app, '/api/skus', { name: 'T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '红' } });
+    expect(partial.status).toBe(400);
+    expect(((await partial.json()) as { code: string }).code).toBe('WMS_VARIANT_ATTRS_MISMATCH');
+
+    const bogus = await post(app, '/api/skus', { name: 'T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '红', 尺码: 'XL' } });
+    expect(((await bogus.json()) as { code: string }).code).toBe('WMS_VARIANT_ATTRS_MISMATCH');
+  });
+
+  it('PUT 删掉在用的规格取值 → 400 WMS_SPEC_DIM_IN_USE', async () => {
+    const app = setup();
+    await post(app, '/api/products', { productCode: 'T-SHIRT', name: '圆领T恤', specDims });
+    await post(app, '/api/skus', { name: 'T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '红', 尺码: 'S' } });
+
+    const res = await put(app, '/api/products/T-SHIRT', {
+      name: '圆领T恤改',
+      specDims: [{ name: '颜色', values: ['黑'] }, { name: '尺码', values: ['S', 'M'] }],
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe('WMS_SPEC_DIM_IN_USE');
+
+    const ok = await put(app, '/api/products/T-SHIRT', { name: '圆领T恤改' });
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { name: string }).name).toBe('圆领T恤改');
+  });
+
+  it('archive：列表隐藏、下钻照常、停用商品拒绝新挂规格、unarchive 恢复', async () => {
+    const app = setup();
+    await post(app, '/api/products', { productCode: 'T-SHIRT', name: '圆领T恤', specDims });
+    await post(app, '/api/skus', { name: 'T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '红', 尺码: 'S' } });
+
+    const res = await app.request('/api/products/T-SHIRT/archive', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { status: string }).status).toBe('archived');
+    expect((await (await app.request('/api/products')).json()) as ProductRow[]).toHaveLength(0);
+
+    // 已挂 SKU 与库存不受影响：下钻照常返回（停用商品下的 SKU 本身还是启用档）
+    expect(((await (await app.request('/api/skus?productCode=T-SHIRT')).json()) as SkuRow[]).map((s) => s.skuCode)).toEqual(['T-SHIRT-红-S']);
+
+    // 不能再挂新规格
+    const attach = await post(app, '/api/skus', { name: 'T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '黑', 尺码: 'M' } });
+    expect(attach.status).toBe(400);
+    expect(((await attach.json()) as { code: string }).code).toBe('WMS_PRODUCT_ARCHIVED');
+
+    await app.request('/api/products/T-SHIRT/unarchive', { method: 'POST' });
+    const list = (await (await app.request('/api/products')).json()) as ProductRow[];
+    expect(list.map((p) => p.productCode)).toEqual(['T-SHIRT']);
+    expect(list[0]!.status).toBe('active');
+  });
+});
+
 describe('单据端点', () => {
   async function seedSku(app: ReturnType<typeof createApp>, code: string, name: string) {
     await post(app, '/api/skus', { skuCode: code, name });

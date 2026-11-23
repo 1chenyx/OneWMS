@@ -34,6 +34,8 @@ export function codesFor(ws: WmsWorkspace, place: NumberPlaceId): string[] {
       return ws.scraps.list().map((row) => row.scrapNo);
     case 'sku':
       return ws.skus.list().map((row) => row.skuCode);
+    case 'product':
+      return ws.products.listMatching({ includeArchived: true }).map((row) => row.productCode);
     case 'partner.supplier':
     case 'partner.customer':
       return ws.partners.list().map((row) => row.partnerCode);

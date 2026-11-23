@@ -17,6 +17,8 @@ export type BuiltinPage =
   | 'dashboard'
   | 'reports'
   | 'workbench'
+  | 'scenario'
+  | 'products'
   | 'skus'
   | 'partners'
   | 'locations'
@@ -45,6 +47,7 @@ export type BuiltinPage =
   | 'rules'
   | 'modules'
   | 'integrations'
+  | 'users'
   | 'settings';
 
 /**
@@ -54,7 +57,7 @@ export type BuiltinPage =
  * （形态 `ui.{moduleId}.{pageId}`，由 GET /api/ui/pages 下发）。
  *
  * ⚠️ 写 `BuiltinPage | (string & {})` 而不是 `BuiltinPage | string`：
- *    后者会被 TS 直接塌成 `string`，27 个内置 key 的编译期检查与自动补全全丢——
+ *    后者会被 TS 直接塌成 `string`，35 个内置 key 的编译期检查与自动补全全丢——
  *    写错一个字母（'sku' 而不是 'skus'）从「红线」退化成「运行时白屏」。
  *    `string & {}` 保住字面量成员，同时接纳任意运行时字符串。
  *

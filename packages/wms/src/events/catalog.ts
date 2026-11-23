@@ -17,6 +17,8 @@ import type { ZoneKind } from '../zone-kinds.js';
 export const WMS_EVENT_TYPES = {
   skuCreated: 'wms.sku.created',
   skuUpdated: 'wms.sku.updated',
+  productCreated: 'wms.product.created',
+  productUpdated: 'wms.product.updated',
   locationCreated: 'wms.location.created',
   locationUpdated: 'wms.location.updated',
   warehouseCreated: 'wms.warehouse.created',
@@ -96,6 +98,17 @@ export interface SkuCreatedPayload {
   readonly unit?: string;
   /** 按序列号管理（module.serial）。缺省 = 否 */
   readonly serialTracked?: boolean;
+  /**
+   * 所属商品（多规格，可选）：挂上后本 SKU 是该商品的一个规格组合；缺省 = 独立商品
+   * （不挂 SPU，兼容存量）。productId 必须是同库已存在的 wms_product.id（工具层守卫）。
+   */
+  readonly productId?: string;
+  /**
+   * 规格组合（多规格，可选）：维度名 → 取值（如 {"颜色":"红","尺码":"S"}）。
+   * 键与取值须对齐所属商品的 spec_dims、且同商品下组合唯一（工具层守卫）。
+   * 缺省 = 未声明组合。与 productId 成对出现。
+   */
+  readonly variantAttrs?: Record<string, string>;
   /** 字段注册表驱动的扩展字段（§5.2：核心列固定 + ext_data JSON 列） */
   readonly extData?: Record<string, unknown>;
 }
@@ -116,6 +129,55 @@ export interface SkuUpdatedPayload {
    * 档案状态（A2 软停用）：active = 启用（缺省）；archived = 已停用。
    * 只由 wms.sku.archive / wms.sku.unarchive 两个专用工具写入（不开放给通用 update）——
    * 停用 = 从列表/选择器隐藏 + 退出低库存/效期预警；剩余库存照常可扣（数据一条不动）。
+   */
+  readonly status?: 'active' | 'archived';
+  /**
+   * 改挂商品（多规格）：显式传才改（LWW）；换挂是少见操作，工具层校验
+   * 新商品存在 + variantAttrs 对齐其 spec_dims。不开放「脱挂回独立商品」。
+   */
+  readonly productId?: string;
+  /** 规格组合（多规格）：显式传才改（LWW，JSON 整体覆盖）；与 productId 联动校验 */
+  readonly variantAttrs?: Record<string, string>;
+  readonly extData?: Record<string, unknown>;
+}
+
+// ── 商品（product，多规格 SPU 层）payload ──────────────────────
+
+/** 一个规格维度的定义：名称 + 取值清单（顺序即展示序，如 颜色: [红, 黑, 白]） */
+export interface ProductSpecDim {
+  readonly name: string;
+  readonly values: readonly string[];
+}
+
+/**
+ * 商品诞生（多规格 SPU 层）：wms_sku 的上一级归组，product_code 全库唯一。
+ * 商品本身不参与库存维度——每个规格组合仍是一行 SKU（sku.created 携带
+ * productId + variantAttrs 挂回本商品）。specDims 缺省/空 = 不声明规格维度。
+ */
+export interface ProductCreatedPayload {
+  readonly productId: string;
+  readonly productCode: string;
+  readonly name: string;
+  /** 规格维度定义：[{name:'颜色',values:['红','黑']},{name:'尺码',values:['S','M']}]；空 = 无维度 */
+  readonly specDims?: readonly ProductSpecDim[];
+  readonly extData?: Record<string, unknown>;
+}
+
+/**
+ * 商品更新（LWW：只携带变更字段；productCode 是业务键不可改——历史 SKU 引用它的 id）。
+ * specDims 显式传才改：新增取值可以，删掉已被 SKU variantAttrs 用到的取值由工具层拒绝。
+ */
+export interface ProductUpdatedPayload {
+  readonly productId: string;
+  readonly productCode: string;
+  readonly name?: string;
+  /** 规格维度定义。缺省 = 不改。整体覆盖（JSON 数组一次替换） */
+  readonly specDims?: readonly ProductSpecDim[];
+  /**
+   * 档案状态（A2 软停用先例）：active = 启用（缺省）；archived = 已停用。
+   * 只由 wms.product.archive / wms.product.unarchive 两个专用工具写入（不开放给
+   * 通用 update）——停用 = 从商品列表隐藏、不再允许新挂规格；已挂 SKU 与库存
+   * 照常（数据一条不动）。
    */
   readonly status?: 'active' | 'archived';
   readonly extData?: Record<string, unknown>;

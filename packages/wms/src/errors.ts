@@ -459,6 +459,56 @@ export class PartnerKindMismatchError extends CoreError {
   }
 }
 
+// ── 商品 / 多规格（SPU 层）─────────────────────────
+
+/** 商品编码已存在（业务键唯一） */
+export class ProductAlreadyExistsError extends CoreError {
+  constructor(productCode: string) {
+    super('WMS_PRODUCT_EXISTS', `商品编码已存在: ${productCode}`);
+  }
+}
+
+/** 商品不存在 */
+export class ProductNotFoundError extends CoreError {
+  constructor(productCode: string) {
+    super('WMS_PRODUCT_NOT_FOUND', `商品不存在: ${productCode}`);
+  }
+}
+
+/** 商品已停用：不再允许新挂或改挂规格（已挂 SKU 与库存照常） */
+export class ProductArchivedError extends CoreError {
+  constructor(productCode: string) {
+    super(
+      'WMS_PRODUCT_ARCHIVED',
+      `商品 ${productCode} 已停用，不能再挂或改规格。先 wms.product.unarchive 恢复，或另建商品。`,
+    );
+  }
+}
+
+/** 规格组合与商品维度定义对不上（缺维度、多键、取值不在清单内） */
+export class VariantAttrsMismatchError extends CoreError {
+  constructor(productCode: string, detail: string) {
+    super('WMS_VARIANT_ATTRS_MISMATCH', `商品 ${productCode} 的规格组合不对：${detail}`);
+  }
+}
+
+/** 同一商品下规格组合已被其他 SKU 占用 */
+export class VariantComboExistsError extends CoreError {
+  constructor(productCode: string, combo: string, skuCode: string) {
+    super(
+      'WMS_VARIANT_COMBO_EXISTS',
+      `商品 ${productCode} 的规格 ${combo} 已被 SKU ${skuCode} 使用——同一商品下一个组合只能有一个 SKU`,
+    );
+  }
+}
+
+/** 规格维度定义改动会甩开已挂 SKU 的组合（删了在用的维度/取值，或无维度↔有维度翻转） */
+export class SpecDimInUseError extends CoreError {
+  constructor(productCode: string, detail: string) {
+    super('WMS_SPEC_DIM_IN_USE', `商品 ${productCode} 的规格维度不能这样改：${detail}`);
+  }
+}
+
 // ── 上架（M21，module.putaway）───────────────────────
 
 /** 上架只对入库单开放（出库单调用了 wms.order.putaway） */

@@ -8,6 +8,22 @@ import type { ManifestRecord, ManifestRecordField } from '@one/core';
 
 const FIXED = '这些是固定列，不能增删。可配置的扩展字段在 fields；fields 为空表示现在没有、也可以另外加。';
 
+export const PRODUCT_RECORD: ManifestRecord = {
+  id: 'product',
+  label: '多规格商品',
+  aliases: ['SPU', '规格商品', '商品归组'],
+  note:
+    '多规格商品（SPU）是 SKU 的上一级归组：定义规格维度，每个取值组合挂一个 SKU。库存和单据仍记在 SKU 上，商品本身不记库存。' +
+    FIXED,
+  fields: [
+    { key: 'productCode', label: '编码', description: '全库唯一。挂在它下面的 SKU 编码默认按「商品码-规格取值」生成' },
+    { key: 'name', label: '名称', description: '按规格矩阵批量建 SKU 时统一用这个名称' },
+    { key: 'specDims', label: '规格维度', description: '维度名和取值清单，如 颜色=[红, 黑]、尺码=[S, M]。没有维度就只作归组' },
+    { key: 'skuCount', label: 'SKU 数', description: '挂在它下面的 SKU 数，含停用档' },
+    { key: 'status', label: '状态', description: '启用或停用。停用后不能再往它下面挂 SKU，已挂的照常出入库' },
+  ],
+};
+
 export const SKU_RECORD: ManifestRecord = {
   id: 'sku',
   label: '商品',
@@ -16,6 +32,8 @@ export const SKU_RECORD: ManifestRecord = {
   fields: [
     { key: 'skuCode', label: '编码', description: '全库唯一的商品编码' },
     { key: 'name', label: '名称', description: '商品名称' },
+    { key: 'productCode', label: '所属商品', description: '多规格商品（SPU）编码。不挂 = 独立 SKU；挂了不能取消挂靠' },
+    { key: 'variantAttrs', label: '规格', description: '各维度的取值组合，如 颜色=红、尺码=S。挂在多规格商品下才有' },
     { key: 'barcode', label: '条码', description: '扫码用，同库唯一。可以不填' },
     { key: 'unit', label: '单位', description: '数量单位，如件、箱、kg。没填则不显示' },
     { key: 'reorderPoint', label: '安全库存', description: '大于 0 且可用量低于它时算低库存。0 表示不预警' },
@@ -139,6 +157,7 @@ export const STOCKTAKE_RECORD: ManifestRecord = {
 };
 
 export const WMS_RECORDS: ManifestRecord[] = [
+  PRODUCT_RECORD,
   SKU_RECORD,
   INVENTORY_RECORD,
   ORDER_RECORD,

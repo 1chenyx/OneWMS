@@ -37,8 +37,9 @@ describe('默认 Profile 种子', () => {
     expect(snapshot.schema.entities.sku.extensions.every((f) => f.visible && f.providedBy === 'core.wms')).toBe(true);
 
     // 流程骨架与 M2 硬编码状态机逐条一致（已知临时状态：M6 前配置面≠行为权威）
-    // core.wms + putaway + reversal + partial + reservation + return + asn + replenish + warehouse + serial + lpn + picking + qc + wave + pack + load + review + report
-    expect(snapshot.version).toBe(19);
+    // core.wms + putaway + reversal + partial + reservation + return + asn + replenish + warehouse + zone + serial + lpn + picking + qc + wave + pack + load + review + report + scenario + rbac（21 个模块各一条 config.change）
+    // + rbac 默认停用（#installOptIn 首次安装后顺手打一条 enabled=false，再一条 config.change）= 22
+    expect(snapshot.version).toBe(22);
     const { inbound, outbound } = snapshot.workflows;
     expect(inbound.states[0].id).toBe('created'); // states[0] = 初始态约定
     // inbound = 基础转移（received→done 仅在上架关闭时）+ putaway 贡献
@@ -157,14 +158,14 @@ describe('默认 Profile 种子', () => {
     const first = OneCore.open(dbPath);
     const ws1 = WmsDomain.attach(first).workspace('ws-reopen');
     const events1 = ws1.events.count();
-    expect(ws1.profile.getSnapshot().version).toBe(19);
+    expect(ws1.profile.getSnapshot().version).toBe(22);
     first.close();
 
     // 新进程打开同一库：种子事件已存在（hasHistory），不再装载
     const second = OneCore.open(dbPath);
     const ws2 = WmsDomain.attach(second).workspace('ws-reopen');
     expect(ws2.events.count()).toBe(events1);
-    expect(ws2.profile.getSnapshot().version).toBe(19);
+    expect(ws2.profile.getSnapshot().version).toBe(22);
     second.close();
   });
 
@@ -195,7 +196,7 @@ describe('默认 Profile 种子', () => {
     expect(ws.fields.get('sku', 'spec')!.visible).toBe(false);
     // 纯字段变更走注册表事件（1 条 visibility_changed），不落 config.change
     expect(ws.events.count()).toBe(eventsBefore + 1);
-    expect(ws.profile.getSnapshot().version).toBe(19); // 十九个模块种子，未被慢通道改变
+    expect(ws.profile.getSnapshot().version).toBe(22); // 二十一个模块种子，未被慢通道改变
     core.close();
   });
 });

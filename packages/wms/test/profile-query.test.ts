@@ -48,6 +48,15 @@ describe('仓储项目实况', () => {
     expect(fields.entities[0].fixed.map((field) => field.key)).toContain('skuCode');
     expect(fields.entities[0].fixed.map((field) => field.key)).toContain('serialTracked');
 
+    // 多规格商品（SPU）档案：固定列进 manifest；「商品」这个词仍解析到 sku
+    const product = (await ws.tools.invoke('profile.field.query', { entity: 'SPU' })) as {
+      entities: { entity: string; label: string; fixed: { key: string }[] }[];
+    };
+    expect(product.entities[0].entity).toBe('product');
+    expect(product.entities[0].label).toBe('多规格商品');
+    expect(product.entities[0].fixed.map((field) => field.key)).toContain('specDims');
+    expect(fields.entities[0].fixed.map((field) => field.key)).toContain('productCode'); // sku 固定列带上所属商品/规格
+
     const inventory = (await ws.tools.invoke('profile.field.query', { entity: '库存' })) as {
       entities: { entity: string; label: string; fields: unknown[]; fixed: { key: string; label: string }[] }[];
     };

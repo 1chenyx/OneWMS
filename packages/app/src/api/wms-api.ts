@@ -16,9 +16,27 @@ export interface Sku {
   name: string;
   /** 按序列号管理。缺省或 false = 只记数量。仅 module.serial 开启时有意义 */
   serialTracked?: boolean;
+  /** 所属商品编码（多规格 SPU）。null / 缺省 = 没挂商品（独立、单规格 SKU） */
+  productCode?: string | null;
+  /** 规格组合，如 { 颜色: '红', 尺码: 'S' }。null / 缺省 = 无规格 */
+  variantAttrs?: Record<string, string> | null;
   extData: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * 规格组合的人话标签（清单列 / 单据选择器展示用）：`红 / S`；无规格返回 ''。
+ * 顺序 = 商品 specDims 的声明序（服务端按维度顺序重建 variantAttrs，JSON 键序即展示序）。
+ */
+export function variantLabel(sku: Pick<Sku, 'variantAttrs'>): string {
+  return sku.variantAttrs ? Object.values(sku.variantAttrs).join(' / ') : '';
+}
+
+/** SKU 展示名：名称 + 规格（`圆领T恤 · 红 / S`）——单据行选择器与清单统一走这个 */
+export function skuLabel(sku: Pick<Sku, 'name' | 'variantAttrs'>): string {
+  const spec = variantLabel(sku);
+  return spec ? `${sku.name} · ${spec}` : sku.name;
 }
 
 export interface OrderLine {
@@ -90,6 +108,28 @@ export interface ReturnableView {
   sourceDirection: 'in' | 'out';
   direction: 'in' | 'out';
   lines: ReturnableLine[];
+}
+
+/** 商品（多规格 SPU，GET /api/products）：SKU 的上一级归组，本身不记库存——条码/单位/安全库存都在 SKU 上 */
+export interface Product {
+  id: string;
+  productCode: string;
+  name: string;
+  /** 规格维度定义（声明序 = 展示序）；空数组 = 无维度（单规格归组） */
+  specDims: ProductSpecDim[];
+  /** 档案状态：'archived' = 已停用（默认隐藏）；缺省 = 启用 */
+  status?: string;
+  /** 已挂的规格 SKU 数（含停用档）——服务端联查补上 */
+  skuCount: number;
+  extData: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 一个规格维度：维度名 + 全部取值（如 颜色 = [红, 黑]） */
+export interface ProductSpecDim {
+  name: string;
+  values: string[];
 }
 
 /** 往来单位（M21，GET /api/partners；供应商/客户统一档案，kind 区分） */
@@ -598,6 +638,8 @@ export interface ExpiryBoard {
 function skus(query?: {
   q?: string;
   barcode?: string;
+  /** 商品下钻：只回挂在该商品下的规格 SKU（裸数组，不分页） */
+  productCode?: string;
   includeArchived?: boolean;
 }): Promise<Sku[]>;
 function skus(query: {
@@ -610,6 +652,7 @@ function skus(query: {
 function skus(query?: {
   q?: string;
   barcode?: string;
+  productCode?: string;
   includeArchived?: boolean;
   limit?: number;
   offset?: number;
@@ -617,6 +660,7 @@ function skus(query?: {
   const params = new URLSearchParams();
   if (query?.q) params.set('q', query.q);
   if (query?.barcode) params.set('barcode', query.barcode);
+  if (query?.productCode) params.set('productCode', query.productCode);
   if (query?.includeArchived) params.set('includeArchived', '1');
   writePage(params, query);
   const qs = params.toString();
@@ -661,6 +705,28 @@ function partners(query?: {
   writePage(params, query);
   const qs = params.toString();
   return request<Partner[] | ListPage<Partner>>(qs ? `/api/partners?${qs}` : '/api/partners');
+}
+
+/** 商品清单（多规格 SPU）：q = 编码/名称模糊；默认只回启用档。不传 limit 时是全量数组。 */
+function products(query?: { q?: string; includeArchived?: boolean }): Promise<Product[]>;
+function products(query: {
+  q?: string;
+  includeArchived?: boolean;
+  limit: number;
+  offset?: number;
+}): Promise<ListPage<Product>>;
+function products(query?: {
+  q?: string;
+  includeArchived?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<Product[] | ListPage<Product>> {
+  const params = new URLSearchParams();
+  if (query?.q) params.set('q', query.q);
+  if (query?.includeArchived) params.set('includeArchived', '1');
+  writePage(params, query);
+  const qs = params.toString();
+  return request<Product[] | ListPage<Product>>(qs ? `/api/products?${qs}` : '/api/products');
 }
 
 /** 库存汇总。不传 limit 时是全量数组；传入 limit 时带 hasReserved。 */
@@ -820,6 +886,38 @@ export interface ReportRunPage {
 export const wmsApi = {
   numbering: (place?: string) =>
     request<NumberingView>(place ? `/api/numbering?place=${encodeURIComponent(place)}` : '/api/numbering'),
+  products,
+  /** 商品单条直查（含 skuCount）。不存在 → 400 WMS_PRODUCT_NOT_FOUND */
+  product: (productCode: string) => request<Product>(`/api/products/${encodeURIComponent(productCode)}`),
+  /**
+   * 建商品（多规格 SPU）。productCode 留空走编号规则（PRD-0001）；
+   * specDims 不传 = 无维度（单规格归组），传了 = 之后每个规格组合用 createSku 挂上来。
+   */
+  createProduct: (body: { productCode?: string; name: string; specDims?: ProductSpecDim[]; extData?: Record<string, unknown> }) =>
+    request<{ productId: string; productCode: string; name: string; specDims: ProductSpecDim[] }>('/api/products', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  /** 改商品：只传要改的字段；specDims 整体替换且不能甩开已挂 SKU 的组合（400 WMS_SPEC_DIM_IN_USE） */
+  updateProduct: (
+    productCode: string,
+    body: { name?: string; specDims?: ProductSpecDim[]; extData?: Record<string, unknown> },
+  ) =>
+    request<{ productId: string; productCode: string; name: string; specDims: ProductSpecDim[] }>(
+      `/api/products/${encodeURIComponent(productCode)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  /** 停用商品：列表隐藏、不再允许新挂/改挂规格；已挂 SKU 与库存照常 */
+  archiveProduct: (productCode: string) =>
+    request<{ productId: string; productCode: string; status: string }>(
+      `/api/products/${encodeURIComponent(productCode)}/archive`,
+      { method: 'POST' },
+    ),
+  unarchiveProduct: (productCode: string) =>
+    request<{ productId: string; productCode: string; status: string }>(
+      `/api/products/${encodeURIComponent(productCode)}/unarchive`,
+      { method: 'POST' },
+    ),
   skus,
   createSku: (body: {
     skuCode?: string;
@@ -828,6 +926,9 @@ export const wmsApi = {
     reorderPoint?: number;
     unit?: string;
     serialTracked?: boolean;
+    /** 挂到商品下（多规格）；与 variantAttrs 一起给，skuCode 留空则自动生成 `商品码-取值` */
+    productCode?: string;
+    variantAttrs?: Record<string, string>;
     extData?: Record<string, unknown>;
   }) =>
     request<{
@@ -850,6 +951,10 @@ export const wmsApi = {
       reorderPoint?: number;
       unit?: string;
       serialTracked?: boolean;
+      /** 换挂到别的商品：目标商品无维度则清空组合，有维度必须同时给新 variantAttrs */
+      productCode?: string;
+      /** 只改规格组合时可单独传（沿用现挂商品） */
+      variantAttrs?: Record<string, string>;
       extData?: Record<string, unknown>;
     },
   ) =>
@@ -876,6 +981,9 @@ export const wmsApi = {
       { method: 'POST' },
     ),
   orders,
+  /** 单据详情（含行）。场景作业扫单后按单号取行，走这个而不是把整份清单拉到前端过滤。 */
+  orderDetail: (orderNo: string) =>
+    request<Order>(`/api/orders/${encodeURIComponent(orderNo)}`),
   orderConflicts: () =>
     request<
       {
@@ -1132,6 +1240,19 @@ export const wmsApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  /** 移库：同批次跨库位转移（module.scenario 移库场景的确认口），产生一对 transfer 流水 */
+  moveInventory: (body: {
+    skuCode: string;
+    quantity: number;
+    fromLocationCode?: string;
+    toLocationCode?: string;
+    batchNo?: string;
+    serials?: string[];
+  }) =>
+    request<{ skuCode: string; fromLocationCode: string; toLocationCode: string; batchNo: string; quantity: number }>(
+      '/api/inventory/move',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
   /** 活动冻结清单；skuCode 过滤（未知编码 → 空清单） */
   holds: (skuCode?: string) =>
     request<Hold[]>(skuCode ? `/api/holds?skuCode=${encodeURIComponent(skuCode)}` : '/api/holds'),
