@@ -1,6 +1,12 @@
 import type { ListPage } from './page';
 import { request } from './request';
 
+/** 包装单位换算（如 1 箱 = 24 瓶）：ratio 的分母是 SKU 的基本单位（Sku.unit） */
+export interface SkuPackage {
+  unit: string;
+  ratio: number;
+}
+
 /** 与 @one/wms 的 SkuRecord 同形（前端不依赖 wms 包类型，只镜像 HTTP 契约） */
 export interface Sku {
   id: string;
@@ -9,8 +15,10 @@ export interface Sku {
   barcode: string | null;
   /** 安全库存（M20）：低库存预警阈值；0 = 不预警 */
   reorderPoint: number;
-  /** 数量单位（A3）：null = 不显示 */
+  /** 基本单位（A3）：库存与账面恒按它记；null = 不显示 */
   unit: string | null;
+  /** 包装单位清单（录入用，开单时可选其一，系统换算成基本单位入账）。null / 缺省 = 没有包装 */
+  packages?: SkuPackage[] | null;
   /** 档案状态（A2 软停用）：'archived' = 已停用（默认隐藏）；缺省 = 启用 */
   status?: string;
   name: string;
@@ -42,9 +50,13 @@ export function skuLabel(sku: Pick<Sku, 'name' | 'variantAttrs'>): string {
 export interface OrderLine {
   skuCode: string;
   name: string;
+  /** 数量恒为基本单位（按包装录入的行已换算） */
   quantity: number;
-  /** 数量单位（A3）：null = 不显示 */
+  /** 基本单位（A3）：null = 不显示 */
   unit?: string | null;
+  /** 录入快照：按包装单位录入时的原数量与单位（`2 箱`）；null = 按基本单位录入 */
+  enteredQty?: number | null;
+  enteredUnit?: string | null;
   /** 行目标库位编码（M21：上架归位的源桶） */
   locationCode?: string;
   /** 行批次（DEFAULT = 虚拟批次） */
@@ -925,6 +937,8 @@ export const wmsApi = {
     barcode?: string;
     reorderPoint?: number;
     unit?: string;
+    /** 包装单位（需同时有 unit 作基本单位） */
+    packages?: SkuPackage[];
     serialTracked?: boolean;
     /** 挂到商品下（多规格）；与 variantAttrs 一起给，skuCode 留空则自动生成 `商品码-取值` */
     productCode?: string;
@@ -950,6 +964,8 @@ export const wmsApi = {
       barcode?: string;
       reorderPoint?: number;
       unit?: string;
+      /** 整体替换：不传 = 不改，传 [] = 清空。改比例不影响已开单据 */
+      packages?: SkuPackage[];
       serialTracked?: boolean;
       /** 换挂到别的商品：目标商品无维度则清空组合，有维度必须同时给新 variantAttrs */
       productCode?: string;
@@ -1122,7 +1138,10 @@ export const wmsApi = {
     direction: 'in' | 'out';
     lines: {
       skuCode: string;
+      /** 数量按 unit 计：unit 缺省/等于基本单位 = 基本单位数量；填包装单位 = 包装数量（服务端换算） */
       quantity: number;
+      /** 录入单位：取 SKU.packages 之一的 unit，或基本单位 */
+      unit?: string;
       locationCode?: string;
       batchNo?: string;
       batchExpiryDate?: string;
@@ -1153,7 +1172,9 @@ export const wmsApi = {
       expectedAt?: string | null;
       lines?: {
         skuCode: string;
+        /** 同 createOrder：unit 填包装单位时 quantity 是包装数量 */
         quantity: number;
+        unit?: string;
         locationCode?: string;
         batchNo?: string;
         batchExpiryDate?: string;

@@ -143,6 +143,7 @@ export type {
   WaveWalkLine,
   PickingLine,
   Sku,
+  SkuPackage,
   Stocktake,
   StocktakeCloseResult,
   StocktakeDetail,

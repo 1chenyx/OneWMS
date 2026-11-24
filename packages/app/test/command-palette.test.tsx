@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -60,11 +60,11 @@ function Probe() {
   );
 }
 
-function renderPalette(pages: UiPageDescriptor[] = []) {
+function renderPalette(pages: UiPageDescriptor[] = [], profile: ProfileSnapshot = PROFILE) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(['profile'], PROFILE);
+  client.setQueryData(['profile'], profile);
   client.setQueryData(['ui-pages'], { pages });
   return render(
     <ConfigProvider>
@@ -128,6 +128,39 @@ describe('CommandPalette：Ctrl+K 全局搜索', () => {
     await waitFor(() => {
       expect(screen.queryByPlaceholderText('搜索页面：入库、库存、流程…')).not.toBeInTheDocument();
     });
+  });
+
+  it('场景作业（mobileOnly）：桌面搜不到，触屏窄屏搜得到', async () => {
+    const scenarioOn: ProfileSnapshot = {
+      ...PROFILE,
+      modules: { 'module.scenario': { enabled: true, version: '0.1.0' } },
+    };
+    const user = userEvent.setup();
+    renderPalette([], scenarioOn);
+    await user.keyboard(ctrlK);
+    const input = await screen.findByPlaceholderText('搜索页面：入库、库存、流程…');
+    await user.type(input, '场景');
+    // 桌面搜不到：零命中时连结果列表都不渲染，所以用 queryAllByTestId
+    const desktopText = screen.queryAllByTestId('palette-result').map((n) => n.textContent).join('\n');
+    expect(desktopText).not.toContain('场景作业');
+    await user.keyboard('{Escape}');
+    cleanup();
+
+    // 换成手机/扫码枪形态再开一次：入口回来了
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true });
+    try {
+      renderPalette([], scenarioOn);
+      await user.keyboard(ctrlK);
+      const mobileInput = await screen.findByPlaceholderText('搜索页面：入库、库存、流程…');
+      await user.type(mobileInput, '场景');
+      expect(screen.getAllByTestId('palette-result').map((n) => n.textContent).join('\n')).toContain(
+        '场景作业',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true });
+    }
   });
 
   it('再按一次 Ctrl+K 切换关闭', async () => {

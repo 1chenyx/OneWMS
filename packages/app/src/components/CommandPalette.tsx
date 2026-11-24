@@ -6,6 +6,7 @@ import { useAppNav } from '../app-nav';
 import type { Page } from '../app-nav';
 import { NAV_CATEGORIES, navIconFor } from '../nav';
 import { canVisitPage } from '../lib/session';
+import { isMobileDevice } from '../lib/device';
 import { face } from '../theme';
 
 /**
@@ -163,6 +164,7 @@ function allCandidates(
     for (const item of category.items) {
       if (item.moduleId != null && modules?.[item.moduleId]?.enabled !== true) continue;
       if (!canVisitPage(item.page)) continue; // module.rbac 启用时按角色授权过滤
+      if (item.mobileOnly && !isMobileDevice()) continue; // 移动端专属入口（如场景作业）桌面不搜出来
       builtin.push({ page: item.page, label: item.label, hint: item.group ?? category.label, icon: item.icon });
     }
   }

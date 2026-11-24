@@ -1,11 +1,31 @@
 import { randomUUID } from 'node:crypto';
 import type { ToolDefinition } from '@one/core';
-import { WMS_EVENT_TYPES } from '../events/catalog.js';
+import { WMS_EVENT_TYPES, type SkuPackageDef } from '../events/catalog.js';
 import { SkuAlreadyExistsError, SkuNotFoundError } from '../errors.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
 import { assertCanTrack, rejectSerialTrackedWhenOff } from '../state/serial-policy.js';
 import { allocateCode } from '../numbering/allocate.js';
-import { assertBarcodeFree, normalizeBarcode, resolveVariantAttachment } from './tool-guards.js';
+import {
+  assertBarcodeFree,
+  normalizeBarcode,
+  normalizePackages,
+  resolveVariantAttachment,
+} from './tool-guards.js';
+
+/** 包装单位数组的参数声明（create/update 共用；独立 const 避开内联字面量的 excess check） */
+const packagesSchema = {
+  type: 'array',
+  description:
+    '包装单位（可选，换算）：[{unit, ratio}]，1 个包装单位 = ratio 个基本单位（unit 字段），如 [{"unit":"箱","ratio":24}]。单据行选包装单位录入时自动换算成基本单位入账；须先有基本单位，包名互不重名且不与基本单位重名',
+  items: {
+    type: 'object',
+    properties: {
+      unit: { type: 'string', description: '包装单位名，如 箱 / 包' },
+      ratio: { type: 'number', description: '换算比例：1 个包装单位 = N 个基本单位（正数）' },
+    },
+    required: ['unit', 'ratio'],
+  },
+} as const;
 
 export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
   const skuCreate: ToolDefinition<{
@@ -14,6 +34,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     barcode?: string;
     reorderPoint?: number;
     unit?: string;
+    packages?: SkuPackageDef[];
     serialTracked?: boolean;
     productCode?: string;
     variantAttrs?: Record<string, string>;
@@ -22,7 +43,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     id: 'wms.sku.create',
     label: '创建 SKU',
     description:
-      '创建一个新的 SKU（库存商品）。skuCode 是全库唯一的商品编码，不传或空着则按编号规则（sku）生成；挂多规格商品时不传 skuCode 会自动生成「商品码-取值」样式（如 T-SHIRT-红-S）。name 是商品名称；可选 barcode 条码（扫码枪识读用，同库唯一，多个 SKU 不可共用）；可选 reorderPoint 安全库存（低库存预警阈值，可用量低于它时进预警清单，0 或不传 = 不预警）；可选 unit 数量单位（如 kg / 箱 / 件，散装称重商品建议填写，单据与标签会跟随显示）；多规格：productCode 挂到所属商品（wms.product.create 先建并声明 specDims），variantAttrs 声明规格组合（如 {"颜色":"红","尺码":"S"}，键值须与商品维度对齐，同商品下组合唯一）；可选 extData 携带自定义扩展字段（如规格、保质期）。',
+      '创建一个新的 SKU（库存商品）。skuCode 是全库唯一的商品编码，不传或空着则按编号规则（sku）生成；挂多规格商品时不传 skuCode 会自动生成「商品码-取值」样式（如 T-SHIRT-红-S）。name 是商品名称；可选 barcode 条码（扫码枪识读用，同库唯一，多个 SKU 不可共用）；可选 reorderPoint 安全库存（低库存预警阈值，可用量低于它时进预警清单，0 或不传 = 不预警）；可选 unit 数量单位（如 kg / 箱 / 件，散装称重商品建议填写，单据与标签会跟随显示）——定义包装换算时它是基本单位；可选 packages 包装单位（如 [{"unit":"箱","ratio":24}] = 1 箱 = 24 个基本单位；单据行可选包装单位录入，系统自动换算成基本单位入账，库存恒按基本单位记）；多规格：productCode 挂到所属商品（wms.product.create 先建并声明 specDims），variantAttrs 声明规格组合（如 {"颜色":"红","尺码":"S"}，键值须与商品维度对齐，同商品下组合唯一）；可选 extData 携带自定义扩展字段（如规格、保质期）。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -40,6 +61,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
           description: '安全库存（可选，低库存预警阈值；可用量 < 此值时预警，0 或不传 = 不预警）',
         },
         unit: { type: 'string', description: '数量单位（可选，如 kg / 箱 / 件；不传 = 数量不带单位）' },
+        packages: { ...packagesSchema },
         serialTracked: {
           type: 'boolean',
           description: '按序列号管理（可选，module.serial）。true = 之后收发必须写每一件的序列号。不传 = 否',
@@ -71,8 +93,11 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
       }
       const barcode = params.barcode === undefined ? undefined : normalizeBarcode(params.barcode);
       if (barcode) assertBarcodeFree(ws, barcode);
-      // 单位（A3）：空白 = 未设置（存 NULL）；不约束词表（kg / 箱 / 件 / 自定义皆可）
+      // 单位（A3）：空白 = 未设置（存 NULL）；不约束词表（kg / 箱 / 件 / 自定义皆可）。
+      // 定义了包装换算时它是基本单位（换算分母）
       const unit = params.unit?.trim() || undefined;
+      // 包装单位（换算）：整体下发；先校验（须有基本单位）
+      const packages = params.packages === undefined ? undefined : normalizePackages(params.packages, unit ?? null);
       const skuId = randomUUID();
       ctx.appendEvent(WMS_EVENT_TYPES.skuCreated, {
         skuId,
@@ -81,6 +106,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         barcode,
         reorderPoint: params.reorderPoint ?? 0,
         unit,
+        ...(packages && packages.length > 0 ? { packages } : {}),
         ...(params.serialTracked === true ? { serialTracked: true } : {}),
         ...(attach
           ? {
@@ -98,6 +124,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         barcode,
         reorderPoint: params.reorderPoint ?? 0,
         unit: unit ?? null,
+        ...(packages && packages.length > 0 ? { packages } : {}),
         ...(attach ? { productCode: attach.product.productCode, variantAttrs: attach.variantAttrs } : {}),
       };
     },
@@ -109,6 +136,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     barcode?: string;
     reorderPoint?: number;
     unit?: string;
+    packages?: SkuPackageDef[];
     serialTracked?: boolean;
     productCode?: string;
     variantAttrs?: Record<string, string>;
@@ -117,7 +145,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     id: 'wms.sku.update',
     label: '更新 SKU',
     description:
-      '更新已有 SKU 的名称、条码、安全库存、单位、规格挂靠或扩展字段。只传需要修改的字段，未传字段保持不变。barcode 条码同库唯一（已绑定其他 SKU 的条码会被拒绝）；reorderPoint 显式传才改（传 0 = 关闭该 SKU 的低库存预警）；unit 传空串 = 清空单位；多规格：productCode 换挂商品（目标须启用中，组合对齐其 specDims 且同商品下不被占用），variantAttrs 改组合（不传 productCode 时沿用现挂商品）；不支持脱挂回独立商品——历史单据引用关系保持稳定。停用/启用走 wms.sku.archive / wms.sku.unarchive。',
+      '更新已有 SKU 的名称、条码、安全库存、单位、包装单位、规格挂靠或扩展字段。只传需要修改的字段，未传字段保持不变。barcode 条码同库唯一（已绑定其他 SKU 的条码会被拒绝）；reorderPoint 显式传才改（传 0 = 关闭该 SKU 的低库存预警）；unit 传空串 = 清空单位；packages 包装单位整体替换（如 [{"unit":"箱","ratio":24}]，传 [] = 清空全部包装单位；改比例只影响之后开的单据，已开单的录入快照不变）；多规格：productCode 换挂商品（目标须启用中，组合对齐其 specDims 且同商品下不被占用），variantAttrs 改组合（不传 productCode 时沿用现挂商品）；不支持脱挂回独立商品——历史单据引用关系保持稳定。停用/启用走 wms.sku.archive / wms.sku.unarchive。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -135,6 +163,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
           description: '新的安全库存（可选；不传保持不变，传 0 = 关闭低库存预警）',
         },
         unit: { type: 'string', description: '新的数量单位（可选；不传保持不变，传空串 = 清空）' },
+        packages: { ...packagesSchema, description: `${packagesSchema.description}（更新时整体替换；不传 = 不改，传 [] = 清空。改比例或删包装不影响已开单据）` },
         serialTracked: {
           type: 'boolean',
           description: '按序列号管理（可选，module.serial）。不传 = 不改。已有库存不能改成按号管理；还有在库序列号不能取消',
@@ -173,6 +202,11 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
       if (barcode) assertBarcodeFree(ws, barcode, sku.id);
       // 单位（A3）：undefined = 不改；trim 后空串 = 清空（存 ''，读取层归一成 null）
       const unit = params.unit === undefined ? undefined : params.unit.trim();
+      // 包装单位（换算）：undefined = 不改；[] = 清空；否则整体替换。
+      // 基本单位取「本次新值 ?? 现值」——把 unit 和 packages 一起改也一次过
+      const effectiveUnit = (unit ?? (sku.unit || null)) || null;
+      const packages =
+        params.packages === undefined ? undefined : normalizePackages(params.packages, effectiveUnit);
       ctx.appendEvent(WMS_EVENT_TYPES.skuUpdated, {
         skuId: sku.id,
         skuCode: sku.skuCode,
@@ -180,6 +214,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         barcode,
         reorderPoint: params.reorderPoint,
         unit,
+        ...(packages !== undefined ? { packages } : {}),
         ...(Object.hasOwn(params, 'serialTracked') ? { serialTracked: params.serialTracked } : {}),
         ...(attach
           ? {
@@ -201,6 +236,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
         barcode: barcode ?? sku.barcode,
         reorderPoint: params.reorderPoint ?? sku.reorderPoint,
         unit: unit === undefined ? sku.unit : unit || null,
+        packages: packages === undefined ? (sku.packages ?? null) : packages.length > 0 ? packages : null,
         ...(attach ? { productCode: attach.product.productCode, variantAttrs: attach.variantAttrs } : {}),
       };
     },

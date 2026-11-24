@@ -89,6 +89,7 @@ export function migrateWms(db: SqliteDatabase): void {
         reorder_point  INTEGER NOT NULL DEFAULT 0,
         status         TEXT NOT NULL DEFAULT 'active',
         unit           TEXT,
+        packages       TEXT,
         serial_tracked INTEGER NOT NULL DEFAULT 0,
         ext_data       TEXT NOT NULL DEFAULT '{}',
         created_at     TEXT NOT NULL,
@@ -108,6 +109,11 @@ export function migrateWms(db: SqliteDatabase): void {
     }
     if (skuColsNow.length > 0 && !skuColsNow.some((c) => c.name === 'variant_attrs')) {
       db.exec(`ALTER TABLE wms_sku ADD COLUMN variant_attrs TEXT`);
+    }
+    // 包装单位换算：JSON [{unit:'箱', ratio:24}]，可空（NULL = 没有包装单位）。
+    // 老库 ALTER 补列即可；包定义是 SKU 主数据，删改不影响已开单（行上另有录入快照）
+    if (skuColsNow.length > 0 && !skuColsNow.some((c) => c.name === 'packages')) {
+      db.exec(`ALTER TABLE wms_sku ADD COLUMN packages TEXT`);
     }
     // 「一个商品下有哪些规格」下钻查询；列补齐后再建（老库首开时列刚 ALTER 出来）
     db.exec(`CREATE INDEX IF NOT EXISTS idx_wms_sku_product ON wms_sku (workspace_id, product_id)`);
@@ -349,6 +355,8 @@ export function migrateWms(db: SqliteDatabase): void {
         batch_expiry_date TEXT,
         quantity     REAL NOT NULL,
         fulfilled_qty REAL,
+        entered_qty   REAL,
+        entered_unit  TEXT,
         serials      TEXT,
         UNIQUE (workspace_id, order_id, sku_id, location_id, batch_no)
       );
@@ -360,6 +368,14 @@ export function migrateWms(db: SqliteDatabase): void {
     const lineColsNow = db.pragma('table_info(wms_order_line)') as { name: string }[];
     if (lineColsNow.length > 0 && !lineColsNow.some((c) => c.name === 'fulfilled_qty')) {
       db.exec(`ALTER TABLE wms_order_line ADD COLUMN fulfilled_qty REAL`);
+    }
+    // 包装换算的录入快照：quantity 恒为换算后的基本单位数量，
+    // entered_qty/entered_unit 只存开单时的原录入（如 2 / 箱），供行与打印回显
+    if (lineColsNow.length > 0 && !lineColsNow.some((c) => c.name === 'entered_qty')) {
+      db.exec(`ALTER TABLE wms_order_line ADD COLUMN entered_qty REAL`);
+    }
+    if (lineColsNow.length > 0 && !lineColsNow.some((c) => c.name === 'entered_unit')) {
+      db.exec(`ALTER TABLE wms_order_line ADD COLUMN entered_unit TEXT`);
     }
     if (lineColsNow.length > 0 && !lineColsNow.some((c) => c.name === 'serials')) {
       db.exec(`ALTER TABLE wms_order_line ADD COLUMN serials TEXT`);

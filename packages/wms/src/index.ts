@@ -299,6 +299,8 @@ export {
   VariantAttrsMismatchError,
   VariantComboExistsError,
   SpecDimInUseError,
+  SkuPackagesInvalidError,
+  OrderLineUnitUnknownError,
   PutawayLineNotFoundError,
   PutawayQuantityError,
   PutawaySourceShortError,

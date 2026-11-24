@@ -1,7 +1,7 @@
 import { Typography } from 'antd';
 import type { Order, Picking } from '../api/client';
 import { printTd, printTh } from './table-style';
-import { fmtQty } from '../lib/format';
+import { fmtQty, fmtQtyEntered } from '../lib/format';
 
 /** 出入库单纸张标题。弹窗标题和纸面抬头共用，避免两处文案漂移。 */
 export function orderPrintTitle(order: Order): string {
@@ -50,7 +50,7 @@ export function OrderPrintSheet({ order }: { order: Order }) {
             <tr key={`${l.skuCode}#${i}`}>
               <td style={printTd}>{l.skuCode}</td>
               <td style={printTd}>{l.name}</td>
-              <td style={{ ...printTd, textAlign: 'right' }}>{fmtQty(l.quantity, l.unit)}</td>
+              <td style={{ ...printTd, textAlign: 'right' }}>{fmtQtyEntered(l)}</td>
               <td style={printTd}>{l.batchNo ?? '-'}</td>
               {inbound ? <td style={printTd}>{l.batchExpiryDate ?? '-'}</td> : null}
               <td style={printTd}>{l.locationCode ?? '-'}</td>

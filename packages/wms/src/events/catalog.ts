@@ -86,6 +86,12 @@ export const DEFAULT_BATCH_NO = 'DEFAULT';
 
 // ── payload 结构 ──────────────────────────────────────────────
 
+/** 一个包装单位定义：1 个「unit」= ratio 个基本单位（如 1 箱 = 24 瓶） */
+export interface SkuPackageDef {
+  readonly unit: string;
+  readonly ratio: number;
+}
+
 export interface SkuCreatedPayload {
   readonly skuId: string;
   readonly skuCode: string;
@@ -96,6 +102,11 @@ export interface SkuCreatedPayload {
   readonly reorderPoint?: number;
   /** 单位（A3，可选）：数量单位（如 kg / 箱 / 件）；空 = 数量不显示单位（兼容存量） */
   readonly unit?: string;
+  /**
+   * 包装单位（换算，可选）：[{unit:'箱', ratio:24}]——1 箱 = 24 个基本单位（unit 字段）。
+   * 单据行可选包装单位录入，落事件前换算成基本单位。缺省 = 无包装单位。
+   */
+  readonly packages?: readonly SkuPackageDef[];
   /** 按序列号管理（module.serial）。缺省 = 否 */
   readonly serialTracked?: boolean;
   /**
@@ -123,6 +134,11 @@ export interface SkuUpdatedPayload {
   readonly reorderPoint?: number;
   /** 单位（A3，可选）：显式传才改；空串 = 清空单位 */
   readonly unit?: string;
+  /**
+   * 包装单位（换算）：显式传才改（整体替换）；[] = 清空。包名与 ratio 的校验在工具层。
+   * 删改包定义不影响已开单——行上另有 enteredQty/enteredUnit 录入快照。
+   */
+  readonly packages?: readonly SkuPackageDef[];
   /** 按序列号管理。缺省 = 不改。只有 module.serial 启用时工具才会写。 */
   readonly serialTracked?: boolean;
   /**
@@ -330,7 +346,14 @@ export interface PartnerUpdatedPayload {
 
 export interface OrderLinePayload {
   readonly skuId: string;
+  /** 数量（恒为基本单位）：unit 选了包装单位时由工具层换算后落这里 */
   readonly quantity: number;
+  /**
+   * 录入快照（包装换算）：开单时的原录入（如 2 / 箱）。纯展示用，库存与
+   * fulfilledQty 都按基本单位。缺省 = 按基本单位录入（不写快照，兼容存量）。
+   */
+  readonly enteredQty?: number;
+  readonly enteredUnit?: string;
   /** 收货上架/发货扣减的目标库位（镜像行内 skuId-only 先例不带 code；缺省 DEFAULT，投影层兜底） */
   readonly locationId?: string;
   /** 批次维度（M11）：入库行声明批次（新批次可带效期）、出库行指定扣减批次；缺省 DEFAULT 虚拟批次 */

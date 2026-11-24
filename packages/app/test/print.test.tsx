@@ -49,6 +49,18 @@ const ordersFixture = [
         batchExpiryDate: '2027-01-01',
         locationCode: 'LOC-01',
       },
+      {
+        // 按包装录入的行：quantity 恒基本单位（48 瓶），entered 快照还原「2 箱」
+        skuCode: 'C-3',
+        name: '可乐',
+        quantity: 48,
+        unit: '瓶',
+        enteredQty: 2,
+        enteredUnit: '箱',
+        batchNo: 'DEFAULT',
+        batchExpiryDate: null,
+        locationCode: 'DEFAULT',
+      },
     ],
   },
   {
@@ -243,6 +255,23 @@ describe('单据打印（A1）', () => {
     await user.click(within(preview).getByRole('button', { name: '打印' }));
     await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
     expect(document.getElementById('order-print-area')!.textContent).toContain('2.5 kg');
+  });
+
+  it('按包装录入的行：详情与纸样都显「2 箱（48 瓶）」（原录入 + 基本单位）', async () => {
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage direction="in" />));
+
+    await user.click(screen.getAllByRole('button', { name: '详情' })[0]);
+    const detail = screen.getByRole('dialog', { name: /详情/ });
+    expect(within(detail).getByText('2 箱（48 瓶）')).toBeInTheDocument();
+
+    await user.click(within(detail).getByRole('button', { name: '打印预览' }));
+    const preview = screen.getByText('预览 入库单 IN-20261107-1').closest('[role="dialog"]') as HTMLElement;
+    expect(within(preview).getByText('2 箱（48 瓶）')).toBeInTheDocument();
+
+    await user.click(within(preview).getByRole('button', { name: '打印' }));
+    await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
+    expect(document.getElementById('order-print-area')!.textContent).toContain('2 箱（48 瓶）');
   });
 
   it('OrdersPage：勾选当前页可以一次打印，不打开详情', async () => {

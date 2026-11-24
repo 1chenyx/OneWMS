@@ -8,6 +8,7 @@ import type { Page } from '../app-nav';
 import { NAV_CATEGORIES, categoryOfPage, navCategoryFor, navIconFor } from '../nav';
 import type { CategoryKey, NavCategory, NavItem } from '../nav';
 import { canVisitPage } from '../lib/session';
+import { isMobileDevice } from '../lib/device';
 
 /** 划过大类时稍等再打开，避免鼠标掠过就闪出浮窗 */
 const FLYOUT_OPEN_DELAY_S = 0.4;
@@ -128,7 +129,9 @@ function visibleNavItems<T extends { enabled?: boolean }>(
   return category.items
     .filter((item) => item.moduleId == null || modules?.[item.moduleId]?.enabled === true)
     // module.rbac 启用后再按角色的 page:{id} 授权过一遍；停用时恒为 true
-    .filter((item) => canVisitPage(item.page));
+    .filter((item) => canVisitPage(item.page))
+    // 场景作业这类移动端专属入口：桌面管理界面不显示（见 lib/device.ts）
+    .filter((item) => !item.mobileOnly || isMobileDevice());
 }
 
 /**

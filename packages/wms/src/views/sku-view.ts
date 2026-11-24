@@ -1,6 +1,11 @@
 import type Database from 'better-sqlite3';
 import type { EventEnvelope } from '@one/core';
-import { WMS_EVENT_TYPES, type SkuCreatedPayload, type SkuUpdatedPayload } from '../events/catalog.js';
+import {
+  WMS_EVENT_TYPES,
+  type SkuCreatedPayload,
+  type SkuPackageDef,
+  type SkuUpdatedPayload,
+} from '../events/catalog.js';
 
 /**
  * SKU 投影（SkuView）——wms_sku 表的事件投影 + 查询。
@@ -24,8 +29,13 @@ export interface SkuRecord {
    * 声明为可选——老事件重放/测试 fixture 字面量不破，消费端统一 `?? 'active'` 容忍。
    */
   readonly status?: string;
-  /** 单位（A3）：数量单位（kg / 箱 / 件…）；null = 不显示 */
+  /** 单位（A3）：数量单位（kg / 箱 / 件…）；null = 不显示。换算语境下是基本单位 */
   readonly unit: string | null;
+  /**
+   * 包装单位（换算）：[{unit:'箱', ratio:24}]——1 箱 = 24 个基本单位；
+   * null = 无包装单位（单据只能按基本单位录）。空数组读取层归一成 null。
+   */
+  readonly packages: readonly SkuPackageDef[] | null;
   /** 按序列号管理（module.serial）。老数据缺省否 */
   readonly serialTracked: boolean;
   /** 所属商品 id（多规格）：null = 独立商品（不挂 SPU，存量/单规格） */
@@ -47,6 +57,7 @@ interface SkuRow {
   reorder_point: number;
   status: string;
   unit: string | null;
+  packages: string | null;
   serial_tracked: number;
   ext_data: string;
   created_at: string;
@@ -60,6 +71,13 @@ function parseVariantAttrs(raw: string | null): Record<string, string> | null {
   return Object.keys(parsed).length === 0 ? null : parsed;
 }
 
+/** 空数组 = 清空（sku.update 传 [] 时事件写 []），读取层归一成 null */
+function parsePackages(raw: string | null): readonly SkuPackageDef[] | null {
+  if (!raw) return null;
+  const parsed = JSON.parse(raw) as SkuPackageDef[];
+  return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+}
+
 function rowToRecord(row: SkuRow): SkuRecord {
   return {
     id: row.id,
@@ -71,6 +89,7 @@ function rowToRecord(row: SkuRow): SkuRecord {
     reorderPoint: row.reorder_point,
     status: row.status,
     unit: row.unit || null,
+    packages: parsePackages(row.packages),
     serialTracked: row.serial_tracked === 1,
     extData: JSON.parse(row.ext_data) as Record<string, unknown>,
     createdAt: row.created_at,
@@ -93,8 +112,8 @@ export class SkuView {
         // sku_code / barcode 唯一冲突不走 OR IGNORE 静默——那是业务冲突，必须显式炸出来
         this.db
           .prepare(
-            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, product_id, variant_attrs, reorder_point, status, unit, serial_tracked, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, product_id, variant_attrs, reorder_point, status, unit, packages, serial_tracked, ext_data, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             p.skuId,
@@ -107,6 +126,7 @@ export class SkuView {
             p.reorderPoint ?? 0,
             'active',
             p.unit ?? null,
+            p.packages === undefined ? null : JSON.stringify(p.packages),
             p.serialTracked === true ? 1 : 0,
             JSON.stringify(p.extData ?? {}),
             env.createdAt,
@@ -125,6 +145,7 @@ export class SkuView {
                variant_attrs = COALESCE(?, variant_attrs),
                reorder_point = COALESCE(?, reorder_point),
                unit = COALESCE(?, unit),
+               packages = COALESCE(?, packages),
                serial_tracked = COALESCE(?, serial_tracked),
                status = COALESCE(?, status),
                ext_data = COALESCE(?, ext_data),
@@ -138,6 +159,7 @@ export class SkuView {
             p.variantAttrs === undefined ? null : JSON.stringify(p.variantAttrs),
             p.reorderPoint ?? null,
             p.unit ?? null,
+            p.packages === undefined ? null : JSON.stringify(p.packages),
             p.serialTracked === undefined ? null : p.serialTracked ? 1 : 0,
             p.status ?? null,
             p.extData === undefined ? null : JSON.stringify(p.extData),

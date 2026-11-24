@@ -39,8 +39,8 @@ describe('单据：创建', () => {
     expect(order.direction).toBe('in');
     expect(order.note).toBe('首单');
     expect(ws.orders.lines(order.id)).toEqual([
-      { skuId: ws.skus.byCode('A-1')!.id, locationId: 'DEFAULT', batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 100, fulfilledQty: null },
-      { skuId: ws.skus.byCode('B-2')!.id, locationId: 'DEFAULT', batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 50, fulfilledQty: null },
+      { skuId: ws.skus.byCode('A-1')!.id, locationId: 'DEFAULT', batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 100, fulfilledQty: null, enteredQty: null, enteredUnit: null },
+      { skuId: ws.skus.byCode('B-2')!.id, locationId: 'DEFAULT', batchNo: 'DEFAULT', batchExpiryDate: null, quantity: 50, fulfilledQty: null, enteredQty: null, enteredUnit: null },
     ]);
   });
 

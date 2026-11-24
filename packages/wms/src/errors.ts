@@ -509,6 +509,25 @@ export class SpecDimInUseError extends CoreError {
   }
 }
 
+// ── 包装单位换算 ─────────────────────────────────────
+
+/** 包装单位定义不合法（重名 / 比例非正 / 与基本单位重名 / 超上限） */
+export class SkuPackagesInvalidError extends CoreError {
+  constructor(detail: string) {
+    super('WMS_SKU_PACKAGES_INVALID', `包装单位定义不对：${detail}`);
+  }
+}
+
+/** 单据行选了该 SKU 没定义过的包装单位 */
+export class OrderLineUnitUnknownError extends CoreError {
+  constructor(skuCode: string, unit: string) {
+    super(
+      'WMS_ORDER_LINE_UNIT_UNKNOWN',
+      `SKU ${skuCode} 没有定义包装单位「${unit}」。先用 wms.sku.update 的 packages 定义（或改回基本单位）`,
+    );
+  }
+}
+
 // ── 上架（M21，module.putaway）───────────────────────
 
 /** 上架只对入库单开放（出库单调用了 wms.order.putaway） */

@@ -1,10 +1,12 @@
 import type { WmsWorkspace } from '../wms.js';
-import type { ProductSpecDim } from '../events/catalog.js';
+import type { ProductSpecDim, SkuPackageDef } from '../events/catalog.js';
 import type { ProductRecord } from '../views/product-view.js';
+import { quantizeQty } from '../state/inventory-policy.js';
 import {
   ProductArchivedError,
   ProductNotFoundError,
   SkuBarcodeExistsError,
+  SkuPackagesInvalidError,
   VariantAttrsMismatchError,
   VariantComboExistsError,
 } from '../errors.js';
@@ -28,6 +30,46 @@ export function assertBarcodeFree(ws: WmsWorkspace, barcode: string, selfSkuId?:
   if (holder && holder.id !== selfSkuId) {
     throw new SkuBarcodeExistsError(barcode, holder.skuCode);
   }
+}
+
+// ── 包装单位换算守卫 ─────────────────────────────────
+
+/** 包装单位上限：防误粘贴大数组（一个 SKU 的包装形态不会超过一页纸） */
+const MAX_PACKAGES = 20;
+
+/**
+ * 包装单位定义的形状与语义校验（wms.sku.create / wms.sku.update 共用）。
+ * 规则：包名 trim 非空且不重、不得与基本单位重名（换算的「分母」必须是
+ * 基本单位，同名会让单据行选择器出现两个「箱」）、ratio 必须是正的有限数
+ * （3 位量化）；定义包装单位必须先有基本单位（没有分母的换算没有意义）。
+ * 返回量化后的规范数组；空数组原样返回（调用方按「清空」语义落事件）。
+ */
+export function normalizePackages(
+  raw: readonly SkuPackageDef[],
+  baseUnit: string | null,
+): SkuPackageDef[] {
+  if (!Array.isArray(raw)) throw new SkuPackagesInvalidError('packages 必须是数组');
+  if (raw.length === 0) return [];
+  if (!baseUnit) {
+    throw new SkuPackagesInvalidError('先设基本单位（unit 字段），再定义包装单位——换算的分母是基本单位');
+  }
+  if (raw.length > MAX_PACKAGES) throw new SkuPackagesInvalidError(`最多 ${MAX_PACKAGES} 个包装单位`);
+  const seen = new Set<string>([baseUnit]);
+  const out: SkuPackageDef[] = [];
+  for (const item of raw) {
+    const unit = typeof item?.unit === 'string' ? item.unit.trim() : '';
+    if (!unit) throw new SkuPackagesInvalidError('包装单位名不能为空（如 箱 / 包）');
+    if (seen.has(unit)) {
+      throw new SkuPackagesInvalidError(`单位名重复: ${unit}（包装单位互不重名，也不能与基本单位「${baseUnit}」重名）`);
+    }
+    const ratio = typeof item?.ratio === 'number' ? item.ratio : Number.NaN;
+    if (!Number.isFinite(ratio) || ratio <= 0) {
+      throw new SkuPackagesInvalidError(`包装单位 ${unit} 的换算比例必须是正数（1 ${unit} = N ${baseUnit}）`);
+    }
+    seen.add(unit);
+    out.push({ unit, ratio: quantizeQty(ratio) });
+  }
+  return out;
 }
 
 // ── 多规格（SPU 层）守卫 ──────────────────────────────

@@ -202,6 +202,40 @@ describe('ModuleRail：悬停浮出功能网格', () => {
   });
 });
 
+describe('移动端专属入口：场景作业', () => {
+  const scenarioOn: ProfileSnapshot = {
+    workspaceId: 'ws',
+    version: 1,
+    schema: { entities: {} },
+    workflows: {},
+    modules: { 'module.scenario': { enabled: true, version: '0.1.0' } },
+    roles: {},
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true });
+  });
+
+  it('桌面浏览器：场景作业不进作业浮窗', async () => {
+    const user = userEvent.setup();
+    renderRail(scenarioOn);
+    await user.click(screen.getByRole('button', { name: '作业' }));
+    // 浮窗确实开了（入库单在），只是场景作业不在——桌面管理界面不要这个入口
+    expect(screen.getByText('入库单')).toBeInTheDocument();
+    expect(screen.queryByText('场景作业')).not.toBeInTheDocument();
+  });
+
+  it('触屏窄屏（手机/扫码枪浏览器）：场景作业出现在作业浮窗', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true });
+    const user = userEvent.setup();
+    renderRail(scenarioOn);
+    await user.click(screen.getByRole('button', { name: '作业' }));
+    expect(screen.getByText('场景作业')).toBeInTheDocument();
+  });
+});
+
 describe('ModuleRail：声明式模块的页面（B.6）', () => {
   it('按 category 落进对应大类，点它进入 ui.* 页面', async () => {
     const user = userEvent.setup();

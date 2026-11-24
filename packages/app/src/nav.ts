@@ -53,6 +53,8 @@ export interface NavItem {
   icon: NavIcon;
   /** 设了就只在该模块 enabled === true 时出现在浮窗里 */
   moduleId?: string;
+  /** 设了就只在移动端（手机/扫码枪浏览器，见 lib/device.ts）显示；桌面管理界面不出现 */
+  mobileOnly?: boolean;
   /** 浮窗内的分组标题：同类功能超过一屏（如「作业」）时按段扫视。不设 = 排在最前的无标题段 */
   group?: string;
 }
@@ -96,8 +98,9 @@ export const NAV_CATEGORIES: readonly NavCategory[] = [
     items: [
       // 作业台是无分组的头名位：以流程待办为入口，先于一切功能清单
       { page: 'workbench', label: '作业台', icon: DeploymentUnitOutlined },
-      // 场景作业与作业台同处无分组头名段：现场扫码入口，不按出入库归类
-      { page: 'scenario', label: '场景作业', icon: MobileOutlined, moduleId: 'module.scenario' },
+      // 场景作业与作业台同处无分组头名段：现场扫码入口，不按出入库归类。
+      // mobileOnly：入口只给手机/扫码枪浏览器显示，桌面管理界面不出现
+      { page: 'scenario', label: '场景作业', icon: MobileOutlined, moduleId: 'module.scenario', mobileOnly: true },
       { page: 'inbound', label: '入库单', icon: ImportOutlined, group: '入库' },
       { page: 'qc', label: '质检', icon: AuditOutlined, moduleId: 'module.qc', group: '入库' },
       { page: 'putaway', label: '上架', icon: VerticalAlignTopOutlined, moduleId: 'module.putaway', group: '入库' },

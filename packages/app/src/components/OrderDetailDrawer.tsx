@@ -5,7 +5,7 @@ import { ApiError, skuLabel } from '../api/client';
 import type { InventoryBucketRow, Location, Order, OrderLine } from '../api/client';
 import { useInventoryBuckets, useLocations, usePartners, useProfileSnapshot, useReviseOrder, useSkus } from '../api/hooks';
 import { orderEditPolicy } from '@one/wms/order-edit-policy';
-import { fmtQty } from '../lib/format';
+import { fmtQty, fmtQtyEntered } from '../lib/format';
 import { PrintPreviewModal } from './print-preview';
 import { OrderPrintSheet, orderPrintTitle } from './print-sheets';
 import { monoCell, numCell } from './table-style';
@@ -516,12 +516,13 @@ function LineTable({ order, buckets }: { order: Order; buckets?: InventoryBucket
         { title: 'SKU', dataIndex: 'skuCode', width: 140, onCell: monoCell },
         { title: '名称', dataIndex: 'name' },
         {
+          // 按包装录入的行显「2 箱（48 瓶）」：原录入 + 换算后的基本单位
           title: '数量',
           dataIndex: 'quantity',
           align: 'right',
-          width: 100,
+          width: 150,
           onCell: numCell,
-          render: (value: number, line) => fmtQty(value, line.unit),
+          render: (_value: number, line) => fmtQtyEntered(line),
         },
         ...(buckets
           ? [

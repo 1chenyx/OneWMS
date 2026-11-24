@@ -11,6 +11,7 @@ import {
   AsnExpectedAtError,
   AsnWithReturnError,
   OrderAlreadyExistsError,
+  OrderLineUnitUnknownError,
   OrderNotFoundError,
   LoadRequiredError,
   OrderReviseRejectedError,
@@ -357,6 +358,8 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     lines: {
       skuCode: string;
       quantity: number;
+      /** 录入单位（包装换算，可选）：缺省或基本单位 = quantity 按基本单位计；包装单位 = 换算后入账 */
+      unit?: string;
       locationCode?: string;
       batchNo?: string;
       batchExpiryDate?: string;
@@ -376,7 +379,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     id: 'wms.order.create',
     label: '创建出入库单',
     description:
-      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正数，支持 3 位小数——散装/称重场景，如 0.5 表示半斤）。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）。库位划进了库区时，收货、客退、拣货发货、退供要符合该库区的分类；未分区和 DEFAULT 不限制，工作区关掉的分类也不再限制；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致）。出库行写了批次就只扣该批次；没写批次的行按仓库统一的分配策略扣。出库在建单时就按落定后的每一桶校验余量、别人的拣货占用、冻结和过期拦截，不够就拒绝且不产生单据；改明细同样校验。入库建单不查库存。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。批次怎么扣不在单据上指定，是 core.wms 设置 defaultAllocation（strict=严格桶不分配，没写批次只扣 DEFAULT / fifo=先进先出 / fefo=先到期先出，缺省 strict）。fifo 或 fefo 时，没写批次的行在该行库位内拆成具体批次，一行可拆多批；写了批次的行不参与拆分。要改规则用 profile.propose 改 /modules/core.wms/settings/defaultAllocation，确认后生效，不要传 allocation。退货单不按分配策略拆行。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传或空着则按编号规则生成（普通入库、出库、预报、客退、退供各用各的模板），传了就用传入的。module.return 启用时可传 returnOf 原单号：入库单退已发货的出库单（客退，收货时加库存），出库单退已收货的入库单（退供，发货时扣库存）。数量按 SKU 和批次不能超过原单已入账再减去未取消的退货，批次必须是原单上的批次，不按分配策略拆行。不传 returnOf 就是普通出入库。停用后退货参数会被拒绝，已开出的退货单仍可继续流转。module.asn 启用时可传 asn=true 把入库单开成到货预报（状态已预报，可选 expectedAt 预计到货日 YYYY-MM-DD）：收货前不加库存，收到货再转入 received 才加库存，取消预报不动库存。不传 asn 就是直接入库。停用后预报参数会被拒绝，已经预报的单仍可收货或取消。预报不能同时是退货，也不能开出库单。写了批次或库位之后能不能换，也是仓库设置 specifiedBatchConstraint、specifiedLocationConstraint（prefer=可以换，lock=不能换），不要在单据上传这两个参数。没填的批次和库位不受这两项限制。退货单的批次始终锁定，序列号商品的库位和批次始终锁定。',
+      '创建一张入库单或出库单。direction 取 in（入库）/ out（出库）；lines 是商品明细（SKU 编码 + 数量 + 可选库位编码 + 可选批次编码，数量必须是正数，支持 3 位小数——散装/称重场景，如 0.5 表示半斤）。数量按 SKU 的基本单位计；SKU 定义了包装单位（wms.sku.create 的 packages，如 1 箱 = 24 瓶）时行上可传 unit 选包装单位录入（quantity 填 2 箱就是 2），系统自动换算成基本单位入账，库存恒按基本单位记。行上的 locationCode 指定收货上架/发货扣减的库位（缺省为默认库位 DEFAULT）。库位划进了库区时，收货、客退、拣货发货、退供要符合该库区的分类；未分区和 DEFAULT 不限制，工作区关掉的分类也不再限制；batchNo 指定批次（缺省为虚拟批次 DEFAULT）：入库行声明批次并可带 batchExpiryDate 效期（YYYY-MM-DD，同批次后继必须一致）。出库行写了批次就只扣该批次；没写批次的行按仓库统一的分配策略扣。出库在建单时就按落定后的每一桶校验余量、别人的拣货占用、冻结和过期拦截，不够就拒绝且不产生单据；改明细同样校验。入库建单不查库存。可选 partnerCode 关联往来单位（入库单选供应商，出库单选客户，种类不匹配会被拒绝）。批次怎么扣不在单据上指定，是 core.wms 设置 defaultAllocation（strict=严格桶不分配，没写批次只扣 DEFAULT / fifo=先进先出 / fefo=先到期先出，缺省 strict）。fifo 或 fefo 时，没写批次的行在该行库位内拆成具体批次，一行可拆多批；写了批次的行不参与拆分。要改规则用 profile.propose 改 /modules/core.wms/settings/defaultAllocation，确认后生效，不要传 allocation。退货单不按分配策略拆行。同单同 SKU 可分不同库位/批次多行，但同 SKU 同库位同批次不可重复。orderNo 不传或空着则按编号规则生成（普通入库、出库、预报、客退、退供各用各的模板），传了就用传入的。module.return 启用时可传 returnOf 原单号：入库单退已发货的出库单（客退，收货时加库存），出库单退已收货的入库单（退供，发货时扣库存）。数量按 SKU 和批次不能超过原单已入账再减去未取消的退货，批次必须是原单上的批次，不按分配策略拆行。不传 returnOf 就是普通出入库。停用后退货参数会被拒绝，已开出的退货单仍可继续流转。module.asn 启用时可传 asn=true 把入库单开成到货预报（状态已预报，可选 expectedAt 预计到货日 YYYY-MM-DD）：收货前不加库存，收到货再转入 received 才加库存，取消预报不动库存。不传 asn 就是直接入库。停用后预报参数会被拒绝，已经预报的单仍可收货或取消。预报不能同时是退货，也不能开出库单。写了批次或库位之后能不能换，也是仓库设置 specifiedBatchConstraint、specifiedLocationConstraint（prefer=可以换，lock=不能换），不要在单据上传这两个参数。没填的批次和库位不受这两项限制。退货单的批次始终锁定，序列号商品的库位和批次始终锁定。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -384,7 +387,8 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         direction: { type: 'string', enum: ['in', 'out'], description: '单据方向：in=入库，out=出库' },
         lines: {
           type: 'array',
-          description: '单据明细行，每行 { skuCode, quantity, locationCode?, batchNo?, batchExpiryDate? }',
+          description:
+            '单据明细行，每行 { skuCode, quantity, unit?, locationCode?, batchNo?, batchExpiryDate? }。unit 是录入单位（可选）：缺省或填 SKU 的基本单位时 quantity 按基本单位计；填该 SKU 定义的包装单位（如 箱）时 quantity 按该单位计（如 2 箱），系统自动按换算比例换算成基本单位入账——库存恒按基本单位记，不要自己换算',
           items: { type: 'object' },
         },
         orderNo: {
@@ -445,12 +449,13 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
       }
       const settings = readWmsSettings(ws);
       const effective = returnOf || params.direction !== 'out' ? 'strict' : settings.defaultAllocation;
-      prepareOrderLineSerials(ws, params.direction, params.lines, effective);
-      const resolvedLines = (
+      // 包装换算先于分配拆分：行 quantity 归一成基本单位，原录入暂存 entered 快照
+      const convertedLines = params.lines.map((l) => convertOrderLineUnit(ws, l));
+      prepareOrderLineSerials(ws, params.direction, convertedLines, effective);
+      const resolvedLines: UnitConvertedLine[] =
         effective !== 'strict'
-          ? expandAllocatedLines(ws, params.lines, effective, settings.blockExpiredOutbound)
-          : params.lines
-      ) as typeof params.lines;
+          ? expandAllocatedLines(ws, convertedLines, effective, settings.blockExpiredOutbound).map(stripEntered)
+          : convertedLines;
 
       // 行级校验（schema 校验器不深入 object 内部，handler 手工补位）
       if (!Array.isArray(resolvedLines) || resolvedLines.length === 0) {
@@ -569,6 +574,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
             locationId: resolveLocation(ws, l.locationCode).locationId,
             batchNo: batch.batchNo,
             batchExpiryDate: batch.batchExpiryDate,
+            ...(l.enteredQty !== undefined ? { enteredQty: l.enteredQty, enteredUnit: l.enteredUnit } : {}),
             ...(l.serials && l.serials.length > 0 ? { serials: l.serials } : {}),
           };
         }),
@@ -714,6 +720,8 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
     lines?: {
       skuCode: string;
       quantity: number;
+      /** 录入单位（包装换算，可选）：缺省或基本单位 = quantity 按基本单位计；包装单位 = 换算后入账 */
+      unit?: string;
       locationCode?: string;
       batchNo?: string;
       batchExpiryDate?: string;
@@ -732,7 +740,8 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
       '退货单改明细时仍按原单可退数量校验，不能改指向的原单。' +
       '出库明细按提交的行保存，不会重新做 fifo/fefo 拆分。' +
       '出库改明细时按落定后的每一桶校验余量、别人的拣货占用、冻结和过期拦截，不够就拒绝。' +
-      '只传要改的字段；note / partnerCode / expectedAt 传 null 表示清空。lines 在场则整份替换，不能为空。',
+      '只传要改的字段；note / partnerCode / expectedAt 传 null 表示清空。lines 在场则整份替换，不能为空。' +
+      '数量按 SKU 基本单位计；行上可传 unit 选该 SKU 定义的包装单位录入（如 2 箱），系统自动换算成基本单位。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -747,7 +756,8 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         expectedAt: { type: 'string', nullable: true, description: '预计到货日 YYYY-MM-DD，仅到货预报。null 表示清空' },
         lines: {
           type: 'array',
-          description: '整份明细。在场则替换原明细。每行 { skuCode, quantity, locationCode?, batchNo?, batchExpiryDate?, serials? }',
+          description:
+            '整份明细。在场则替换原明细。每行 { skuCode, quantity, unit?, locationCode?, batchNo?, batchExpiryDate?, serials? }。unit 是录入单位（可选）：缺省或基本单位 = quantity 按基本单位计；包装单位 = 自动换算成基本单位入账',
           items: { type: 'object' },
         },
       },
@@ -783,6 +793,8 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
         lines?: {
           skuId: string;
           quantity: number;
+          enteredQty?: number;
+          enteredUnit?: string;
           locationId: string;
           batchNo: string;
           batchExpiryDate?: string;
@@ -819,13 +831,15 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
           throw new OrderReviseRejectedError('明细不能为空');
         }
         rejectSerialLinesWhenOff(ws, lines);
+        // 包装换算（revise 不做分配拆分——出库改明细按提交的行保存）
+        const convertedLines = lines.map((l) => convertOrderLineUnit(ws, l));
         const existing = ws.orders.lines(order.id).map((line) => ({
           skuCode: ws.skus.byId(line.skuId)?.skuCode,
           locationCode: codeOfLocation(ws, line.locationId),
           batchNo: line.batchNo,
           serials: line.serials ? [...line.serials] : undefined,
         }));
-        for (const line of lines) {
+        for (const line of convertedLines) {
           if (!line || Object.hasOwn(line, 'serials')) continue;
           const batch = resolveBatch(line.batchNo, line.batchExpiryDate);
           const location = resolveLocation(ws, line.locationCode);
@@ -834,10 +848,10 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
           );
           if (hit?.serials) line.serials = hit.serials;
         }
-        prepareOrderLineSerials(ws, order.direction, lines, 'strict');
+        prepareOrderLineSerials(ws, order.direction, convertedLines, 'strict');
         const seenKeys = new Set<string>();
         const resolved: NonNullable<typeof payload.lines> = [];
-        for (const [i, line] of lines.entries()) {
+        for (const [i, line] of convertedLines.entries()) {
           if (typeof line?.skuCode !== 'string' || !line.skuCode) {
             throw new Error(`TOOL_REJECTED: 第 ${i + 1} 行缺少 skuCode`);
           }
@@ -866,6 +880,7 @@ export function createOrderTools(resolveWorkspace: WorkspaceResolver): ToolDefin
             locationId: loc.locationId,
             batchNo: batch.batchNo,
             batchExpiryDate: batch.batchExpiryDate,
+            ...(line.enteredQty !== undefined ? { enteredQty: line.enteredQty, enteredUnit: line.enteredUnit } : {}),
             ...(line.serials && line.serials.length > 0 ? { serials: line.serials } : {}),
           });
         }
@@ -922,6 +937,48 @@ function postedOf(
   source: { id: string; direction: OrderDirection },
 ): Map<string, number> {
   return postedBucketsForReturn(source.direction, ws.orders.lines(source.id), ws.inventory.movementsByOrder(source.id));
+}
+
+/** 包装换算后的单据行：quantity 已是基本单位数量，entered* 是原录入快照 */
+interface UnitConvertedLine {
+  skuCode: string;
+  quantity: number;
+  locationCode?: string;
+  batchNo?: string;
+  batchExpiryDate?: string;
+  serials?: string[];
+  enteredQty?: number;
+  enteredUnit?: string;
+}
+
+/**
+ * 单据行的录入单位换算（wms.order.create / wms.order.revise 共用）：
+ * unit 缺省或等于基本单位 → quantity 原样（不写快照，事件形态与存量逐字节同构）；
+ * unit 是该 SKU 的包装单位 → 换算成基本单位（量化后仍须为正），原录入暂存
+ * enteredQty/enteredUnit。必须在批次分配拆分之前做（拆分行不携带快照）。
+ */
+function convertOrderLineUnit(
+  ws: WmsWorkspace,
+  line: { skuCode: string; quantity: number; unit?: string; [k: string]: unknown },
+): UnitConvertedLine {
+  const { unit, ...rest } = line;
+  const restLine = rest as UnitConvertedLine;
+  const trimmed = typeof unit === 'string' ? unit.trim() : '';
+  if (!trimmed) return restLine;
+  const sku = ws.skus.byCode(line.skuCode);
+  if (!sku) throw new SkuNotFoundError(line.skuCode);
+  if (trimmed === (sku.unit ?? '')) return restLine; // 基本单位：原样（不写快照）
+  const pkg = sku.packages?.find((p) => p.unit === trimmed);
+  if (!pkg) throw new OrderLineUnitUnknownError(sku.skuCode, trimmed);
+  const enteredQty = assertPositiveQty(line.quantity, '行数量');
+  const baseQty = quantizeQty(enteredQty * pkg.ratio);
+  assertPositiveQty(baseQty, `SKU ${sku.skuCode} 按 ${enteredQty} ${trimmed} 换算后的数量`);
+  return { ...restLine, quantity: baseQty, enteredQty, enteredUnit: trimmed };
+}
+
+/** 批次分配的拆分行不带录入快照（拆的是基本单位数量，原录入对拆出的桶没有意义） */
+function stripEntered(line: UnitConvertedLine): UnitConvertedLine {
+  return { ...line, enteredQty: undefined, enteredUnit: undefined };
 }
 
 

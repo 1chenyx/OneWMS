@@ -62,6 +62,12 @@ export interface OrderLineRecord {
   /** 行声明的批次效期（M11，仅入库行有意义；未声明为 null） */
   readonly batchExpiryDate: string | null;
   readonly quantity: number;
+  /**
+   * 录入快照（包装换算）：开单时的原录入（如 2 / 箱）。null = 按基本单位录入；
+   * quantity 恒为换算后的基本单位数量
+   */
+  readonly enteredQty: number | null;
+  readonly enteredUnit: string | null;
   /** 已入账净量。null = 没记过短收短发（按订单数量） */
   readonly fulfilledQty: number | null;
   /** 序列号。没有时不出现这个键，避免旧断言被多出来的空数组打破 */
@@ -90,6 +96,8 @@ interface OrderLineRow {
   batch_no: string;
   batch_expiry_date: string | null;
   quantity: number;
+  entered_qty: number | null;
+  entered_unit: string | null;
   fulfilled_qty: number | null;
   serials: string | null;
 }
@@ -197,8 +205,8 @@ export class OrderView {
             env.createdAt,
           );
         const insertLine = this.db.prepare(
-          `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity, serials)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity, entered_qty, entered_unit, serials)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const line of p.lines) {
           // 行 id 由 orderId+skuId+locationId+batchNo 四段派生（M11）：同一事件重放
@@ -214,6 +222,8 @@ export class OrderView {
             batchNo,
             line.batchExpiryDate ?? null,
             line.quantity,
+            line.enteredQty ?? null,
+            line.enteredUnit ?? null,
             line.serials && line.serials.length > 0 ? JSON.stringify(line.serials) : null,
           );
         }
@@ -246,8 +256,8 @@ export class OrderView {
             .prepare(`DELETE FROM wms_order_line WHERE workspace_id = ? AND order_id = ?`)
             .run(this.workspaceId, p.orderId);
           const insertLine = this.db.prepare(
-            `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity, serials)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_order_line (id, workspace_id, order_id, sku_id, location_id, batch_no, batch_expiry_date, quantity, entered_qty, entered_unit, serials)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           );
           for (const line of p.lines) {
             const locationId = line.locationId ?? DEFAULT_LOCATION_ID;
@@ -261,6 +271,8 @@ export class OrderView {
               batchNo,
               line.batchExpiryDate ?? null,
               line.quantity,
+              line.enteredQty ?? null,
+              line.enteredUnit ?? null,
               line.serials && line.serials.length > 0 ? JSON.stringify(line.serials) : null,
             );
           }
@@ -487,7 +499,7 @@ export class OrderView {
   lines(orderId: string): OrderLineRecord[] {
     const rows = this.db
       .prepare<unknown[], OrderLineRow>(
-        `SELECT sku_id, location_id, batch_no, batch_expiry_date, quantity, fulfilled_qty, serials FROM wms_order_line WHERE workspace_id = ? AND order_id = ? ORDER BY rowid`,
+        `SELECT sku_id, location_id, batch_no, batch_expiry_date, quantity, entered_qty, entered_unit, fulfilled_qty, serials FROM wms_order_line WHERE workspace_id = ? AND order_id = ? ORDER BY rowid`,
       )
       .all(this.workspaceId, orderId) as unknown as OrderLineRow[];
     return rows.map((r) => {
@@ -498,6 +510,8 @@ export class OrderView {
         batchNo: r.batch_no,
         batchExpiryDate: r.batch_expiry_date,
         quantity: r.quantity,
+        enteredQty: r.entered_qty,
+        enteredUnit: r.entered_unit,
         fulfilledQty: r.fulfilled_qty,
         ...(serials ? { serials } : {}),
       };

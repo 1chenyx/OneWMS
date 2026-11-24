@@ -35,7 +35,10 @@ type Direction = 'in' | 'out';
 interface LineDraft {
   key: string;
   skuCode: string;
+  /** 按录入单位计的数量（unit 为空 = 基本单位数量）；出账前折成基本单位见 baseQuantity */
   quantity: number;
+  /** 录入单位：'' = 基本单位；否则是 SKU.packages 里的一个，保存时随行下发由服务端换算 */
+  unit: string;
   locationCode: string;
   batchNo: string;
   batchExpiryDate: string;
@@ -47,11 +50,18 @@ function blankLine(): LineDraft {
     key: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     skuCode: '',
     quantity: 1,
+    unit: '',
     locationCode: 'DEFAULT',
     batchNo: '',
     batchExpiryDate: '',
     serialsText: '',
   };
+}
+
+/** 行数量折成基本单位（与服务端 3 位小数量化同式）；按基本单位录入时原样返回。 */
+function baseQuantity(line: Pick<LineDraft, 'quantity' | 'unit'>, sku: Pick<Sku, 'packages'> | undefined): number {
+  const ratio = sku?.packages?.find((p) => p.unit === line.unit)?.ratio;
+  return ratio ? Number((line.quantity * ratio).toFixed(3)) : line.quantity;
 }
 
 function splitSerials(text: string): string[] {
@@ -191,7 +201,8 @@ export default function OrderCreatePage({
           style={{ width: '100%', minWidth: 220 }}
           value={line.skuCode || undefined}
           onChange={(value) => {
-            patchLine(setLines, line.key, { skuCode: value });
+            // 换商品：录入单位跟着复位（旧商品的包装在新商品上不一定有）
+            patchLine(setLines, line.key, { skuCode: value, unit: '' });
             setFocusKey(line.key);
           }}
           options={skuRows.map((sku) => ({
@@ -230,16 +241,40 @@ export default function OrderCreatePage({
       onCell: numCell,
       render: (_value, line) => {
         const sku = skuRows.find((item) => item.skuCode === line.skuCode);
+        const baseQty = baseQuantity(line, sku);
         return (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <InputNumber
-              min={0.001}
-              precision={3}
-              value={line.quantity}
-              style={{ flex: 1, minWidth: 100 }}
-              onChange={(value) => patchLine(setLines, line.key, { quantity: typeof value === 'number' ? value : 0 })}
-            />
-            {sku?.unit ? <span>{sku.unit}</span> : null}
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <InputNumber
+                min={0.001}
+                precision={3}
+                value={line.quantity}
+                style={{ flex: 1, minWidth: 100 }}
+                onChange={(value) => patchLine(setLines, line.key, { quantity: typeof value === 'number' ? value : 0 })}
+              />
+              {sku?.packages?.length && sku.unit ? (
+                // 定义了包装的商品：单位可选（默认基本单位），选包装时数量按包装计
+                <Select
+                  aria-label="录入单位"
+                  style={{ width: 88, flex: 'none' }}
+                  value={line.unit || sku.unit}
+                  options={[
+                    { value: sku.unit, label: sku.unit },
+                    ...sku.packages.map((p) => ({ value: p.unit, label: p.unit })),
+                  ]}
+                  onChange={(value: string) =>
+                    patchLine(setLines, line.key, { unit: value === sku.unit ? '' : value })
+                  }
+                />
+              ) : sku?.unit ? (
+                <span>{sku.unit}</span>
+              ) : null}
+            </div>
+            {line.unit && baseQty !== line.quantity ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                = {fmtQty(baseQty, sku?.unit)}
+              </Typography.Text>
+            ) : null}
           </div>
         );
       },
@@ -293,7 +328,11 @@ export default function OrderCreatePage({
           {
             title: '可用',
             render: (_value: unknown, line: LineDraft) => (
-              <AvailableCell line={line} stock={stockRows.find((row) => row.skuCode === line.skuCode)} />
+              <AvailableCell
+              line={line}
+              sku={skuRows.find((item) => item.skuCode === line.skuCode)}
+              stock={stockRows.find((row) => row.skuCode === line.skuCode)}
+            />
             ),
           } satisfies ColumnsType<LineDraft>[number],
         ]),
@@ -472,7 +511,7 @@ export default function OrderCreatePage({
               buckets={bucketRows.filter((row) => row.skuCode === focused.skuCode)}
               demand={kept
                 .filter((row) => row.skuCode === focused.skuCode)
-                .reduce((sum, row) => sum + (row.quantity || 0), 0)}
+                .reduce((sum, row) => sum + baseQuantity(row, skuRows.find((item) => item.skuCode === row.skuCode)), 0)}
               onUse={(bucket) => {
                 patchLine(setLines, focused.key, {
                   locationCode: bucket.locationCode,
@@ -560,7 +599,7 @@ function StockBuckets({
               title: '',
               render: (_value, bucket) => (
                 <span>
-                  {line.quantity > bucket.quantity ? (
+                  {baseQuantity(line, sku) > bucket.quantity ? (
                     <Typography.Text type="warning" style={{ marginRight: 8 }}>
                       不够这一行
                     </Typography.Text>
@@ -647,7 +686,15 @@ function PartnerFacts({
   );
 }
 
-function AvailableCell({ line, stock }: { line: LineDraft; stock: InventoryRow | undefined }) {
+function AvailableCell({
+  line,
+  sku,
+  stock,
+}: {
+  line: LineDraft;
+  sku: Sku | undefined;
+  stock: InventoryRow | undefined;
+}) {
   if (!line.skuCode) return <Typography.Text type="secondary">—</Typography.Text>;
   if (!stock) return <Typography.Text type="secondary">没有库存记录</Typography.Text>;
   const reserved = stock.reserved ?? 0;
@@ -659,7 +706,7 @@ function AvailableCell({ line, stock }: { line: LineDraft; stock: InventoryRow |
         {stock.held > 0 ? `，冻结 ${fmtQty(stock.held, stock.unit)}` : ''}
         {reserved > 0 ? `，拣货占用 ${fmtQty(reserved, stock.unit)}` : ''}
       </Typography.Text>
-      {line.quantity > stock.available ? (
+      {baseQuantity(line, sku) > stock.available ? (
         <div>
           <Typography.Text type="warning">超过当前可用</Typography.Text>
         </div>
@@ -681,6 +728,8 @@ function toPayloadLine(line: LineDraft, direction: Direction, serialOn: boolean)
   return {
     skuCode: line.skuCode,
     quantity: line.quantity,
+    // 选了包装单位才下发 unit；按基本单位录入不带（与存量单据形态一致）
+    ...(line.unit ? { unit: line.unit } : {}),
     ...(line.locationCode && line.locationCode !== 'DEFAULT' ? { locationCode: line.locationCode } : {}),
     ...(line.batchNo.trim() ? { batchNo: line.batchNo.trim() } : {}),
     ...(direction === 'in' && line.batchExpiryDate.trim() ? { batchExpiryDate: line.batchExpiryDate.trim() } : {}),
@@ -706,9 +755,12 @@ function collectProblems(input: {
   const demand = new Map<string, number>();
   input.lines.forEach((line, index) => {
     const n = index + 1;
+    // 出库预检与序列号个数都按基本单位数量算：按包装录入的行先在这里折算
+    const sku = input.skus.find((item) => item.skuCode === line.skuCode);
+    const baseQty = baseQuantity(line, sku);
     if (!(line.quantity > 0)) problems.push(`第 ${n} 行数量要大于 0`);
     else if (input.direction === 'out' && line.skuCode) {
-      demand.set(line.skuCode, (demand.get(line.skuCode) ?? 0) + line.quantity);
+      demand.set(line.skuCode, (demand.get(line.skuCode) ?? 0) + baseQty);
       const namedBatch = line.batchNo.trim();
       if (namedBatch || effective === 'strict') {
         const locationCode = line.locationCode || 'DEFAULT';
@@ -720,16 +772,15 @@ function collectProblems(input: {
             (row.batchNo || 'DEFAULT') === batchNo,
         );
         const onHand = bucket?.quantity ?? 0;
-        if (line.quantity > onHand) {
-          problems.push(`第 ${n} 行 ${line.skuCode} 这一桶只有 ${fmtQty(onHand)}，不够出 ${fmtQty(line.quantity)}`);
+        if (baseQty > onHand) {
+          problems.push(`第 ${n} 行 ${line.skuCode} 这一桶只有 ${fmtQty(onHand)}，不够出 ${fmtQty(baseQty)}`);
         }
       }
     }
-    const sku = input.skus.find((item) => item.skuCode === line.skuCode);
     const serials = splitSerials(line.serialsText);
     if (input.serialOn && sku?.serialTracked) {
       if (serials.length === 0) problems.push(`第 ${n} 行 ${line.skuCode} 按序列号管理，要填写序列号`);
-      else if (!Number.isInteger(line.quantity) || serials.length !== line.quantity) {
+      else if (!Number.isInteger(baseQty) || serials.length !== baseQty) {
         problems.push(`第 ${n} 行 ${line.skuCode} 的序列号个数要和数量一致，数量要是整数`);
       }
       if (input.direction === 'out' && effective !== 'strict' && !line.batchNo.trim()) {

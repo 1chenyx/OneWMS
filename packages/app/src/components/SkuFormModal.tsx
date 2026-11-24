@@ -1,14 +1,15 @@
 import { useEffect, useMemo } from 'react';
-import { App as AntApp, Form, Input, InputNumber, Modal, Select, Switch } from 'antd';
+import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { App as AntApp, Button, Form, Input, InputNumber, Modal, Select, Space, Switch } from 'antd';
 import type { FieldExtension } from '@one/core';
 import { useCreateSku, useNextNumber, useProducts, useProfileSnapshot, useUpdateSku } from '../api/hooks';
 import { ApiError } from '../api/client';
-import type { Sku } from '../api/client';
+import type { Sku, SkuPackage } from '../api/client';
 import { filledCode, useSeededField } from './use-seeded-code';
 
 /**
  * SKU 表单（动态表单，Profile 消费闭环的输入侧）——新建 / 编辑同一份：
- * 固定字段（编码/名称/所属商品+规格/条码/安全库存）+ 可见扩展字段按 type 映射控件，
+ * 固定字段（编码/名称/所属商品+规格/条码/基本单位+包装换算/安全库存）+ 可见扩展字段按 type 映射控件，
  * 隐藏字段连输入项都不出现（软删除的界面投影）。
  *
  * 编辑态（传入 sku）：skuCode 是业务键禁用（历史单据/流水按它引用）；
@@ -17,6 +18,9 @@ import { filledCode, useSeededField } from './use-seeded-code';
  *
  * 多规格：选了商品才出现规格组合下拉（维度来自商品的 specDims）；没选商品
  * 就一个字段都不下发（工具语义「两者都不传 = 不挂 / 不改挂」，不能取消挂靠）。
+ *
+ * 包装换算：unit 是基本单位（库存与账面恒按它记），packages 是录入用的包装单位
+ * （1 箱 = 24 瓶）。编辑态整体替换——原样保存会原样下发；行全删 = 传 [] 清空。
  */
 export default function SkuFormModal({
   open,
@@ -43,6 +47,8 @@ export default function SkuFormModal({
   const variantAttrs = (Form.useWatch('variantAttrs', form) ?? {}) as Record<string, string | undefined>;
   // 编码框的实时值：留空时把服务端会生成的编码预告出来（codeHint 要用）
   const codeValue = Form.useWatch('skuCode', form) as string | undefined;
+  // 基本单位实时值：包装换算的分母，提示文案跟着变
+  const unitValue = (Form.useWatch('unit', form) as string | undefined)?.trim();
   const specDims = (products.data ?? []).find((p) => p.productCode === productCode)?.specDims ?? [];
 
   // 扩展字段元数据（visible = false 的不出现：列与输入项同源）
@@ -85,6 +91,7 @@ export default function SkuFormModal({
       barcode: sku.barcode ?? undefined,
       reorderPoint: sku.reorderPoint > 0 ? sku.reorderPoint : undefined,
       unit: sku.unit ?? undefined,
+      packages: (sku.packages ?? []).map((p) => ({ unit: p.unit, ratio: p.ratio })),
       ...(sku.productCode ? { productCode: sku.productCode } : {}),
       ...(sku.variantAttrs ? { variantAttrs: { ...sku.variantAttrs } } : {}),
       ...(serialOn ? { serialTracked: sku.serialTracked === true } : {}),
@@ -130,6 +137,14 @@ export default function SkuFormModal({
     }
     const barcode = (values.barcode as string | undefined)?.trim();
     const unit = (values.unit as string | undefined)?.trim();
+    // 包装单位：去空白、丢空行；没填基本单位、重名、比例非正都拦在提交前（服务端同样会拒）
+    let packages: SkuPackage[];
+    try {
+      packages = normalizePackages(values.packages, unit ?? '');
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+      return;
+    }
     const reorderPoint =
       typeof values.reorderPoint === 'number' && values.reorderPoint >= 0 ? values.reorderPoint : 0;
     // 挂商品：按维度顺序重建组合（无维度商品不带 variantAttrs，带了服务端会拒）
@@ -157,6 +172,8 @@ export default function SkuFormModal({
             reorderPoint,
             // 单位与条码不同：编辑态显式传（空串 = 清空），未改也幂等
             unit: unit ?? '',
+            // 整体替换：原来有包装、现在全删了 → 传 [] 清空；原来就没有 → 不传
+            ...(packages.length > 0 || (sku.packages?.length ?? 0) > 0 ? { packages } : {}),
             ...(serialOn ? { serialTracked: values.serialTracked === true } : {}),
             ...attachment,
             extData,
@@ -171,6 +188,7 @@ export default function SkuFormModal({
           barcode: barcode || undefined,
           reorderPoint: reorderPoint > 0 ? reorderPoint : undefined,
           unit: unit || undefined,
+          ...(packages.length > 0 ? { packages } : {}),
           ...(serialOn && values.serialTracked === true ? { serialTracked: true } : {}),
           ...attachment,
           extData: Object.keys(extData).length ? extData : undefined,
@@ -197,6 +215,7 @@ export default function SkuFormModal({
       onOk={() => form.submit()}
       okText={editing ? '保存' : '创建'}
       confirmLoading={editing ? update.isPending : create.isPending}
+      width={600}
       destroyOnHidden
     >
       <Form form={form} layout="vertical" onFinish={submit}>
@@ -234,8 +253,51 @@ export default function SkuFormModal({
             <Select placeholder={`选择${dim.name}`} options={dim.values.map((v) => ({ value: v, label: v }))} />
           </Form.Item>
         ))}
-        <Form.Item name="unit" label="单位（可选，数量显示与打印会跟随，如 kg / 箱 / 件）">
+        <Form.Item
+          name="unit"
+          label="基本单位（可选，库存与账面按它记，数量显示与打印会跟随，如 kg / 瓶 / 件）"
+        >
           <Input placeholder="如 kg（散装称重建议填写）" style={{ width: '50%' }} />
+        </Form.Item>
+        <Form.Item
+          label="包装单位（可选，开单时可按箱 / 包录入，系统折成基本单位入账）"
+          extra={
+            unitValue
+              ? `换算率 = 1 个包装单位等于多少「${unitValue}」。改比例不影响已开的单据。`
+              : '先填基本单位，才能定义包装单位'
+          }
+          style={{ marginBottom: 0 }}
+        >
+          <Form.List name="packages">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map((field) => (
+                  <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 4 }}>
+                    <Form.Item
+                      name={[field.name, 'unit']}
+                      rules={[{ required: true, message: '单位名' }]}
+                      style={{ marginBottom: 4 }}
+                    >
+                      <Input placeholder="单位名，如 箱" style={{ width: 140 }} />
+                    </Form.Item>
+                    <Form.Item
+                      name={[field.name, 'ratio']}
+                      rules={[{ required: true, message: '换算率' }]}
+                      style={{ marginBottom: 4 }}
+                    >
+                      <InputNumber min={0.001} precision={3} placeholder="= 多少基本单位" style={{ width: 180 }} />
+                    </Form.Item>
+                    <MinusCircleOutlined onClick={() => remove(field.name)} />
+                  </Space>
+                ))}
+                <Form.Item style={{ marginBottom: 16 }}>
+                  <Button type="dashed" icon={<PlusOutlined />} onClick={() => add()}>
+                    加一个包装单位
+                  </Button>
+                </Form.Item>
+              </>
+            )}
+          </Form.List>
         </Form.Item>
         <Form.Item
           name="barcode"
@@ -275,6 +337,27 @@ export default function SkuFormModal({
       </Form>
     </Modal>
   );
+}
+
+/**
+ * 包装单位归整：去空白、丢掉整行空着的；没填基本单位、与基本单位同名、重复、比例非正都报错。
+ * 界面只做这层浅校验，语义守卫（数量精度、上限）留在工具层。
+ */
+function normalizePackages(raw: unknown, baseUnit: string): SkuPackage[] {
+  const rows = Array.isArray(raw) ? (raw as Record<string, unknown>[]) : [];
+  const out: SkuPackage[] = [];
+  for (const row of rows) {
+    const unit = typeof row?.unit === 'string' ? row.unit.trim() : '';
+    const ratio = typeof row?.ratio === 'number' ? row.ratio : NaN;
+    if (!unit && Number.isNaN(ratio)) continue; // 整行空着：当成没加
+    if (!unit) throw new Error('有一行包装单位缺单位名');
+    if (!(ratio > 0)) throw new Error(`包装单位「${unit}」的换算率必须是正数`);
+    if (unit === baseUnit) throw new Error(`包装单位「${unit}」不能与基本单位同名`);
+    if (out.some((p) => p.unit === unit)) throw new Error(`包装单位「${unit}」重复`);
+    out.push({ unit, ratio });
+  }
+  if (out.length > 0 && !baseUnit) throw new Error('先填基本单位，再定义包装单位——换算率的分母是基本单位');
+  return out;
 }
 
 /** type → 控件映射（v1：date 用纯文本输入，不引日期库） */

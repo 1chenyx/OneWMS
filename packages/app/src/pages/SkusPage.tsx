@@ -11,6 +11,7 @@ import SkuFormModal from '../components/SkuFormModal';
 import PageHeader from '../components/PageHeader';
 import { SkuSheetPort } from '../components/sheet-specs';
 import { serverPagination, monoCell, numCell, MONO_STYLE } from '../components/table-style';
+import { fmtUnitWithPackages } from '../lib/format';
 
 /**
  * SKU 管理页——动态列是 Profile 配置的第一个真实消费闭环：
@@ -19,7 +20,7 @@ import { serverPagination, monoCell, numCell, MONO_STYLE } from '../components/t
  * 在 AI 对话页确认「隐藏字段」提议后切回本页，列即消失（数据保留）。
  * 搜索框（M18）：编码/名称/条码 三字段模糊（服务端 q 参数），回车/点按钮触发。
  * 安全库存列（M20）：低库存预警阈值，0 显 -（不预警）。
- * 单位列（A3）：kg / 箱 / 件…，空显 -。
+ * 单位列（A3）：基本单位 kg / 箱 / 件…，空显 -；定义了包装换算的显 `瓶（箱=24、包=6）`。
  * 软停用（A2）：默认只列启用档；勾「显示已停用」拉全量；停用档灰 Tag + 恢复按钮——
  * 建错的档案从此有归宿（隐藏 + 退出预警），数据一条不删、可随时恢复。
  * 多规格：挂了商品的 SKU 在「所属商品 · 规格」列显示商品码 + 组合（红 / S）；
@@ -100,10 +101,14 @@ export default function SkusPage() {
       render: (v: string | null) => v ?? <Typography.Text type="secondary">-</Typography.Text>,
     },
     {
+      // 基本单位 + 包装换算：`瓶（箱=24、包=6）`；没包装就是基本单位本身
       title: '单位',
       dataIndex: 'unit',
       key: 'unit',
-      render: (v: string | null) => v ?? <Typography.Text type="secondary">-</Typography.Text>,
+      render: (v: string | null, r) => {
+        const text = fmtUnitWithPackages(v, r.packages);
+        return text === '-' ? <Typography.Text type="secondary">-</Typography.Text> : text;
+      },
     },
     {
       title: '安全库存',

@@ -48,6 +48,23 @@ const skusFixture = [
     createdAt: '2026-11-07T08:00:00.000Z',
     updatedAt: '2026-11-07T08:00:00.000Z',
   },
+  {
+    // 带包装换算：1 箱 = 24 瓶、1 包 = 6 瓶（开单可按包装录入，服务端折基本单位）
+    id: 's-3',
+    skuCode: 'C-3',
+    barcode: null,
+    reorderPoint: 0,
+    unit: '瓶',
+    packages: [
+      { unit: '箱', ratio: 24 },
+      { unit: '包', ratio: 6 },
+    ],
+    name: '可乐',
+    status: 'active',
+    extData: {},
+    createdAt: '2026-11-07T08:00:00.000Z',
+    updatedAt: '2026-11-07T08:00:00.000Z',
+  },
 ];
 
 vi.mock('../src/api/hooks', () => ({
@@ -94,7 +111,10 @@ vi.mock('../src/api/hooks', () => ({
   }),
   useInventory: () => ({
     isLoading: false,
-    data: [{ skuId: 's-1', skuCode: 'A-1', name: '螺丝', quantity: 30, held: 5, available: 25, reorderPoint: 0, unit: '个' }],
+    data: [
+      { skuId: 's-1', skuCode: 'A-1', name: '螺丝', quantity: 30, held: 5, available: 25, reorderPoint: 0, unit: '个' },
+      { skuId: 's-3', skuCode: 'C-3', name: '可乐', quantity: 30, held: 0, available: 30, reorderPoint: 0, unit: '瓶' },
+    ],
   }),
   useInventoryBuckets: () => ({
     isLoading: false,
@@ -116,6 +136,15 @@ vi.mock('../src/api/hooks', () => ({
         batchNo: 'DEFAULT',
         batchExpiryDate: null,
         quantity: 18,
+      },
+      {
+        skuCode: 'C-3',
+        name: '可乐',
+        unit: '瓶',
+        locationCode: 'DEFAULT',
+        batchNo: 'DEFAULT',
+        batchExpiryDate: null,
+        quantity: 30,
       },
     ],
   }),
@@ -234,5 +263,72 @@ describe('新建出入库单', () => {
       orderNo: 'OUT-9',
       lines: [{ skuCode: 'A-1', quantity: 1, locationCode: 'A-01', batchNo: 'B-9' }],
     });
+  });
+
+  it('按包装录入：切单位显换算预览（= 48 瓶），保存 payload 带 unit', async () => {
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage direction="in" />));
+    await user.click(screen.getByRole('button', { name: /新建单据/ }));
+    await user.type(screen.getByPlaceholderText(/扫条码或编码/), 'C-3{Enter}');
+    expect(await screen.findByText('可乐')).toBeInTheDocument();
+
+    // 默认基本单位：没有换算预览，也没有单位下拉里的包装项被选中
+    expect(screen.queryByText(/= \d+ 瓶/)).not.toBeInTheDocument();
+
+    // 切成箱（1 箱）：数量还是 1，预览显 = 24 瓶。
+    // 注意点 title 不点 role=option：rc-select 还渲染一份隐藏 aria 镜像（有 role 无点击），
+    // 真正可点的是下拉里带 title 的 .ant-select-item（components.test 的 findByTitle 同款）
+    await user.click(screen.getByRole('combobox', { name: '录入单位' }));
+    await user.click(await screen.findByTitle('箱'));
+    expect(await screen.findByText('= 24 瓶')).toBeInTheDocument();
+
+    // 数量改成 2：预览跟着变
+    const qty = screen.getByRole('spinbutton');
+    fireEvent.change(qty, { target: { value: '2' } });
+    await waitFor(() => expect(Number((qty as HTMLInputElement).value)).toBe(2));
+    expect(await screen.findByText('= 48 瓶')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '保存单据' }));
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    expect(createMock).toHaveBeenCalledWith({
+      direction: 'in',
+      lines: [{ skuCode: 'C-3', quantity: 2, unit: '箱' }], // quantity 是箱数，换算在服务端
+    });
+  });
+
+  it('默认按基本单位录入：payload 不带 unit 字段', async () => {
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage direction="in" />));
+    await user.click(screen.getByRole('button', { name: /新建单据/ }));
+    await user.type(screen.getByPlaceholderText(/扫条码或编码/), 'C-3{Enter}');
+    const qty = await screen.findByRole('spinbutton');
+    fireEvent.change(qty, { target: { value: '5' } });
+    await waitFor(() => expect(Number((qty as HTMLInputElement).value)).toBe(5));
+
+    await user.click(screen.getByRole('button', { name: '保存单据' }));
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    expect(createMock).toHaveBeenCalledWith({
+      direction: 'in',
+      lines: [{ skuCode: 'C-3', quantity: 5 }], // 不带 unit = 基本单位（与存量单据形态一致）
+    });
+  });
+
+  it('出库按包装录入：预检按换算后的基本单位算，2 箱（48）> 30 拒且不提交', async () => {
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage direction="out" />));
+    await user.click(screen.getByRole('button', { name: /新建单据/ }));
+    await user.type(screen.getByPlaceholderText(/扫条码或编码/), 'C-3{Enter}');
+    expect(await screen.findByText('可乐')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('combobox', { name: '录入单位' }));
+    await user.click(await screen.findByTitle('箱'));
+    const qty = screen.getByRole('spinbutton');
+    fireEvent.change(qty, { target: { value: '2' } });
+    await waitFor(() => expect(Number((qty as HTMLInputElement).value)).toBe(2));
+    expect(await screen.findByText('= 48 瓶')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '保存单据' }));
+    expect(await screen.findByText(/不够出 48/)).toBeInTheDocument();
+    expect(createMock).not.toHaveBeenCalled();
   });
 });

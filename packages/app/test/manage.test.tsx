@@ -129,6 +129,26 @@ const skusFixture = [
   },
 ];
 
+/** 带包装换算的 SKU（1 箱 = 24 瓶、1 包 = 6 瓶）：个别用例临时追加进 useSkus 的数据 */
+const colaSku = {
+  id: 's-3',
+  skuCode: 'C-3',
+  barcode: null,
+  reorderPoint: 0,
+  unit: '瓶',
+  packages: [
+    { unit: '箱', ratio: 24 },
+    { unit: '包', ratio: 6 },
+  ],
+  name: '可乐',
+  extData: {},
+  createdAt: '2026-10-30T08:00:00.000Z',
+  updatedAt: '2026-10-30T08:00:00.000Z',
+};
+
+/** useSkus 的数据源：默认固定清单；用例里可换成含包装换算的清单，beforeEach 复位 */
+let skusData: readonly unknown[] = skusFixture;
+
 const ordersFixture = [
   {
     id: 'o-1',
@@ -195,7 +215,7 @@ vi.mock('../src/api/hooks', () => ({
       },
     },
   }),
-  useSkus: () => ({ isLoading: false, data: skusFixture }),
+  useSkus: () => ({ isLoading: false, data: skusData }),
   // SkuFormModal 的「所属商品」选择器数据源；这些用例不测多规格，给空清单即可
   useProducts: () => ({ isLoading: false, data: [] }),
   usePartners: () => ({ isLoading: false, data: [] }),
@@ -335,6 +355,7 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
   beforeEach(() => {
     createSkuMock.mockReset();
     updateSkuMock.mockReset();
+    skusData = skusFixture;
   });
 
   it('可见字段成列、隐藏字段消失、extData 值进列；条码列：有码显码、无码显 -；单位列（A3）', () => {
@@ -363,7 +384,7 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
     await user.click(screen.getByRole('button', { name: /新建 SKU/ }));
     await user.type(screen.getByLabelText('SKU 编码'), 'A-2');
     await user.type(screen.getByLabelText('名称'), '轴承');
-    await user.type(screen.getByLabelText(/单位/), 'kg');
+    await user.type(screen.getByLabelText(/^基本单位/), 'kg');
     await user.type(screen.getByLabelText('规格'), '6204');
     await user.type(screen.getByLabelText(/条码/), ' 6901234567892 ');
     await user.type(screen.getByLabelText(/安全库存/), '60');
@@ -378,6 +399,89 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
         barcode: '6901234567892', // trim 后提交；空白条码不提交该字段
         reorderPoint: 60, // M20：>0 才提交（留空/0 不提交 = 不预警）
         extData: { spec: '6204' },
+      }),
+    );
+  });
+
+  it('单位列：定义了包装换算的 SKU 显「瓶（箱=24、包=6）」', () => {
+    skusData = [...skusFixture, colaSku];
+    render(wrap(<SkusPage />));
+    const row = screen.getByText('C-3').closest('tr')!;
+    expect(within(row).getByText('瓶（箱=24、包=6）')).toBeInTheDocument();
+  });
+
+  it('新建表单：加包装单位行（箱 = 24 瓶）随档案提交；没填基本单位时拦在提交前', async () => {
+    createSkuMock.mockResolvedValueOnce({ skuId: 's-3', skuCode: 'C-3', name: '可乐' });
+    const user = userEvent.setup();
+    render(wrap(<SkusPage />));
+
+    await user.click(screen.getByRole('button', { name: /新建 SKU/ }));
+    await user.type(screen.getByLabelText('SKU 编码'), 'C-3');
+    await user.type(screen.getByLabelText('名称'), '可乐');
+    expect(screen.getByText(/先填基本单位，才能定义包装单位/)).toBeInTheDocument(); // 提示：分母还没定
+    await user.click(screen.getByRole('button', { name: /加一个包装单位/ }));
+    await user.type(screen.getByPlaceholderText('单位名，如 箱'), '箱');
+    await user.type(screen.getByPlaceholderText('= 多少基本单位'), '24');
+
+    // 没有基本单位：提交被拦，不发请求
+    await user.click(screen.getByRole('button', { name: '创建' }));
+    expect(await screen.findByText(/先填基本单位，再定义包装单位/)).toBeInTheDocument();
+    expect(createSkuMock).not.toHaveBeenCalled();
+
+    // 补上基本单位：提示跟着变，再提交 packages 随档案下发
+    await user.type(screen.getByLabelText(/^基本单位/), '瓶');
+    expect(await screen.findByText(/等于多少「瓶」/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '创建' }));
+    await waitFor(() =>
+      expect(createSkuMock).toHaveBeenCalledWith({
+        skuCode: 'C-3',
+        name: '可乐',
+        unit: '瓶',
+        packages: [{ unit: '箱', ratio: 24 }], // 空白条码/安全库存/扩展字段以 undefined 提交（等于不设置）
+      }),
+    );
+  });
+
+  it('编辑表单：包装单位回填；删一行 = 整体替换，全删 = 传 [] 清空', async () => {
+    updateSkuMock.mockResolvedValue({ skuId: 's-3', skuCode: 'C-3' });
+    skusData = [...skusFixture, colaSku];
+    const user = userEvent.setup();
+    render(wrap(<SkusPage />));
+    const editButton = () =>
+      within(screen.getByText('C-3').closest('tr')!).getByRole('button', { name: /编辑/ }); // 图标按钮：name 含 edit，用正则
+    const ratioInputs = () =>
+      screen.getAllByPlaceholderText('= 多少基本单位').map((el) => Number((el as HTMLInputElement).value));
+
+    await user.click(editButton());
+    expect(screen.getByText('编辑 SKU · C-3')).toBeInTheDocument();
+    expect(screen.getByLabelText(/^基本单位/)).toHaveValue('瓶'); // 回填
+    expect(screen.getAllByPlaceholderText('单位名，如 箱').map((el) => (el as HTMLInputElement).value)).toEqual([
+      '箱',
+      '包',
+    ]);
+    expect(ratioInputs()).toEqual([24, 6]);
+
+    // 删掉第一行（箱）→ 保存：只剩 包 = 6
+    await user.click(screen.getAllByRole('img', { name: 'minus-circle' })[0]!);
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(updateSkuMock).toHaveBeenCalledWith({
+        skuCode: 'C-3',
+        body: { name: '可乐', reorderPoint: 0, unit: '瓶', packages: [{ unit: '包', ratio: 6 }], extData: {} }, // 删了箱：整体替换（编辑态显式传全量字段）
+      }),
+    );
+    await waitFor(() => expect(screen.queryByText('编辑 SKU · C-3')).not.toBeInTheDocument());
+
+    // 再打开，全删 → 传 []（清空），不是「不传 = 不改」
+    await user.click(editButton());
+    for (const icon of await screen.findAllByRole('img', { name: 'minus-circle' })) {
+      await user.click(icon);
+    }
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(updateSkuMock).toHaveBeenLastCalledWith({
+        skuCode: 'C-3',
+        body: { name: '可乐', reorderPoint: 0, unit: '瓶', packages: [], extData: {} }, // 全删 = 传 [] 清空，不是「不传 = 不改」
       }),
     );
   });

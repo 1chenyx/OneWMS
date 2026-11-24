@@ -11,7 +11,13 @@ export interface OrderWithLines extends OrderRecord {
     quantity: number;
     /** 已入账净量。null = 没记过短收短发（按订单数量） */
     fulfilledQty: number | null;
-    /** 数量单位（A3）：null = 不显示 */
+    /**
+     * 录入快照（包装换算）：开单时的原录入（如 2 / 箱）。null = 按基本单位录入；
+     * quantity 恒为换算后的基本单位数量
+     */
+    enteredQty: number | null;
+    enteredUnit: string | null;
+    /** 数量单位（A3）：null = 不显示。换算语境下是基本单位 */
     unit: string | null;
     /** 行目标库位编码（M21：上架归位的源桶维度） */
     locationCode: string;
@@ -43,6 +49,8 @@ export function withOrderLines(ws: WmsWorkspace, order: OrderRecord): OrderWithL
       name: sku?.name ?? '',
       quantity: line.quantity,
       fulfilledQty: line.fulfilledQty,
+      enteredQty: line.enteredQty,
+      enteredUnit: line.enteredUnit,
       unit: sku?.unit ?? null,
       locationCode: location?.locationCode ?? line.locationId,
       warehouseCode: (location?.warehouseId ? ws.warehouses.byId(location.warehouseId)?.warehouseCode : undefined) ?? null,
