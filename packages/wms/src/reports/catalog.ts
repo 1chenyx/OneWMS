@@ -74,7 +74,13 @@ const SKU: FieldInit[] = [
   ['sku.skuCode', '商品编码', 'text', 'sku.sku_code', { selective: true, lookup: 'skuCode' }],
   ['sku.name', '商品名称', 'text', 'sku.name'],
   ['sku.barcode', '条码', 'text', 'sku.barcode'],
-  ['sku.unit', '单位', 'text', 'sku.unit'],
+  // 单位：SKU 自己没设时回落到所属商品的默认单位（与 SkuView 读取层继承同口径）
+  [
+    'sku.unit',
+    '单位',
+    'text',
+    'COALESCE(sku.unit, (SELECT p.unit FROM wms_product AS p WHERE p.id = sku.product_id))',
+  ],
 ];
 
 const LOC: FieldInit[] = [

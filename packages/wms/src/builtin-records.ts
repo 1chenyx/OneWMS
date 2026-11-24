@@ -19,6 +19,8 @@ export const PRODUCT_RECORD: ManifestRecord = {
     { key: 'productCode', label: '编码', description: '全库唯一。挂在它下面的 SKU 编码默认按「商品码-规格取值」生成' },
     { key: 'name', label: '名称', description: '按规格矩阵批量建 SKU 时统一用这个名称' },
     { key: 'specDims', label: '规格维度', description: '维度名和取值清单，如 颜色=[红, 黑]、尺码=[S, M]。没有维度就只作归组' },
+    { key: 'unit', label: '基本单位', description: '库存按它记，如 瓶、件。挂在它下面的 SKU 没单独设置就沿用这个' },
+    { key: 'packages', label: '默认包装单位', description: '如 箱=24、包=6，都折成多少个基本单位。开单时可以直接按箱或包录，系统换算。SKU 没单独设置就沿用' },
     { key: 'skuCount', label: 'SKU 数', description: '挂在它下面的 SKU 数，含停用档' },
     { key: 'status', label: '状态', description: '启用或停用。停用后不能再往它下面挂 SKU，已挂的照常出入库' },
   ],

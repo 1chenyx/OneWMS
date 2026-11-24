@@ -218,3 +218,135 @@ describe('单据：按包装单位录入', () => {
     expect(ws.inventory.quantityOf(ws.skus.byCode('COLA')!.id)).toBe(0);
   });
 });
+
+describe('商品级默认单位与包装：SKU 继承', () => {
+  /** 建「可乐：瓶，箱=24 / 包=6」的商品 + 两个规格 SKU（红 / 黑），SKU 不带单位与包装 */
+  async function seedProduct(): Promise<void> {
+    await ws.tools.invoke('wms.product.create', {
+      productCode: 'COLA',
+      name: '可乐',
+      unit: '瓶',
+      packages: [
+        { unit: '箱', ratio: 24 },
+        { unit: '包', ratio: 6 },
+      ],
+      specDims: [{ name: '颜色', values: ['红', '黑'] }],
+    });
+    await ws.tools.invoke('wms.sku.create', {
+      name: '可乐',
+      productCode: 'COLA',
+      variantAttrs: { 颜色: '红' },
+    });
+    await ws.tools.invoke('wms.sku.create', {
+      name: '可乐',
+      productCode: 'COLA',
+      variantAttrs: { 颜色: '黑' },
+    });
+  }
+
+  it('商品带 unit / packages 落账 → 投影可见；不传 = null', async () => {
+    await seedProduct();
+    await ws.tools.invoke('wms.product.create', { productCode: 'MUG', name: '马克杯' });
+    const cola = ws.products.byCode('COLA')!;
+    expect(cola.unit).toBe('瓶');
+    expect(cola.packages).toEqual([
+      { unit: '箱', ratio: 24 },
+      { unit: '包', ratio: 6 },
+    ]);
+    expect(ws.products.byCode('MUG')!.unit).toBeNull();
+    expect(ws.products.byCode('MUG')!.packages).toBeNull();
+  });
+
+  it('SKU 不设单位/包装 → 继承商品的（unitInherited / packagesInherited 标记）', async () => {
+    await seedProduct();
+    const red = ws.skus.byCode('COLA-红')!;
+    expect(red.unit).toBe('瓶');
+    expect(red.packages?.map((p) => p.unit)).toEqual(['箱', '包']);
+    expect(red.unitInherited).toBe(true);
+    expect(red.packagesInherited).toBe(true);
+    // 独立 SKU 没有可继承的来源
+    await ws.tools.invoke('wms.sku.create', { skuCode: 'LOOSE', name: '散货' });
+    expect(ws.skus.byCode('LOOSE')!.unitInherited).toBe(false);
+    expect(ws.skus.byCode('LOOSE')!.packagesInherited).toBe(false);
+  });
+
+  it('SKU 单独设置 → 覆盖商品的；传 [] = 明确不要包装（不回落）', async () => {
+    await seedProduct();
+    await ws.tools.invoke('wms.sku.update', {
+      skuCode: 'COLA-红',
+      unit: '罐',
+      packages: [{ unit: '提', ratio: 8 }],
+    });
+    const red = ws.skus.byCode('COLA-红')!;
+    expect(red.unit).toBe('罐');
+    expect(red.packages).toEqual([{ unit: '提', ratio: 8 }]);
+    expect(red.unitInherited).toBe(false);
+    expect(red.packagesInherited).toBe(false);
+
+    await ws.tools.invoke('wms.sku.update', { skuCode: 'COLA-黑', packages: [] });
+    const black = ws.skus.byCode('COLA-黑')!;
+    expect(black.packages).toBeNull();
+    expect(black.packagesInherited).toBe(false);
+    expect(black.unit).toBe('瓶'); // 单位仍继承
+  });
+
+  it('改商品的默认包装 → 继承的 SKU 立即按新比例换算；单独设置的不受影响', async () => {
+    await seedProduct();
+    await ws.tools.invoke('wms.product.update', {
+      productCode: 'COLA',
+      packages: [{ unit: '箱', ratio: 12 }],
+    });
+    expect(ws.skus.byCode('COLA-红')!.packages).toEqual([{ unit: '箱', ratio: 12 }]);
+
+    await ws.tools.invoke('wms.order.create', {
+      direction: 'in',
+      lines: [{ skuCode: 'COLA-红', quantity: 2, unit: '箱' }],
+    });
+    const line = ws.orders.lines(ws.orders.list('in')[0]!.id)[0]!;
+    expect(line.quantity).toBe(24);
+    expect(line.enteredUnit).toBe('箱');
+
+    // 改商品前就按旧比例开的单：录入快照与基本单位数量都不动
+    await ws.tools.invoke('wms.product.update', { productCode: 'COLA', packages: [] });
+    expect(ws.skus.byCode('COLA-红')!.packages).toBeNull();
+    expect(ws.orders.lines(ws.orders.list('in')[0]!.id)[0]!.quantity).toBe(24);
+    await expect(
+      ws.tools.invoke('wms.order.create', {
+        direction: 'in',
+        lines: [{ skuCode: 'COLA-红', quantity: 1, unit: '箱' }],
+      }),
+    ).rejects.toThrow(OrderLineUnitUnknownError);
+  });
+
+  it('商品没有基本单位时定义默认包装 → 拒绝；有包装时不能清空基本单位', async () => {
+    await expect(
+      ws.tools.invoke('wms.product.create', {
+        productCode: 'X',
+        name: 'x',
+        packages: [{ unit: '箱', ratio: 24 }],
+      }),
+    ).rejects.toThrow(SkuPackagesInvalidError);
+    await seedProduct();
+    await expect(ws.tools.invoke('wms.product.update', { productCode: 'COLA', unit: '' })).rejects.toThrow(
+      SkuPackagesInvalidError,
+    );
+    expect(ws.products.byCode('COLA')!.unit).toBe('瓶');
+    // 先清包装，再清单位：放行
+    await ws.tools.invoke('wms.product.update', { productCode: 'COLA', packages: [] });
+    await ws.tools.invoke('wms.product.update', { productCode: 'COLA', unit: '' });
+    expect(ws.products.byCode('COLA')!.unit).toBeNull();
+    expect(ws.skus.byCode('COLA-红')!.unit).toBeNull();
+  });
+
+  it('SKU 只带包装、单位靠继承 → 基本单位取商品的', async () => {
+    await ws.tools.invoke('wms.product.create', { productCode: 'P', name: 'p', unit: '个' });
+    await ws.tools.invoke('wms.sku.create', {
+      name: 'p',
+      productCode: 'P',
+      packages: [{ unit: '盒', ratio: 10 }],
+    });
+    const sku = ws.skus.list()[0]!;
+    expect(sku.unit).toBe('个');
+    expect(sku.packages).toEqual([{ unit: '盒', ratio: 10 }]);
+  });
+});

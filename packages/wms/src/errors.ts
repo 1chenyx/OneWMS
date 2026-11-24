@@ -523,7 +523,7 @@ export class OrderLineUnitUnknownError extends CoreError {
   constructor(skuCode: string, unit: string) {
     super(
       'WMS_ORDER_LINE_UNIT_UNKNOWN',
-      `SKU ${skuCode} 没有定义包装单位「${unit}」。先用 wms.sku.update 的 packages 定义（或改回基本单位）`,
+      `SKU ${skuCode} 没有定义包装单位「${unit}」。先在所属商品的默认包装（或该 SKU 单独设置）里定义，或改回基本单位`,
     );
   }
 }

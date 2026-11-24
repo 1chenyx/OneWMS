@@ -164,6 +164,7 @@ beforeEach(() => {
   numbering.data = undefined;
   createMock.mockReset();
   createMock.mockResolvedValue({ orderId: 'o-new', orderNo: 'IN-1', state: 'created' });
+  localStorage.clear(); // 录入单位记忆（owms:line-unit-memory）不能跨用例串
 });
 
 afterEach(() => {
@@ -231,9 +232,9 @@ describe('新建出入库单', () => {
     const bucketRow = (await screen.findByText('A-01')).closest('tr');
     expect(bucketRow).not.toBeNull();
     await user.click(within(bucketRow as HTMLElement).getByRole('button', { name: '用这桶' }));
-    const qty = screen.getByRole('spinbutton');
+    const qty = screen.getByLabelText('数量');
     fireEvent.change(qty, { target: { value: '13' } });
-    await waitFor(() => expect(Number((qty as HTMLInputElement).value)).toBe(13));
+    await waitFor(() => expect((qty as HTMLInputElement).value).toBe('13'));
     await user.click(screen.getByRole('button', { name: '保存单据' }));
 
     expect(await screen.findByText(/这一桶只有 12，不够出 13/)).toBeInTheDocument();
@@ -265,27 +266,24 @@ describe('新建出入库单', () => {
     });
   });
 
-  it('按包装录入：切单位显换算预览（= 48 瓶），保存 payload 带 unit', async () => {
+  it('按包装录入：分段按钮切单位显换算预览（= 48 瓶），保存 payload 带 unit', async () => {
     const user = userEvent.setup();
     render(wrap(<OrdersPage direction="in" />));
     await user.click(screen.getByRole('button', { name: /新建单据/ }));
     await user.type(screen.getByPlaceholderText(/扫条码或编码/), 'C-3{Enter}');
     expect(await screen.findByText('可乐')).toBeInTheDocument();
 
-    // 默认基本单位：没有换算预览，也没有单位下拉里的包装项被选中
+    // 默认基本单位：没有换算预览，分段按钮里基本单位选中
     expect(screen.queryByText(/= \d+ 瓶/)).not.toBeInTheDocument();
 
-    // 切成箱（1 箱）：数量还是 1，预览显 = 24 瓶。
-    // 注意点 title 不点 role=option：rc-select 还渲染一份隐藏 aria 镜像（有 role 无点击），
-    // 真正可点的是下拉里带 title 的 .ant-select-item（components.test 的 findByTitle 同款）
-    await user.click(screen.getByRole('combobox', { name: '录入单位' }));
-    await user.click(await screen.findByTitle('箱'));
+    // 切成箱（1 箱 = 24 瓶）：数量还是 1，预览显 = 24 瓶。
+    await user.click(screen.getByText('箱(24)'));
     expect(await screen.findByText('= 24 瓶')).toBeInTheDocument();
 
     // 数量改成 2：预览跟着变
-    const qty = screen.getByRole('spinbutton');
+    const qty = screen.getByLabelText('数量');
     fireEvent.change(qty, { target: { value: '2' } });
-    await waitFor(() => expect(Number((qty as HTMLInputElement).value)).toBe(2));
+    await waitFor(() => expect((qty as HTMLInputElement).value).toBe('2'));
     expect(await screen.findByText('= 48 瓶')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '保存单据' }));
@@ -296,14 +294,68 @@ describe('新建出入库单', () => {
     });
   });
 
+  it('数量框直接输「2箱」：单位跟着带出，预览与 payload 同切分段按钮', async () => {
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage direction="in" />));
+    await user.click(screen.getByRole('button', { name: /新建单据/ }));
+    await user.type(screen.getByPlaceholderText(/扫条码或编码/), 'C-3{Enter}');
+    expect(await screen.findByText('可乐')).toBeInTheDocument();
+
+    const qty = screen.getByLabelText('数量');
+    await user.type(qty, '2箱');
+    expect(await screen.findByText('= 48 瓶')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '保存单据' }));
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    expect(createMock).toHaveBeenCalledWith({
+      direction: 'in',
+      lines: [{ skuCode: 'C-3', quantity: 2, unit: '箱' }],
+    });
+  });
+
+  it('记住上次单位：切过箱保存后，再扫同一货直接按箱；没有包装的货照旧按基本单位', async () => {
+    const user = userEvent.setup();
+    render(wrap(<OrdersPage direction="in" />));
+    await user.click(screen.getByRole('button', { name: /新建单据/ }));
+    await user.type(screen.getByPlaceholderText(/扫条码或编码/), 'C-3{Enter}');
+    expect(await screen.findByText('可乐')).toBeInTheDocument();
+    await user.click(screen.getByText('箱(24)')); // 记住 in:C-3 = 箱
+    await user.click(screen.getByRole('button', { name: '保存单据' }));
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole('button', { name: /返回列表/ }));
+    await user.click(screen.getByRole('button', { name: /新建单据/ }));
+    await user.type(screen.getByPlaceholderText(/扫条码或编码/), 'C-3{Enter}');
+    // 再扫：直接带上次的单位（1 箱 → = 24 瓶）
+    expect(await screen.findByText('= 24 瓶')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '保存单据' }));
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(2));
+    expect(createMock).toHaveBeenLastCalledWith({
+      direction: 'in',
+      lines: [{ skuCode: 'C-3', quantity: 1, unit: '箱' }],
+    });
+
+    // 没有包装的货（A-1）：记忆里没有它的条目，照旧按基本单位
+    await user.click(screen.getByRole('button', { name: /返回列表/ }));
+    await user.click(screen.getByRole('button', { name: /新建单据/ }));
+    await user.type(screen.getByPlaceholderText(/扫条码或编码/), '6901234567892{Enter}');
+    expect(await screen.findByText('螺丝')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '保存单据' }));
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(3));
+    expect(createMock).toHaveBeenLastCalledWith({
+      direction: 'in',
+      lines: [{ skuCode: 'A-1', quantity: 1 }],
+    });
+  });
+
   it('默认按基本单位录入：payload 不带 unit 字段', async () => {
     const user = userEvent.setup();
     render(wrap(<OrdersPage direction="in" />));
     await user.click(screen.getByRole('button', { name: /新建单据/ }));
     await user.type(screen.getByPlaceholderText(/扫条码或编码/), 'C-3{Enter}');
-    const qty = await screen.findByRole('spinbutton');
+    const qty = await screen.findByLabelText('数量');
     fireEvent.change(qty, { target: { value: '5' } });
-    await waitFor(() => expect(Number((qty as HTMLInputElement).value)).toBe(5));
+    await waitFor(() => expect((qty as HTMLInputElement).value).toBe('5'));
 
     await user.click(screen.getByRole('button', { name: '保存单据' }));
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
@@ -320,11 +372,10 @@ describe('新建出入库单', () => {
     await user.type(screen.getByPlaceholderText(/扫条码或编码/), 'C-3{Enter}');
     expect(await screen.findByText('可乐')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('combobox', { name: '录入单位' }));
-    await user.click(await screen.findByTitle('箱'));
-    const qty = screen.getByRole('spinbutton');
+    await user.click(screen.getByText('箱(24)'));
+    const qty = screen.getByLabelText('数量');
     fireEvent.change(qty, { target: { value: '2' } });
-    await waitFor(() => expect(Number((qty as HTMLInputElement).value)).toBe(2));
+    await waitFor(() => expect((qty as HTMLInputElement).value).toBe('2'));
     expect(await screen.findByText('= 48 瓶')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '保存单据' }));

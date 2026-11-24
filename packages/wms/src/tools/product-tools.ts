@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { ToolDefinition } from '@one/core';
-import { WMS_EVENT_TYPES, type ProductSpecDim } from '../events/catalog.js';
+import { WMS_EVENT_TYPES, type ProductSpecDim, type SkuPackageDef } from '../events/catalog.js';
 import {
   ProductAlreadyExistsError,
   ProductNotFoundError,
+  SkuPackagesInvalidError,
   SpecDimInUseError,
 } from '../errors.js';
 import { allocateCode } from '../numbering/allocate.js';
 import { def, type WorkspaceResolver } from './tool-def.js';
-import { normalizeSpecDims } from './tool-guards.js';
+import { normalizePackages, normalizeSpecDims } from './tool-guards.js';
 
 /**
  * 商品工具（多规格 SPU 层）——SKU 的上一级归组。
@@ -35,17 +36,33 @@ const specDimsSchema = {
   },
 } as const;
 
+const packagesSchema = {
+  type: 'array',
+  description:
+    '默认包装单位（可选，换算）：[{unit, ratio}]，1 个包装单位 = ratio 个基本单位（unit 字段），如 [{"unit":"箱","ratio":24}]。挂在商品下、自己没定义包装的 SKU 继承它；须先有基本单位',
+  items: {
+    type: 'object',
+    properties: {
+      unit: { type: 'string', description: '包装单位名，如 箱 / 包' },
+      ratio: { type: 'number', description: `1 个该包装单位 = ratio 个基本单位（正数）` },
+    },
+    required: ['unit', 'ratio'],
+  },
+} as const;
+
 export function createProductTools(resolveWorkspace: WorkspaceResolver): ToolDefinition[] {
   const productCreate: ToolDefinition<{
     productCode?: string;
     name: string;
     specDims?: ProductSpecDim[];
+    unit?: string;
+    packages?: SkuPackageDef[];
     extData?: Record<string, unknown>;
   }> = {
     id: 'wms.product.create',
     label: '创建商品',
     description:
-      '创建一个商品（多规格 SPU，SKU 的上一级归组）。productCode 全库唯一，不传或空着则按编号规则生成（如 PRD-0001）；name 名称必填；specDims 声明规格维度（如 颜色×尺码），每个规格组合再用 wms.sku.create 挂到该商品下（productCode + variantAttrs），自动生成「商品码-取值」样式的 SKU 编码。商品本身不记库存——条码/单位/安全库存都在 SKU 上。',
+      '创建一个商品（多规格 SPU，SKU 的上一级归组）。productCode 全库唯一，不传或空着则按编号规则生成（如 PRD-0001）；name 名称必填；specDims 声明规格维度（如 颜色×尺码），每个规格组合再用 wms.sku.create 挂到该商品下（productCode + variantAttrs），自动生成「商品码-取值」样式的 SKU 编码。unit 基本单位（如 瓶 / 件）与 packages 默认包装单位（如 [{"unit":"箱","ratio":24}] = 1 箱 = 24 瓶）在商品上设一次，挂在下面的 SKU 不单独设置就自动沿用——单据行按包装单位录入时系统换算成基本单位入账。商品本身不记库存——条码/安全库存仍在 SKU 上。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -53,6 +70,8 @@ export function createProductTools(resolveWorkspace: WorkspaceResolver): ToolDef
         productCode: { type: 'string', description: '商品唯一编码（可选。不传或空着按编号规则生成，如 PRD-0001）' },
         name: { type: 'string', description: '商品名称' },
         specDims: specDimsSchema,
+        unit: { type: 'string', description: '基本单位（可选，如 瓶 / 件 / kg）：库存按它记；挂在其下的 SKU 不单独设置就沿用' },
+        packages: packagesSchema,
         extData: { type: 'object', description: '扩展字段键值对（可选）' },
       },
       required: ['name'],
@@ -65,16 +84,21 @@ export function createProductTools(resolveWorkspace: WorkspaceResolver): ToolDef
         throw new ProductAlreadyExistsError(productCode);
       }
       const specDims = params.specDims === undefined ? [] : normalizeSpecDims(params.specDims);
+      // 基本单位：空白 = 未设置（存 NULL）；定义了默认包装时它是换算的分母
+      const unit = params.unit?.trim() || undefined;
+      const packages = params.packages === undefined ? [] : normalizePackages(params.packages, unit ?? null);
       const productId = randomUUID();
       ctx.appendEvent(WMS_EVENT_TYPES.productCreated, {
         productId,
         productCode,
         name: params.name,
         specDims,
+        unit,
+        ...(packages.length > 0 ? { packages } : {}),
         extData: params.extData,
       });
       ws.sync();
-      return { productId, productCode, name: params.name, specDims };
+      return { productId, productCode, name: params.name, specDims, unit: unit ?? null, packages: packages.length > 0 ? packages : null };
     },
   };
 
@@ -82,12 +106,14 @@ export function createProductTools(resolveWorkspace: WorkspaceResolver): ToolDef
     productCode: string;
     name?: string;
     specDims?: ProductSpecDim[];
+    unit?: string;
+    packages?: SkuPackageDef[];
     extData?: Record<string, unknown>;
   }> = {
     id: 'wms.product.update',
     label: '更新商品',
     description:
-      '更新商品的名称、规格维度定义或扩展字段。只传需要修改的字段，未传保持不变。specDims 整体替换，且必须与已挂 SKU 的规格组合严丝合缝：删除在用的维度/取值会被拒绝，新增维度要求已挂 SKU 都补上了该维度的取值（先 wms.sku.update 补组合）。productCode 是业务键不可改。停用/启用走 wms.product.archive / wms.product.unarchive。',
+      '更新商品的名称、规格维度定义、默认基本单位、默认包装单位或扩展字段。只传需要修改的字段，未传保持不变。specDims 整体替换，且必须与已挂 SKU 的规格组合严丝合缝：删除在用的维度/取值会被拒绝，新增维度要求已挂 SKU 都补上了该维度的取值（先 wms.sku.update 补组合）。unit 传空串 = 清空基本单位（还有默认包装时不能清）；packages 整体替换，传 [] = 清空默认包装。改了默认单位/包装后，继承它们的 SKU 立即按新值换算（已开单据的录入快照不变；自己单独设置过的 SKU 不受影响）。productCode 是业务键不可改。停用/启用走 wms.product.archive / wms.product.unarchive。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -95,6 +121,11 @@ export function createProductTools(resolveWorkspace: WorkspaceResolver): ToolDef
         productCode: { type: 'string', description: '要更新的商品编码' },
         name: { type: 'string', description: '新的商品名称（可选）' },
         specDims: { ...specDimsSchema, description: `${specDimsSchema.description}（更新时整体替换）` },
+        unit: { type: 'string', description: '新的基本单位（可选；不传保持不变，传空串 = 清空——还有默认包装时不能清）' },
+        packages: {
+          ...packagesSchema,
+          description: `${packagesSchema.description}（更新时整体替换；不传 = 不改，传 [] = 清空）`,
+        },
         extData: { type: 'object', description: '新的扩展字段（可选，整体替换）' },
       },
       required: ['productCode'],
@@ -110,11 +141,24 @@ export function createProductTools(resolveWorkspace: WorkspaceResolver): ToolDef
         specDims = params.specDims.length === 0 ? [] : normalizeSpecDims(params.specDims);
         assertDimsKeepAttachments(product, specDims, ws.skus.byProduct(product.id));
       }
+      // 基本单位：undefined = 不改；trim 后空串 = 清空
+      const unit = params.unit === undefined ? undefined : params.unit.trim();
+      // 默认包装：undefined = 不改；[] = 清空；否则整体替换。基本单位取「本次新值 ?? 现值」
+      const effectiveUnit = unit === undefined ? product.unit : unit || null;
+      const packages =
+        params.packages === undefined ? product.packages ?? [] : normalizePackages(params.packages, effectiveUnit);
+      if (!effectiveUnit && packages.length > 0) {
+        throw new SkuPackagesInvalidError(
+          `商品还定义着默认包装（${packages.map((p) => p.unit).join('、')}），不能清空基本单位——先传 packages: [] 清掉默认包装`,
+        );
+      }
       ctx.appendEvent(WMS_EVENT_TYPES.productUpdated, {
         productId: product.id,
         productCode: product.productCode,
         name: params.name,
         specDims,
+        unit,
+        packages: params.packages === undefined ? undefined : packages,
         extData: params.extData,
       });
       ws.sync();
@@ -123,6 +167,8 @@ export function createProductTools(resolveWorkspace: WorkspaceResolver): ToolDef
         productCode: product.productCode,
         name: params.name ?? product.name,
         specDims: specDims ?? product.specDims,
+        unit: effectiveUnit,
+        packages: packages.length > 0 ? packages : null,
       };
     },
   };

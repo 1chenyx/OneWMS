@@ -5,6 +5,7 @@ import {
   type ProductCreatedPayload,
   type ProductSpecDim,
   type ProductUpdatedPayload,
+  type SkuPackageDef,
 } from '../events/catalog.js';
 
 /**
@@ -23,6 +24,12 @@ export interface ProductRecord {
   readonly name: string;
   /** 规格维度定义（顺序即展示序）；空数组 = 未声明维度 */
   readonly specDims: readonly ProductSpecDim[];
+  /**
+   * 默认基本单位（如 瓶 / 件）；null = 未设。挂在商品下、自己没设单位的 SKU 继承它。
+   */
+  readonly unit: string | null;
+  /** 默认包装单位 [{unit:'箱', ratio:24}]；null = 无。SKU 未自带包装时继承它。 */
+  readonly packages: readonly SkuPackageDef[] | null;
   /** 档案状态（A2 软停用先例）：active = 启用；archived = 已停用 */
   readonly status: string;
   readonly extData: Record<string, unknown>;
@@ -35,6 +42,8 @@ interface ProductRow {
   product_code: string;
   name: string;
   spec_dims: string;
+  unit: string | null;
+  packages: string | null;
   status: string;
   ext_data: string;
   created_at: string;
@@ -50,12 +59,25 @@ function parseDims(raw: string): readonly ProductSpecDim[] {
   }
 }
 
+/** 空数组 = 清空，读取层归一成 null */
+function parsePackages(raw: string | null): readonly SkuPackageDef[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as SkuPackageDef[];
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function rowToRecord(row: ProductRow): ProductRecord {
   return {
     id: row.id,
     productCode: row.product_code,
     name: row.name,
     specDims: parseDims(row.spec_dims),
+    unit: row.unit || null,
+    packages: parsePackages(row.packages),
     status: row.status,
     extData: JSON.parse(row.ext_data) as Record<string, unknown>,
     createdAt: row.created_at,
@@ -78,8 +100,8 @@ export class ProductView {
         // product_code 唯一冲突不走 OR IGNORE 静默——业务冲突必须显式炸出来
         this.db
           .prepare(
-            `INSERT INTO wms_product (id, workspace_id, product_code, name, spec_dims, status, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_product (id, workspace_id, product_code, name, spec_dims, status, ext_data, created_at, updated_at, unit, packages)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             p.productId,
@@ -91,6 +113,8 @@ export class ProductView {
             JSON.stringify(p.extData ?? {}),
             env.createdAt,
             env.createdAt,
+            p.unit ? p.unit.trim() : null,
+            p.packages === undefined ? null : JSON.stringify(p.packages),
           );
         break;
       }
@@ -103,6 +127,8 @@ export class ProductView {
                spec_dims = COALESCE(?, spec_dims),
                status = COALESCE(?, status),
                ext_data = COALESCE(?, ext_data),
+               unit = COALESCE(?, unit),
+               packages = COALESCE(?, packages),
                updated_at = ?
              WHERE workspace_id = ? AND id = ?`,
           )
@@ -111,6 +137,9 @@ export class ProductView {
             p.specDims === undefined ? null : JSON.stringify(p.specDims),
             p.status ?? null,
             p.extData === undefined ? null : JSON.stringify(p.extData),
+            p.unit === undefined ? null : p.unit.trim(),
+            // [] = 清空：写 '[]' 而非 NULL，与「从没设过」在读取层归一到同一个 null
+            p.packages === undefined ? null : JSON.stringify(p.packages),
             env.createdAt,
             this.workspaceId,
             p.productId,

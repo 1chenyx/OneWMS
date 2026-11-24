@@ -176,12 +176,24 @@ export interface ProductCreatedPayload {
   readonly name: string;
   /** 规格维度定义：[{name:'颜色',values:['红','黑']},{name:'尺码',values:['S','M']}]；空 = 无维度 */
   readonly specDims?: readonly ProductSpecDim[];
+  /**
+   * 默认基本单位（可选，如 瓶 / 件）：挂在本商品下、自己没设单位的 SKU 继承它。
+   * 空 = 未设。定义了 packages 时它是换算的分母。
+   */
+  readonly unit?: string;
+  /**
+   * 默认包装单位（可选）：[{unit:'箱', ratio:24}]——1 箱 = 24 个基本单位（unit）。
+   * 挂在本商品下、自己没定义包装的 SKU 继承它。缺省 = 无包装单位。
+   */
+  readonly packages?: readonly SkuPackageDef[];
   readonly extData?: Record<string, unknown>;
 }
 
 /**
  * 商品更新（LWW：只携带变更字段；productCode 是业务键不可改——历史 SKU 引用它的 id）。
  * specDims 显式传才改：新增取值可以，删掉已被 SKU variantAttrs 用到的取值由工具层拒绝。
+ * unit 显式传才改（空串 = 清空）；packages 显式传才改（整体替换，[] = 清空）。
+ * 改了以后，继承它们的 SKU 立即按新值走——已开单据行另有录入快照，不受影响。
  */
 export interface ProductUpdatedPayload {
   readonly productId: string;
@@ -189,6 +201,10 @@ export interface ProductUpdatedPayload {
   readonly name?: string;
   /** 规格维度定义。缺省 = 不改。整体覆盖（JSON 数组一次替换） */
   readonly specDims?: readonly ProductSpecDim[];
+  /** 默认基本单位：不传 = 不改；空串 = 清空（有默认包装时不能清） */
+  readonly unit?: string;
+  /** 默认包装单位：不传 = 不改；[] = 清空；否则整体替换 */
+  readonly packages?: readonly SkuPackageDef[];
   /**
    * 档案状态（A2 软停用先例）：active = 启用（缺省）；archived = 已停用。
    * 只由 wms.product.archive / wms.product.unarchive 两个专用工具写入（不开放给

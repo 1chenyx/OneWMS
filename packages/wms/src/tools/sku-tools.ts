@@ -43,7 +43,7 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
     id: 'wms.sku.create',
     label: '创建 SKU',
     description:
-      '创建一个新的 SKU（库存商品）。skuCode 是全库唯一的商品编码，不传或空着则按编号规则（sku）生成；挂多规格商品时不传 skuCode 会自动生成「商品码-取值」样式（如 T-SHIRT-红-S）。name 是商品名称；可选 barcode 条码（扫码枪识读用，同库唯一，多个 SKU 不可共用）；可选 reorderPoint 安全库存（低库存预警阈值，可用量低于它时进预警清单，0 或不传 = 不预警）；可选 unit 数量单位（如 kg / 箱 / 件，散装称重商品建议填写，单据与标签会跟随显示）——定义包装换算时它是基本单位；可选 packages 包装单位（如 [{"unit":"箱","ratio":24}] = 1 箱 = 24 个基本单位；单据行可选包装单位录入，系统自动换算成基本单位入账，库存恒按基本单位记）；多规格：productCode 挂到所属商品（wms.product.create 先建并声明 specDims），variantAttrs 声明规格组合（如 {"颜色":"红","尺码":"S"}，键值须与商品维度对齐，同商品下组合唯一）；可选 extData 携带自定义扩展字段（如规格、保质期）。',
+      '创建一个新的 SKU（库存商品）。skuCode 是全库唯一的商品编码，不传或空着则按编号规则（sku）生成；挂多规格商品时不传 skuCode 会自动生成「商品码-取值」样式（如 T-SHIRT-红-S）。name 是商品名称；可选 barcode 条码（扫码枪识读用，同库唯一，多个 SKU 不可共用）；可选 reorderPoint 安全库存（低库存预警阈值，可用量低于它时进预警清单，0 或不传 = 不预警）；可选 unit 数量单位（如 kg / 箱 / 件，散装称重商品建议填写，单据与标签会跟随显示）——定义包装换算时它是基本单位；可选 packages 包装单位（如 [{"unit":"箱","ratio":24}] = 1 箱 = 24 个基本单位；单据行可选包装单位录入，系统自动换算成基本单位入账，库存恒按基本单位记）；unit / packages 都不传 = 继承所属商品的默认基本单位与默认包装（多规格商品的惯例：单位在商品上设一次，各规格自动沿用），传了即本 SKU 单独设置；多规格：productCode 挂到所属商品（wms.product.create 先建并声明 specDims），variantAttrs 声明规格组合（如 {"颜色":"红","尺码":"S"}，键值须与商品维度对齐，同商品下组合唯一）；可选 extData 携带自定义扩展字段（如规格、保质期）。',
     permission: 'write',
     parameters: {
       type: 'object',
@@ -60,8 +60,11 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
           maximum: 1000000000,
           description: '安全库存（可选，低库存预警阈值；可用量 < 此值时预警，0 或不传 = 不预警）',
         },
-        unit: { type: 'string', description: '数量单位（可选，如 kg / 箱 / 件；不传 = 数量不带单位）' },
-        packages: { ...packagesSchema },
+        unit: { type: 'string', description: '数量单位（可选，如 kg / 箱 / 件；挂了商品且不传 = 继承商品的默认单位，否则数量不带单位）' },
+        packages: {
+          ...packagesSchema,
+          description: `${packagesSchema.description}；挂了商品且不传 = 继承商品的默认包装`,
+        },
         serialTracked: {
           type: 'boolean',
           description: '按序列号管理（可选，module.serial）。true = 之后收发必须写每一件的序列号。不传 = 否',
@@ -96,8 +99,10 @@ export function createSkuTools(resolveWorkspace: WorkspaceResolver): ToolDefinit
       // 单位（A3）：空白 = 未设置（存 NULL）；不约束词表（kg / 箱 / 件 / 自定义皆可）。
       // 定义了包装换算时它是基本单位（换算分母）
       const unit = params.unit?.trim() || undefined;
-      // 包装单位（换算）：整体下发；先校验（须有基本单位）
-      const packages = params.packages === undefined ? undefined : normalizePackages(params.packages, unit ?? null);
+      // 包装单位（换算）：整体下发；先校验（须有基本单位）。
+      // SKU 自己没填单位时回落到所属商品的默认单位（继承，读取层解析）
+      const packages =
+        params.packages === undefined ? undefined : normalizePackages(params.packages, unit ?? attach?.product.unit ?? null);
       const skuId = randomUUID();
       ctx.appendEvent(WMS_EVENT_TYPES.skuCreated, {
         skuId,

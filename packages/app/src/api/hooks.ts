@@ -9,7 +9,7 @@ import {
   subscribePlatformToken,
   writePlatformToken,
 } from '../lib/connection';
-import type { DynListQuery, InventoryListPage, InventoryRow, InventorySlicePage, Location, Order, Partner, Product, ProductSpecDim, Sku, UiPageRecord } from './client';
+import type { DynListQuery, InventoryListPage, InventoryRow, InventorySlicePage, Location, Order, Partner, Product, ProductSpecDim, Sku, SkuPackage, UiPageRecord } from './client';
 import type { ListPage } from './page';
 import { isConnectorId } from '../lib/integration-draft';
 
@@ -182,13 +182,19 @@ export function useCreateProduct() {
   });
 }
 
-/** 改商品（名称 / specDims 整体替换）：删在用的维度或取值会被服务端拒（WMS_SPEC_DIM_IN_USE） */
+/** 改商品（名称 / specDims / 默认单位与包装）：删在用的维度或取值会被服务端拒（WMS_SPEC_DIM_IN_USE） */
 export function useUpdateProduct() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (params: {
       productCode: string;
-      body: { name?: string; specDims?: ProductSpecDim[]; extData?: Record<string, unknown> };
+      body: {
+        name?: string;
+        specDims?: ProductSpecDim[];
+        unit?: string;
+        packages?: SkuPackage[];
+        extData?: Record<string, unknown>;
+      };
     }) => api.updateProduct(params.productCode, params.body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['products'] });

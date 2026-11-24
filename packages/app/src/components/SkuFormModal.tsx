@@ -1,15 +1,16 @@
-import { useEffect, useMemo } from 'react';
-import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { App as AntApp, Button, Form, Input, InputNumber, Modal, Select, Space, Switch } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import { App as AntApp, AutoComplete, Form, Input, InputNumber, Modal, Select, Space, Switch, Typography } from 'antd';
 import type { FieldExtension } from '@one/core';
 import { useCreateSku, useNextNumber, useProducts, useProfileSnapshot, useUpdateSku } from '../api/hooks';
 import { ApiError } from '../api/client';
 import type { Sku, SkuPackage } from '../api/client';
 import { filledCode, useSeededField } from './use-seeded-code';
+import PackageLadder, { BASE_UNIT_PRESETS, ladderToPackages, packagesToLadder } from './package-ladder';
+import { fmtUnitWithPackages } from '../lib/format';
 
 /**
  * SKU 表单（动态表单，Profile 消费闭环的输入侧）——新建 / 编辑同一份：
- * 固定字段（编码/名称/所属商品+规格/条码/基本单位+包装换算/安全库存）+ 可见扩展字段按 type 映射控件，
+ * 固定字段（编码/名称/所属商品+规格/条码/单位与包装/安全库存）+ 可见扩展字段按 type 映射控件，
  * 隐藏字段连输入项都不出现（软删除的界面投影）。
  *
  * 编辑态（传入 sku）：skuCode 是业务键禁用（历史单据/流水按它引用）；
@@ -19,8 +20,10 @@ import { filledCode, useSeededField } from './use-seeded-code';
  * 多规格：选了商品才出现规格组合下拉（维度来自商品的 specDims）；没选商品
  * 就一个字段都不下发（工具语义「两者都不传 = 不挂 / 不改挂」，不能取消挂靠）。
  *
- * 包装换算：unit 是基本单位（库存与账面恒按它记），packages 是录入用的包装单位
- * （1 箱 = 24 瓶）。编辑态整体替换——原样保存会原样下发；行全删 = 传 [] 清空。
+ * 单位与包装：挂在商品下的 SKU 默认继承商品的默认值（只读展示，改去商品上改），
+ * 打开「单独设置」才露出编辑——阶梯式录入（1 箱 = 4 包，系统累乘）。
+ * 关掉开关 = 恢复跟随商品（清掉自己单独设置过的值）。独立 SKU 没有可继承的
+ * 来源，直接编辑。
  */
 export default function SkuFormModal({
   open,
@@ -50,6 +53,20 @@ export default function SkuFormModal({
   // 基本单位实时值：包装换算的分母，提示文案跟着变
   const unitValue = (Form.useWatch('unit', form) as string | undefined)?.trim();
   const specDims = (products.data ?? []).find((p) => p.productCode === productCode)?.specDims ?? [];
+  // 单位/包装继承：挂了商品的 SKU 默认跟随商品默认值，「单独设置」开关才露出编辑
+  const [ownUnits, setOwnUnits] = useState(false);
+  const editingOwn = editing && (sku.unitInherited === false || sku.packagesInherited === false);
+  const inheritable = Boolean(editing ? sku.productCode : productCode);
+  // 继承态展示的商品默认值：商品清单（启用档）里找；编辑态商品已停用时用 SKU 的解析值兜底
+  const attachedDefaults = useMemo(() => {
+    const code = editing ? sku?.productCode : productCode;
+    if (!code) return null;
+    const hit = (products.data ?? []).find((row) => row.productCode === code);
+    if (hit) return hit.unit || hit.packages?.length ? { unit: hit.unit, packages: hit.packages ?? null } : null;
+    return editing && (sku?.unit || sku?.packages?.length)
+      ? { unit: sku!.unit, packages: sku!.packages ?? null }
+      : null;
+  }, [products.data, editing, sku, productCode]);
 
   // 扩展字段元数据（visible = false 的不出现：列与输入项同源）
   const extensions = useMemo(
@@ -83,15 +100,21 @@ export default function SkuFormModal({
   useEffect(() => {
     if (!open) return;
     form.resetFields();
+    setOwnUnits(Boolean(editingOwn));
     if (!sku) return;
-    // 回填：扩展字段按声明类型转成控件值（json 序列化回文本框）
+    // 回填：扩展字段按声明类型转成控件值（json 序列化回文本框）。
+    // 单位/包装只有「自己单独设置过 / 独立 SKU」才回填编辑器；继承态保持空（不下发 = 跟随商品）
     const values: Record<string, unknown> = {
       skuCode: sku.skuCode,
       name: sku.name,
       barcode: sku.barcode ?? undefined,
       reorderPoint: sku.reorderPoint > 0 ? sku.reorderPoint : undefined,
-      unit: sku.unit ?? undefined,
-      packages: (sku.packages ?? []).map((p) => ({ unit: p.unit, ratio: p.ratio })),
+      ...(editingOwn || !sku.productCode
+        ? {
+            ...(sku.unit ? { unit: sku.unit } : {}),
+            packSteps: packagesToLadder(sku.packages),
+          }
+        : {}),
       ...(sku.productCode ? { productCode: sku.productCode } : {}),
       ...(sku.variantAttrs ? { variantAttrs: { ...sku.variantAttrs } } : {}),
       ...(serialOn ? { serialTracked: sku.serialTracked === true } : {}),
@@ -102,7 +125,7 @@ export default function SkuFormModal({
       values[ext.key] = ext.type === 'json' ? JSON.stringify(v) : v;
     }
     form.setFieldsValue(values);
-  }, [open, sku, form, extSignature, serialOn]);
+  }, [open, sku, form, extSignature, serialOn, editingOwn]);
 
   useSeededField(form, 'skuCode', open && !editing ? 'sku' : null);
 
@@ -137,14 +160,28 @@ export default function SkuFormModal({
     }
     const barcode = (values.barcode as string | undefined)?.trim();
     const unit = (values.unit as string | undefined)?.trim();
-    // 包装单位：去空白、丢空行；没填基本单位、重名、比例非正都拦在提交前（服务端同样会拒）
+    // 包装阶梯 → 对基本单位的换算清单（没填基本单位、重名、比例非正都拦在提交前，服务端同样会拒）
     let packages: SkuPackage[];
     try {
-      packages = normalizePackages(values.packages, unit ?? '');
+      packages = ladderToPackages(values.packSteps as { unit: string; n: number }[] | undefined, unit ?? '');
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e));
       return;
     }
+    // 单位/包装的下发形态（按继承语境分三种）：
+    //  - 独立 SKU / 单独设置开着：显式传（unit 空串 = 清空，packages 整体替换）
+    //  - 挂着商品且跟随（开关关着）：此前单独设置过 → 传 unit:'' + packages:[] 恢复继承；一直跟随 → 不传
+    //  - 新建挂着商品且跟随：不传 = 继承商品默认
+    const unitPayload: Record<string, unknown> = !inheritable
+      ? {
+          unit: unit ?? '',
+          ...(packages.length > 0 || (sku?.packages?.length ?? 0) > 0 ? { packages } : {}),
+        }
+      : ownUnits
+        ? { unit: unit ?? '', packages }
+        : editingOwn
+          ? { unit: '', packages: [] }
+          : {};
     const reorderPoint =
       typeof values.reorderPoint === 'number' && values.reorderPoint >= 0 ? values.reorderPoint : 0;
     // 挂商品：按维度顺序重建组合（无维度商品不带 variantAttrs，带了服务端会拒）
@@ -170,10 +207,7 @@ export default function SkuFormModal({
             // 空条码不下发（wms.sku.update 不接受清空语义，传空串会被拒）
             ...(barcode ? { barcode } : {}),
             reorderPoint,
-            // 单位与条码不同：编辑态显式传（空串 = 清空），未改也幂等
-            unit: unit ?? '',
-            // 整体替换：原来有包装、现在全删了 → 传 [] 清空；原来就没有 → 不传
-            ...(packages.length > 0 || (sku.packages?.length ?? 0) > 0 ? { packages } : {}),
+            ...unitPayload,
             ...(serialOn ? { serialTracked: values.serialTracked === true } : {}),
             ...attachment,
             extData,
@@ -182,13 +216,15 @@ export default function SkuFormModal({
         message.success(`SKU ${sku.skuCode} 已更新`);
       } else {
         const skuCode = filledCode(values.skuCode);
+        // 新建：单独设置开着才下发单位/包装；跟随态不传 = 继承商品默认
+        const ownCreate = !inheritable || ownUnits;
         const created = await create.mutateAsync({
           ...(skuCode ? { skuCode } : {}),
           name: values.name as string,
           barcode: barcode || undefined,
           reorderPoint: reorderPoint > 0 ? reorderPoint : undefined,
-          unit: unit || undefined,
-          ...(packages.length > 0 ? { packages } : {}),
+          ...(ownCreate && unit ? { unit } : {}),
+          ...(ownCreate && packages.length > 0 ? { packages } : {}),
           ...(serialOn && values.serialTracked === true ? { serialTracked: true } : {}),
           ...attachment,
           extData: Object.keys(extData).length ? extData : undefined,
@@ -253,52 +289,56 @@ export default function SkuFormModal({
             <Select placeholder={`选择${dim.name}`} options={dim.values.map((v) => ({ value: v, label: v }))} />
           </Form.Item>
         ))}
-        <Form.Item
-          name="unit"
-          label="基本单位（可选，库存与账面按它记，数量显示与打印会跟随，如 kg / 瓶 / 件）"
-        >
-          <Input placeholder="如 kg（散装称重建议填写）" style={{ width: '50%' }} />
-        </Form.Item>
-        <Form.Item
-          label="包装单位（可选，开单时可按箱 / 包录入，系统折成基本单位入账）"
-          extra={
-            unitValue
-              ? `换算率 = 1 个包装单位等于多少「${unitValue}」。改比例不影响已开的单据。`
-              : '先填基本单位，才能定义包装单位'
-          }
-          style={{ marginBottom: 0 }}
-        >
-          <Form.List name="packages">
-            {(fields, { add, remove }) => (
-              <>
-                {fields.map((field) => (
-                  <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 4 }}>
-                    <Form.Item
-                      name={[field.name, 'unit']}
-                      rules={[{ required: true, message: '单位名' }]}
-                      style={{ marginBottom: 4 }}
-                    >
-                      <Input placeholder="单位名，如 箱" style={{ width: 140 }} />
-                    </Form.Item>
-                    <Form.Item
-                      name={[field.name, 'ratio']}
-                      rules={[{ required: true, message: '换算率' }]}
-                      style={{ marginBottom: 4 }}
-                    >
-                      <InputNumber min={0.001} precision={3} placeholder="= 多少基本单位" style={{ width: 180 }} />
-                    </Form.Item>
-                    <MinusCircleOutlined onClick={() => remove(field.name)} />
-                  </Space>
-                ))}
-                <Form.Item style={{ marginBottom: 16 }}>
-                  <Button type="dashed" icon={<PlusOutlined />} onClick={() => add()}>
-                    加一个包装单位
-                  </Button>
-                </Form.Item>
-              </>
+        {inheritable ? (
+          <Form.Item label="单位与包装" style={{ marginBottom: ownUnits ? 0 : 16 }}>
+            {ownUnits ? (
+              <Space size={8}>
+                <Typography.Text type="secondary">不跟随商品默认，本 SKU 单独设置：</Typography.Text>
+                <Switch size="small" checked={ownUnits} onChange={setOwnUnits} aria-label="单独设置单位与包装" />
+              </Space>
+            ) : (
+              <Space size={8} wrap>
+                <Typography.Text>
+                  跟随商品默认：{attachedDefaults ? fmtUnitWithPackages(attachedDefaults.unit, attachedDefaults.packages) : '未设置'}
+                </Typography.Text>
+                <Switch
+                  size="small"
+                  checked={ownUnits}
+                  onChange={setOwnUnits}
+                  aria-label="单独设置单位与包装"
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  要改默认值去商品上改，全部规格一起生效
+                </Typography.Text>
+              </Space>
             )}
-          </Form.List>
-        </Form.Item>
+          </Form.Item>
+        ) : null}
+        {!inheritable || ownUnits ? (
+          <>
+            <Form.Item
+              name="unit"
+              label="基本单位（可选，库存与账面按它记，数量显示与打印会跟随，如 kg / 瓶 / 件）"
+            >
+              <AutoComplete
+                placeholder="如 kg（散装称重建议填写）"
+                style={{ width: '50%' }}
+                options={BASE_UNIT_PRESETS.map((u) => ({ value: u }))}
+              />
+            </Form.Item>
+            <Form.Item
+              label="包装换算（可选，开单时可按箱 / 包录入，系统折成基本单位入账）"
+              extra={
+                unitValue
+                  ? `从大到小逐级填「1 箱 = 4 包」，最后一级折成「${unitValue}」，系统累乘。改比例不影响已开的单据。`
+                  : '先填基本单位，才能定义包装单位'
+              }
+              style={{ marginBottom: 16 }}
+            >
+              <PackageLadder name="packSteps" baseUnit={unitValue ?? ''} />
+            </Form.Item>
+          </>
+        ) : null}
         <Form.Item
           name="barcode"
           label={
@@ -337,27 +377,6 @@ export default function SkuFormModal({
       </Form>
     </Modal>
   );
-}
-
-/**
- * 包装单位归整：去空白、丢掉整行空着的；没填基本单位、与基本单位同名、重复、比例非正都报错。
- * 界面只做这层浅校验，语义守卫（数量精度、上限）留在工具层。
- */
-function normalizePackages(raw: unknown, baseUnit: string): SkuPackage[] {
-  const rows = Array.isArray(raw) ? (raw as Record<string, unknown>[]) : [];
-  const out: SkuPackage[] = [];
-  for (const row of rows) {
-    const unit = typeof row?.unit === 'string' ? row.unit.trim() : '';
-    const ratio = typeof row?.ratio === 'number' ? row.ratio : NaN;
-    if (!unit && Number.isNaN(ratio)) continue; // 整行空着：当成没加
-    if (!unit) throw new Error('有一行包装单位缺单位名');
-    if (!(ratio > 0)) throw new Error(`包装单位「${unit}」的换算率必须是正数`);
-    if (unit === baseUnit) throw new Error(`包装单位「${unit}」不能与基本单位同名`);
-    if (out.some((p) => p.unit === unit)) throw new Error(`包装单位「${unit}」重复`);
-    out.push({ unit, ratio });
-  }
-  if (out.length > 0 && !baseUnit) throw new Error('先填基本单位，再定义包装单位——换算率的分母是基本单位');
-  return out;
 }
 
 /** type → 控件映射（v1：date 用纯文本输入，不引日期库） */

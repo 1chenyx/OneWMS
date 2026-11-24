@@ -149,6 +149,53 @@ const colaSku = {
 /** useSkus 的数据源：默认固定清单；用例里可换成含包装换算的清单，beforeEach 复位 */
 let skusData: readonly unknown[] = skusFixture;
 
+/** useProducts 的数据源：SkuFormModal 继承展示用；默认空（多数用例不挂商品） */
+let productsData: readonly unknown[] = [];
+
+/** 挂在商品下的规格 SKU（单位/包装继承商品默认）：继承交互用例用 */
+const variantSku = {
+  id: 's-4',
+  skuCode: 'V-1',
+  barcode: null,
+  reorderPoint: 0,
+  unit: '瓶',
+  unitInherited: true,
+  packages: [{ unit: '箱', ratio: 24 }],
+  packagesInherited: true,
+  productCode: 'P-COLA',
+  variantAttrs: { 颜色: '红' },
+  name: '可乐（规格）',
+  extData: {},
+  createdAt: '2026-10-30T08:00:00.000Z',
+  updatedAt: '2026-10-30T08:00:00.000Z',
+};
+
+/** 单独设置过单位/包装的规格 SKU：关掉「单独设置」= 恢复继承 */
+const variantOwnSku = {
+  ...variantSku,
+  id: 's-5',
+  skuCode: 'V-2',
+  unit: '罐',
+  unitInherited: false,
+  packages: [{ unit: '提', ratio: 8 }],
+  packagesInherited: false,
+};
+
+/** 商品默认（瓶，箱=24）：attachedDefaults 展示的数据源 */
+const colaProduct = {
+  id: 'p-1',
+  productCode: 'P-COLA',
+  name: '可乐',
+  specDims: [{ name: '颜色', values: ['红'] }],
+  unit: '瓶',
+  packages: [{ unit: '箱', ratio: 24 }],
+  status: 'active',
+  skuCount: 1,
+  extData: {},
+  createdAt: '2026-10-30T08:00:00.000Z',
+  updatedAt: '2026-10-30T08:00:00.000Z',
+};
+
 const ordersFixture = [
   {
     id: 'o-1',
@@ -216,8 +263,8 @@ vi.mock('../src/api/hooks', () => ({
     },
   }),
   useSkus: () => ({ isLoading: false, data: skusData }),
-  // SkuFormModal 的「所属商品」选择器数据源；这些用例不测多规格，给空清单即可
-  useProducts: () => ({ isLoading: false, data: [] }),
+  // SkuFormModal 的「所属商品」选择器与继承展示的数据源（用例里换 productsData）
+  useProducts: () => ({ isLoading: false, data: productsData }),
   usePartners: () => ({ isLoading: false, data: [] }),
   useCreateSku: () => ({ mutateAsync: createSkuMock, isPending: false }),
   useNextNumber: () => ({ isLoading: false, data: undefined }),
@@ -356,6 +403,7 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
     createSkuMock.mockReset();
     updateSkuMock.mockReset();
     skusData = skusFixture;
+    productsData = [];
   });
 
   it('可见字段成列、隐藏字段消失、extData 值进列；条码列：有码显码、无码显 -；单位列（A3）', () => {
@@ -410,7 +458,7 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
     expect(within(row).getByText('瓶（箱=24、包=6）')).toBeInTheDocument();
   });
 
-  it('新建表单：加包装单位行（箱 = 24 瓶）随档案提交；没填基本单位时拦在提交前', async () => {
+  it('新建表单：包装阶梯（1 箱 = 24 瓶）随档案提交；没填基本单位时拦在提交前', async () => {
     createSkuMock.mockResolvedValueOnce({ skuId: 's-3', skuCode: 'C-3', name: '可乐' });
     const user = userEvent.setup();
     render(wrap(<SkusPage />));
@@ -419,18 +467,17 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
     await user.type(screen.getByLabelText('SKU 编码'), 'C-3');
     await user.type(screen.getByLabelText('名称'), '可乐');
     expect(screen.getByText(/先填基本单位，才能定义包装单位/)).toBeInTheDocument(); // 提示：分母还没定
-    await user.click(screen.getByRole('button', { name: /加一个包装单位/ }));
-    await user.type(screen.getByPlaceholderText('单位名，如 箱'), '箱');
-    await user.type(screen.getByPlaceholderText('= 多少基本单位'), '24');
+    await user.click(screen.getByRole('button', { name: '+ 箱' })); // 常用芯片直接加一级「箱」
+    await user.type(screen.getByPlaceholderText('数量'), '24');
 
     // 没有基本单位：提交被拦，不发请求
     await user.click(screen.getByRole('button', { name: '创建' }));
     expect(await screen.findByText(/先填基本单位，再定义包装单位/)).toBeInTheDocument();
     expect(createSkuMock).not.toHaveBeenCalled();
 
-    // 补上基本单位：提示跟着变，再提交 packages 随档案下发
+    // 补上基本单位：分母提示跟着变，再提交 packages 随档案下发
     await user.type(screen.getByLabelText(/^基本单位/), '瓶');
-    expect(await screen.findByText(/等于多少「瓶」/)).toBeInTheDocument();
+    expect(await screen.findByText(/折成「瓶」/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '创建' }));
     await waitFor(() =>
       expect(createSkuMock).toHaveBeenCalledWith({
@@ -442,15 +489,14 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
     );
   });
 
-  it('编辑表单：包装单位回填；删一行 = 整体替换，全删 = 传 [] 清空', async () => {
+  it('编辑表单：阶梯回填（箱 4 → 包 6）；删一行 = 整体替换，全删 = 传 [] 清空', async () => {
     updateSkuMock.mockResolvedValue({ skuId: 's-3', skuCode: 'C-3' });
     skusData = [...skusFixture, colaSku];
     const user = userEvent.setup();
     render(wrap(<SkusPage />));
     const editButton = () =>
       within(screen.getByText('C-3').closest('tr')!).getByRole('button', { name: /编辑/ }); // 图标按钮：name 含 edit，用正则
-    const ratioInputs = () =>
-      screen.getAllByPlaceholderText('= 多少基本单位').map((el) => Number((el as HTMLInputElement).value));
+    const stepInputs = () => screen.getAllByPlaceholderText('数量').map((el) => Number((el as HTMLInputElement).value));
 
     await user.click(editButton());
     expect(screen.getByText('编辑 SKU · C-3')).toBeInTheDocument();
@@ -459,7 +505,8 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
       '箱',
       '包',
     ]);
-    expect(ratioInputs()).toEqual([24, 6]);
+    // 阶梯反解：1 箱 = 4 包（24/6）、1 包 = 6 瓶，不是对基本单位的原始比率
+    expect(stepInputs()).toEqual([4, 6]);
 
     // 删掉第一行（箱）→ 保存：只剩 包 = 6
     await user.click(screen.getAllByRole('img', { name: 'minus-circle' })[0]!);
@@ -482,6 +529,92 @@ describe('SkusPage：动态列（Profile 消费闭环）', () => {
       expect(updateSkuMock).toHaveBeenLastCalledWith({
         skuCode: 'C-3',
         body: { name: '可乐', reorderPoint: 0, unit: '瓶', packages: [], extData: {} }, // 全删 = 传 [] 清空，不是「不传 = 不改」
+      }),
+    );
+  });
+
+  it('挂在商品下的 SKU：默认跟随商品默认（只读展示），不传 unit / packages；单位列标「继承」', async () => {
+    updateSkuMock.mockResolvedValue({ skuId: 's-4', skuCode: 'V-1' });
+    skusData = [...skusFixture, variantSku];
+    productsData = [colaProduct];
+    const user = userEvent.setup();
+    render(wrap(<SkusPage />));
+
+    // 清单：继承的行加「继承」标
+    const row = screen.getByText('V-1').closest('tr')!;
+    expect(within(row).getByText('瓶（箱=24）')).toBeInTheDocument();
+    expect(within(row).getByText('继承')).toBeInTheDocument();
+
+    await user.click(within(row).getByRole('button', { name: /编辑/ }));
+    expect(await screen.findByText('编辑 SKU · V-1')).toBeInTheDocument();
+    // 跟随态：只读展示商品默认，没有单位/包装编辑器
+    expect(screen.getByText(/跟随商品默认：瓶（箱=24）/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^基本单位/)).not.toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: '单独设置单位与包装' })).not.toBeChecked();
+
+    // 原样保存：unit / packages 都不下发（继承语义）；挂靠信息原样重发（v1 语义）
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(updateSkuMock).toHaveBeenCalledWith({
+        skuCode: 'V-1',
+        body: { name: '可乐（规格）', reorderPoint: 0, productCode: 'P-COLA', variantAttrs: { 颜色: '红' }, extData: {} },
+      }),
+    );
+  });
+
+  it('单独设置开关：打开露出阶梯编辑并显式下发；此前单独设置过的关掉 = 恢复继承（清空 own）', async () => {
+    updateSkuMock.mockResolvedValue({ skuId: 's-4', skuCode: 'V-1' });
+    skusData = [...skusFixture, variantSku];
+    productsData = [colaProduct];
+    const user = userEvent.setup();
+    render(wrap(<SkusPage />));
+
+    await user.click(within(screen.getByText('V-1').closest('tr')!).getByRole('button', { name: /编辑/ }));
+    expect(await screen.findByText('编辑 SKU · V-1')).toBeInTheDocument();
+    await user.click(screen.getByRole('switch', { name: '单独设置单位与包装' }));
+    // 编辑器露出（继承态没回填，自己填）
+    expect(screen.getByLabelText(/^基本单位/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/^基本单位/), '罐');
+    await user.click(screen.getByRole('button', { name: '+ 箱' }));
+    await user.type(screen.getByPlaceholderText('数量'), '8');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(updateSkuMock).toHaveBeenCalledWith({
+        skuCode: 'V-1',
+        body: {
+          name: '可乐（规格）',
+          reorderPoint: 0,
+          unit: '罐',
+          packages: [{ unit: '箱', ratio: 8 }],
+          productCode: 'P-COLA',
+          variantAttrs: { 颜色: '红' },
+          extData: {},
+        },
+      }),
+    );
+
+    // 单独设置过的 SKU：打开即编辑态回填 own 值；关掉开关保存 = 清空 own 恢复继承
+    cleanup(); // 同一用例里换数据源重渲染，先清掉第一幕的 DOM
+    updateSkuMock.mockClear();
+    skusData = [...skusFixture, variantOwnSku];
+    render(wrap(<SkusPage />));
+    await user.click(within(screen.getByText('V-2').closest('tr')!).getByRole('button', { name: /编辑/ }));
+    expect(await screen.findByText('编辑 SKU · V-2')).toBeInTheDocument();
+    expect(screen.getByLabelText(/^基本单位/)).toHaveValue('罐'); // own 值回填
+    await user.click(screen.getByRole('switch', { name: '单独设置单位与包装' })); // 关掉 → 跟随
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(updateSkuMock).toHaveBeenCalledWith({
+        skuCode: 'V-2',
+        body: {
+          name: '可乐（规格）',
+          reorderPoint: 0,
+          unit: '',
+          packages: [], // 清空 own = 恢复继承
+          productCode: 'P-COLA',
+          variantAttrs: { 颜色: '红' },
+          extData: {},
+        },
       }),
     );
   });

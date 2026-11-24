@@ -47,6 +47,8 @@ beforeEach(() => {
         { name: '颜色', values: ['红', '黑'] },
         { name: '尺码', values: ['S', 'M'] },
       ],
+      unit: null,
+      packages: null,
       status: 'active',
       skuCount: 1,
       extData: {},
@@ -58,6 +60,8 @@ beforeEach(() => {
       productCode: 'BOLT',
       name: '螺栓',
       specDims: [],
+      unit: null,
+      packages: null,
       status: 'active',
       skuCount: 0,
       extData: {},
@@ -229,6 +233,78 @@ describe('ProductFormModal：维度编辑器', () => {
   });
 });
 
+describe('ProductFormModal：基本单位 + 包装阶梯', () => {
+  it('阶梯逐级填（1 箱 = 4 包、1 包 = 6 瓶），预览折合，packages 累乘随档案下发；没基本单位先拦', async () => {
+    const user = userEvent.setup();
+    render(wrap(<ProductsPage />));
+
+    await user.click(screen.getByRole('button', { name: /新建商品/ }));
+    await user.type(await screen.findByLabelText('名称'), '可乐');
+
+    // 常用芯片加「箱」，再加一级手填「包」；没填基本单位时先拦
+    await user.click(screen.getByRole('button', { name: '+ 箱' }));
+    await user.click(screen.getByRole('button', { name: /加一级包装/ }));
+    await user.type(screen.getAllByPlaceholderText('单位名，如 箱')[1]!, '包');
+    await user.type(screen.getAllByPlaceholderText('数量')[0]!, '4');
+    await user.type(screen.getAllByPlaceholderText('数量')[1]!, '6');
+    await user.click(screen.getByRole('button', { name: '创建' }));
+    expect(await screen.findByText(/先填基本单位，再定义包装单位/)).toBeInTheDocument();
+    expect(createProductMock).not.toHaveBeenCalled();
+
+    // 补基本单位：分母与折合预览跟着变，再提交
+    await user.type(screen.getByLabelText(/^基本单位/), '瓶');
+    expect(await screen.findByText('折合：1 箱 = 24 瓶；1 包 = 6 瓶')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '创建' }));
+    await waitFor(() =>
+      expect(createProductMock).toHaveBeenCalledWith({
+        productCode: 'PRD-0001',
+        name: '可乐',
+        unit: '瓶',
+        packages: [
+          { unit: '箱', ratio: 24 },
+          { unit: '包', ratio: 6 },
+        ],
+      }),
+    );
+  });
+
+  it('编辑回填：packages 反解成阶梯（箱 4 → 包 6），保存原样重发', async () => {
+    productsFixture[0]!.unit = '瓶';
+    productsFixture[0]!.packages = [
+      { unit: '箱', ratio: 24 },
+      { unit: '包', ratio: 6 },
+    ];
+    const user = userEvent.setup();
+    render(wrap(<ProductsPage />));
+
+    await user.click(within(screen.getByText('T-SHIRT').closest('tr')!).getByRole('button', { name: /编辑/ }));
+    expect(await screen.findByText('编辑商品 · T-SHIRT')).toBeInTheDocument();
+    expect(screen.getByLabelText(/^基本单位/)).toHaveValue('瓶');
+    expect(screen.getAllByPlaceholderText('单位名，如 箱').map((el) => (el as HTMLInputElement).value)).toEqual(['箱', '包']);
+    // 阶梯反解：1 箱 = 4 包（24/6），1 包 = 6 瓶
+    expect(screen.getAllByPlaceholderText('数量').map((el) => Number((el as HTMLInputElement).value))).toEqual([4, 6]);
+
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(updateProductMock).toHaveBeenCalledWith({
+        productCode: 'T-SHIRT',
+        body: {
+          name: '圆领T恤',
+          specDims: [
+            { name: '颜色', values: ['红', '黑'] },
+            { name: '尺码', values: ['S', 'M'] },
+          ],
+          unit: '瓶',
+          packages: [
+            { unit: '箱', ratio: 24 },
+            { unit: '包', ratio: 6 },
+          ],
+        },
+      }),
+    );
+  });
+});
+
 describe('VariantMatrixModal：笛卡尔积批量建 SKU', () => {
   it('摊开 2×2 组合、已存在的禁用勾选，只建剩下的 3 个并关弹窗', async () => {
     const user = userEvent.setup();
@@ -272,5 +348,29 @@ describe('VariantMatrixModal：笛卡尔积批量建 SKU', () => {
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: /按规格生成 SKU · T-SHIRT/ })).not.toBeInTheDocument(),
     );
+  });
+
+  it('按规则填条码（前缀 + 起始 + 步长）填满勾选项，生成时随各 SKU 下发', async () => {
+    const user = userEvent.setup();
+    render(wrap(<ProductsPage />));
+
+    await user.click(screen.getByRole('button', { name: /按规格生成 SKU/ }));
+    const dialog = await screen.findByRole('dialog', { name: /按规格生成 SKU · T-SHIRT/ });
+    await user.type(within(dialog).getByLabelText('条码前缀'), 'T');
+    // 起始号默认 1001、步长默认 1：直接填入勾选项
+    await user.click(within(dialog).getByRole('button', { name: '填入勾选项' }));
+    expect(
+      within(dialog)
+        .getAllByPlaceholderText('可扫入 / 填')
+        .map((el) => (el as HTMLInputElement).value),
+    ).toEqual(['T1001', 'T1002', 'T1003']);
+
+    await user.click(within(dialog).getByRole('button', { name: '生成 3 个' }));
+    await waitFor(() => expect(createSkuMock).toHaveBeenCalledTimes(3));
+    expect(createSkuMock.mock.calls.map((c) => c[0])).toEqual([
+      { name: '圆领T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '红', 尺码: 'M' }, barcode: 'T1001' },
+      { name: '圆领T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '黑', 尺码: 'S' }, barcode: 'T1002' },
+      { name: '圆领T恤', productCode: 'T-SHIRT', variantAttrs: { 颜色: '黑', 尺码: 'M' }, barcode: 'T1003' },
+    ]);
   });
 });

@@ -15,10 +15,14 @@ export interface Sku {
   barcode: string | null;
   /** 安全库存（M20）：低库存预警阈值；0 = 不预警 */
   reorderPoint: number;
-  /** 基本单位（A3）：库存与账面恒按它记；null = 不显示 */
+  /** 基本单位（A3）：库存与账面恒按它记；null = 不显示。挂了商品且自己没设 = 继承商品的默认单位 */
   unit: string | null;
+  /** true = unit 来自所属商品的默认（改商品的默认单位会跟着变） */
+  unitInherited?: boolean;
   /** 包装单位清单（录入用，开单时可选其一，系统换算成基本单位入账）。null / 缺省 = 没有包装 */
   packages?: SkuPackage[] | null;
+  /** true = packages 来自所属商品的默认包装（改商品的默认包装会跟着变） */
+  packagesInherited?: boolean;
   /** 档案状态（A2 软停用）：'archived' = 已停用（默认隐藏）；缺省 = 启用 */
   status?: string;
   name: string;
@@ -122,13 +126,17 @@ export interface ReturnableView {
   lines: ReturnableLine[];
 }
 
-/** 商品（多规格 SPU，GET /api/products）：SKU 的上一级归组，本身不记库存——条码/单位/安全库存都在 SKU 上 */
+/** 商品（多规格 SPU，GET /api/products）：SKU 的上一级归组。基本单位与默认包装设在商品上，挂在下面的 SKU 不单独设置就继承 */
 export interface Product {
   id: string;
   productCode: string;
   name: string;
   /** 规格维度定义（声明序 = 展示序）；空数组 = 无维度（单规格归组） */
   specDims: ProductSpecDim[];
+  /** 默认基本单位（如 瓶 / 件）：库存按它记；null = 未设 */
+  unit: string | null;
+  /** 默认包装单位：开单可按包装录入，系统换算成基本单位入账；null = 无 */
+  packages: SkuPackage[] | null;
   /** 档案状态：'archived' = 已停用（默认隐藏）；缺省 = 启用 */
   status?: string;
   /** 已挂的规格 SKU 数（含停用档）——服务端联查补上 */
@@ -903,19 +911,27 @@ export const wmsApi = {
   product: (productCode: string) => request<Product>(`/api/products/${encodeURIComponent(productCode)}`),
   /**
    * 建商品（多规格 SPU）。productCode 留空走编号规则（PRD-0001）；
+   * unit / packages 是默认基本单位与默认包装（挂在下面的 SKU 不单独设置就继承）；
    * specDims 不传 = 无维度（单规格归组），传了 = 之后每个规格组合用 createSku 挂上来。
    */
-  createProduct: (body: { productCode?: string; name: string; specDims?: ProductSpecDim[]; extData?: Record<string, unknown> }) =>
-    request<{ productId: string; productCode: string; name: string; specDims: ProductSpecDim[] }>('/api/products', {
+  createProduct: (body: {
+    productCode?: string;
+    name: string;
+    specDims?: ProductSpecDim[];
+    unit?: string;
+    packages?: SkuPackage[];
+    extData?: Record<string, unknown>;
+  }) =>
+    request<{ productId: string; productCode: string; name: string; specDims: ProductSpecDim[]; unit: string | null; packages: SkuPackage[] | null }>('/api/products', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
   /** 改商品：只传要改的字段；specDims 整体替换且不能甩开已挂 SKU 的组合（400 WMS_SPEC_DIM_IN_USE） */
   updateProduct: (
     productCode: string,
-    body: { name?: string; specDims?: ProductSpecDim[]; extData?: Record<string, unknown> },
+    body: { name?: string; specDims?: ProductSpecDim[]; unit?: string; packages?: SkuPackage[]; extData?: Record<string, unknown> },
   ) =>
-    request<{ productId: string; productCode: string; name: string; specDims: ProductSpecDim[] }>(
+    request<{ productId: string; productCode: string; name: string; specDims: ProductSpecDim[]; unit: string | null; packages: SkuPackage[] | null }>(
       `/api/products/${encodeURIComponent(productCode)}`,
       { method: 'PUT', body: JSON.stringify(body) },
     ),

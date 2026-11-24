@@ -1,14 +1,21 @@
 import { useEffect } from 'react';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { App as AntApp, Button, Form, Input, Modal, Select, Space } from 'antd';
+import { App as AntApp, AutoComplete, Button, Form, Input, Modal, Select, Space } from 'antd';
 import { useCreateProduct, useUpdateProduct } from '../api/hooks';
 import { ApiError } from '../api/client';
-import type { Product, ProductSpecDim } from '../api/client';
+import type { Product, ProductSpecDim, SkuPackage } from '../api/client';
 import { filledCode, useSeededField } from './use-seeded-code';
+import PackageLadder, {
+  BASE_UNIT_PRESETS,
+  ladderToPackages,
+  packagesToLadder,
+} from './package-ladder';
 
 /**
- * 商品表单（多规格 SPU）：新建 / 编辑复用。
+ * 商品表单（多规格 SPU）：新建 / 编辑复用，一体化录入。
  * productCode 是业务键，编辑态不出现（历史 SKU 按它挂靠）。
+ * 基本单位 + 包装阶梯在商品上设一次，挂在下面的 SKU 不单独设置就自动沿用——
+ * 「一箱四包、一包六瓶」逐级填，系统累乘出对基本单位的比率。
  * specDims 是「维度名 + 取值清单」的可增删列表，整体替换下发——
  * 删掉已挂 SKU 在用的维度/取值会被服务端拒（WMS_SPEC_DIM_IN_USE），
  * 界面上只做去空白与去重，语义守卫留在工具层。
@@ -28,6 +35,7 @@ export default function ProductFormModal({
   const create = useCreateProduct();
   const update = useUpdateProduct();
   const editing = product !== null;
+  const unitValue = (Form.useWatch('unit', form) as string | undefined)?.trim() ?? '';
 
   useEffect(() => {
     if (!open) return;
@@ -36,6 +44,8 @@ export default function ProductFormModal({
     form.setFieldsValue({
       name: product.name,
       specDims: product.specDims.map((d) => ({ name: d.name, values: [...d.values] })),
+      ...(product.unit ? { unit: product.unit } : {}),
+      packSteps: packagesToLadder(product.packages),
     });
   }, [open, form, product]);
 
@@ -43,8 +53,11 @@ export default function ProductFormModal({
 
   const submit = async (values: Record<string, unknown>) => {
     let specDims: ProductSpecDim[];
+    let packages: SkuPackage[];
+    const unit = (values.unit as string | undefined)?.trim() ?? '';
     try {
       specDims = normalizeDims(values.specDims);
+      packages = ladderToPackages(values.packSteps as { unit: string; n: number }[] | undefined, unit);
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e));
       return;
@@ -53,7 +66,8 @@ export default function ProductFormModal({
       if (editing) {
         await update.mutateAsync({
           productCode: product.productCode,
-          body: { name: values.name as string, specDims },
+          // unit / packages 显式传（空串 / [] = 清空）；原样重发幂等，不甩开继承语义
+          body: { name: values.name as string, specDims, unit, packages },
         });
         message.success(`商品 ${product.productCode} 已更新`);
       } else {
@@ -62,6 +76,8 @@ export default function ProductFormModal({
           ...(productCode ? { productCode } : {}),
           name: values.name as string,
           ...(specDims.length ? { specDims } : {}),
+          ...(unit ? { unit } : {}),
+          ...(packages.length ? { packages } : {}),
         });
         message.success(`商品 ${created.productCode} 已创建`);
       }
@@ -99,7 +115,30 @@ export default function ProductFormModal({
         </Form.Item>
 
         <Form.Item
-          label="规格维度（可选）"
+          name="unit"
+          label="基本单位（可选）"
+          extra="库存与账面按它记，如 瓶 / 件 / kg。挂在下面的 SKU 不单独设置就沿用这个。"
+        >
+          <AutoComplete
+            placeholder="如 瓶（可输入自定义单位）"
+            style={{ width: '50%' }}
+            options={BASE_UNIT_PRESETS.map((u) => ({ value: u }))}
+          />
+        </Form.Item>
+        <Form.Item
+          label="包装换算（可选，开单时可直接按箱 / 包录入，系统折成基本单位入账）"
+          extra={
+            unitValue
+              ? `从大到小逐级填「1 箱 = 4 包」，最后一级折成「${unitValue}」，系统累乘。挂在下面的 SKU 不单独设置就沿用。改比例不影响已开的单据。`
+              : '先填基本单位，才能定义包装——换算的分母是基本单位。挂在下面的 SKU 不单独设置就沿用。'
+          }
+          style={{ marginBottom: 16 }}
+        >
+          <PackageLadder name="packSteps" baseUnit={unitValue} />
+        </Form.Item>
+
+        <Form.Item
+          label="规格维度（可选，如 颜色 × 尺码——不是箱 / 包这类包装单位）"
           extra={
             editing
               ? '整体替换：删掉已挂 SKU 在用的维度或取值会被拒绝；加维度要先给已挂 SKU 补上取值。'

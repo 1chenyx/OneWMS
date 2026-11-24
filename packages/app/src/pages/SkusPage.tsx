@@ -101,13 +101,25 @@ export default function SkusPage() {
       render: (v: string | null) => v ?? <Typography.Text type="secondary">-</Typography.Text>,
     },
     {
-      // 基本单位 + 包装换算：`瓶（箱=24、包=6）`；没包装就是基本单位本身
+      // 基本单位 + 包装换算：`瓶（箱=24、包=6）`；没包装就是基本单位本身。
+      // 继承商品的默认值时加个「继承」标（改默认去商品上改，全部规格一起生效）
       title: '单位',
       dataIndex: 'unit',
       key: 'unit',
       render: (v: string | null, r) => {
         const text = fmtUnitWithPackages(v, r.packages);
-        return text === '-' ? <Typography.Text type="secondary">-</Typography.Text> : text;
+        if (text === '-') return <Typography.Text type="secondary">-</Typography.Text>;
+        const inherited = Boolean(r.productCode) && (r.unitInherited || r.packagesInherited);
+        return (
+          <span>
+            {text}
+            {inherited ? (
+              <Tag style={{ marginInlineStart: 4, marginInlineEnd: 0 }} title="跟随商品默认，改默认去商品上改">
+                继承
+              </Tag>
+            ) : null}
+          </span>
+        );
       },
     },
     {

@@ -373,6 +373,8 @@ describe('单据端点', () => {
         batchExpiryDate: null,
         serialTracked: false,
         fulfilledQty: null,
+        enteredQty: null,
+        enteredUnit: null,
       },
       {
         skuCode: 'B-2',
@@ -385,6 +387,8 @@ describe('单据端点', () => {
         batchExpiryDate: null,
         serialTracked: false,
         fulfilledQty: null,
+        enteredQty: null,
+        enteredUnit: null,
       },
     ]);
 

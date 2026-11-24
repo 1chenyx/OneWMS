@@ -362,6 +362,7 @@ export class InventoryView {
     const where = `
       FROM wms_inventory i
       LEFT JOIN wms_sku s ON s.workspace_id = i.workspace_id AND s.id = i.sku_id
+      LEFT JOIN wms_product p ON p.workspace_id = s.workspace_id AND p.id = s.product_id
       LEFT JOIN (
         SELECT sku_id, SUM(quantity) AS held
         FROM wms_inventory_hold
@@ -415,7 +416,7 @@ export class InventoryView {
            COALESCE(h.held, 0) AS held,
            COALESCE(r.reserved, 0) AS reserved,
            COALESCE(s.reorder_point, 0) AS reorder_point,
-           s.unit AS unit
+           COALESCE(s.unit, p.unit) AS unit
          ${where}
          ORDER BY sku_code
          LIMIT ? OFFSET ?`,

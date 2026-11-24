@@ -31,11 +31,15 @@ export interface SkuRecord {
   readonly status?: string;
   /** 单位（A3）：数量单位（kg / 箱 / 件…）；null = 不显示。换算语境下是基本单位 */
   readonly unit: string | null;
+  /** unit 是从所属商品继承来的（SKU 自己没设）；改商品的默认单位会跟着变 */
+  readonly unitInherited: boolean;
   /**
    * 包装单位（换算）：[{unit:'箱', ratio:24}]——1 箱 = 24 个基本单位；
    * null = 无包装单位（单据只能按基本单位录）。空数组读取层归一成 null。
    */
   readonly packages: readonly SkuPackageDef[] | null;
+  /** packages 是从所属商品继承来的（SKU 自己没定义）；改商品的默认包装会跟着变 */
+  readonly packagesInherited: boolean;
   /** 按序列号管理（module.serial）。老数据缺省否 */
   readonly serialTracked: boolean;
   /** 所属商品 id（多规格）：null = 独立商品（不挂 SPU，存量/单规格） */
@@ -58,6 +62,9 @@ interface SkuRow {
   status: string;
   unit: string | null;
   packages: string | null;
+  /** LEFT JOIN wms_product 带出的商品默认值（继承用）；没挂商品或商品没设 = null */
+  product_unit: string | null;
+  product_packages: string | null;
   serial_tracked: number;
   ext_data: string;
   created_at: string;
@@ -72,13 +79,19 @@ function parseVariantAttrs(raw: string | null): Record<string, string> | null {
 }
 
 /** 空数组 = 清空（sku.update 传 [] 时事件写 []），读取层归一成 null */
-function parsePackages(raw: string | null): readonly SkuPackageDef[] | null {
-  if (!raw) return null;
+function parsePackages(raw: string): readonly SkuPackageDef[] | null {
   const parsed = JSON.parse(raw) as SkuPackageDef[];
   return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
 }
 
+/**
+ * 读取层继承：SKU 自己没存的单位 / 包装（列 NULL）回落到所属商品的默认值。
+ * 读取层解析而不是建 SKU 时抄一份——改商品的默认值，所有继承的 SKU 立即生效。
+ * packages 列存过 '[]' = 这个 SKU 明确不要包装（覆盖成「无」），不回落。
+ */
 function rowToRecord(row: SkuRow): SkuRecord {
+  const productPackages = row.product_packages ? parsePackages(row.product_packages) : null;
+  const ownPackages = row.packages === null ? undefined : parsePackages(row.packages);
   return {
     id: row.id,
     skuCode: row.sku_code,
@@ -88,8 +101,10 @@ function rowToRecord(row: SkuRow): SkuRecord {
     variantAttrs: parseVariantAttrs(row.variant_attrs),
     reorderPoint: row.reorder_point,
     status: row.status,
-    unit: row.unit || null,
-    packages: parsePackages(row.packages),
+    unit: row.unit || row.product_unit || null,
+    unitInherited: !row.unit && Boolean(row.product_unit),
+    packages: ownPackages === undefined ? productPackages : ownPackages,
+    packagesInherited: ownPackages === undefined && productPackages !== null,
     serialTracked: row.serial_tracked === 1,
     extData: JSON.parse(row.ext_data) as Record<string, unknown>,
     createdAt: row.created_at,
@@ -175,9 +190,7 @@ export class SkuView {
   /** 按编码查（业务键） */
   byCode(skuCode: string): SkuRecord | undefined {
     const row = this.db
-      .prepare<unknown[], SkuRow>(
-        `SELECT * FROM wms_sku WHERE workspace_id = ? AND sku_code = ?`,
-      )
+      .prepare<unknown[], SkuRow>(`${SELECT_WITH_PRODUCT} WHERE s.workspace_id = ? AND s.sku_code = ?`)
       .get(this.workspaceId, skuCode);
     return row ? rowToRecord(row) : undefined;
   }
@@ -185,9 +198,7 @@ export class SkuView {
   /** 按条码查（M18：扫码枪识读入口——wms.sku.resolve 工具与唯一校验共用） */
   byBarcode(barcode: string): SkuRecord | undefined {
     const row = this.db
-      .prepare<unknown[], SkuRow>(
-        `SELECT * FROM wms_sku WHERE workspace_id = ? AND barcode = ?`,
-      )
+      .prepare<unknown[], SkuRow>(`${SELECT_WITH_PRODUCT} WHERE s.workspace_id = ? AND s.barcode = ?`)
       .get(this.workspaceId, barcode);
     return row ? rowToRecord(row) : undefined;
   }
@@ -205,7 +216,7 @@ export class SkuView {
   byProduct(productId: string): SkuRecord[] {
     const rows = this.db
       .prepare<unknown[], SkuRow>(
-        `SELECT * FROM wms_sku WHERE workspace_id = ? AND product_id = ? ORDER BY sku_code`,
+        `${SELECT_WITH_PRODUCT} WHERE s.workspace_id = ? AND s.product_id = ? ORDER BY s.sku_code`,
       )
       .all(this.workspaceId, productId) as unknown as SkuRow[];
     return rows.map(rowToRecord);
@@ -224,7 +235,7 @@ export class SkuView {
   listMatching(opts: { barcode?: string; skuCode?: string; q?: string; includeArchived?: boolean }): SkuRecord[] {
     const { where, args } = this.#match(opts);
     const rows = this.db
-      .prepare<unknown[], SkuRow>(`SELECT * FROM wms_sku WHERE ${where} ORDER BY sku_code`)
+      .prepare<unknown[], SkuRow>(`${SELECT_WITH_PRODUCT} WHERE ${where} ORDER BY s.sku_code`)
       .all(...args) as unknown as SkuRow[];
     return rows.map(rowToRecord);
   }
@@ -240,38 +251,39 @@ export class SkuView {
   }): { rows: SkuRecord[]; total: number } {
     const { where, args } = this.#match(opts);
     const total = (
-      this.db.prepare(`SELECT COUNT(*) AS total FROM wms_sku WHERE ${where}`).get(...args) as {
+      this.db.prepare(`SELECT COUNT(*) AS total FROM wms_sku s WHERE ${where}`).get(...args) as {
         total: number;
       }
     ).total;
     const rows = this.db
       .prepare<unknown[], SkuRow>(
-        `SELECT * FROM wms_sku WHERE ${where} ORDER BY sku_code LIMIT ? OFFSET ?`,
+        `${SELECT_WITH_PRODUCT} WHERE ${where} ORDER BY s.sku_code LIMIT ? OFFSET ?`,
       )
       .all(...args, opts.limit, opts.offset) as unknown as SkuRow[];
     return { rows: rows.map(rowToRecord), total };
   }
 
+  /** 列都带 s. 前缀：SELECT_WITH_PRODUCT 关联了 wms_product，它也有 workspace_id / name */
   #match(opts: { barcode?: string; skuCode?: string; q?: string; includeArchived?: boolean }): {
     where: string;
     args: unknown[];
   } {
-    const where = ['workspace_id = ?'];
+    const where = ['s.workspace_id = ?'];
     const args: unknown[] = [this.workspaceId];
     if (opts.barcode) {
-      where.push('barcode = ?');
+      where.push('s.barcode = ?');
       args.push(opts.barcode);
     }
     if (opts.skuCode) {
-      where.push('sku_code = ?');
+      where.push('s.sku_code = ?');
       args.push(opts.skuCode);
     }
     if (!opts.includeArchived && !opts.barcode && !opts.skuCode) {
-      where.push(`(status = 'active' OR status IS NULL)`);
+      where.push(`(s.status = 'active' OR s.status IS NULL)`);
     }
     if (opts.q) {
       where.push(
-        `(sku_code LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\' OR IFNULL(barcode, '') LIKE ? ESCAPE '\\')`,
+        `(s.sku_code LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\' OR IFNULL(s.barcode, '') LIKE ? ESCAPE '\\')`,
       );
       const pat = likeContains(opts.q);
       args.push(pat, pat, pat);
@@ -281,10 +293,18 @@ export class SkuView {
 
   #byIdRaw(id: string): SkuRow | undefined {
     return this.db
-      .prepare<unknown[], SkuRow>(`SELECT * FROM wms_sku WHERE workspace_id = ? AND id = ?`)
+      .prepare<unknown[], SkuRow>(`${SELECT_WITH_PRODUCT} WHERE s.workspace_id = ? AND s.id = ?`)
       .get(this.workspaceId, id) as SkuRow | undefined;
   }
 }
+
+/**
+ * 读取用的 FROM：LEFT JOIN 所属商品，带出它的默认单位 / 包装（读取层继承，见 rowToRecord）。
+ * 关联后 wms_sku 的列必须带 s. 前缀——wms_product 也有 workspace_id / name。
+ */
+const SELECT_WITH_PRODUCT = `SELECT s.*, p.unit AS product_unit, p.packages AS product_packages
+       FROM wms_sku s
+       LEFT JOIN wms_product p ON p.workspace_id = s.workspace_id AND p.id = s.product_id`;
 
 function likeContains(q: string): string {
   return `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;

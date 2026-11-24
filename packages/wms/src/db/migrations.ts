@@ -139,6 +139,15 @@ export function migrateWms(db: SqliteDatabase): void {
       );
       CREATE INDEX IF NOT EXISTS idx_wms_product_ws ON wms_product (workspace_id);
     `);
+    // 商品的默认基本单位 + 包装单位（JSON [{unit,ratio}]）：挂在其下的 SKU 未自带时继承。
+    // 两列可空，老库 ALTER 补列即可（NULL = 未设）
+    const productColsNow = db.pragma('table_info(wms_product)') as { name: string }[];
+    if (!productColsNow.some((c) => c.name === 'unit')) {
+      db.exec(`ALTER TABLE wms_product ADD COLUMN unit TEXT`);
+    }
+    if (!productColsNow.some((c) => c.name === 'packages')) {
+      db.exec(`ALTER TABLE wms_product ADD COLUMN packages TEXT`);
+    }
 
     // ── 库位主数据（M10，业务键：workspace + location_code；扁平模型，层级是生长点）──
     db.exec(`

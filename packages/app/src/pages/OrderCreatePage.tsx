@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { orderNumberPlace } from '@one/wms/numbering';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { App as AntApp, Button, Card, Input, InputNumber, Select, Table, Typography } from 'antd';
+import { App as AntApp, Button, Card, Input, Segmented, Select, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ApiError, skuLabel } from '../api/client';
 import type { InventoryBucketRow, InventoryRow, Location, Sku } from '../api/client';
@@ -64,6 +64,47 @@ function baseQuantity(line: Pick<LineDraft, 'quantity' | 'unit'>, sku: Pick<Sku,
   return ratio ? Number((line.quantity * ratio).toFixed(3)) : line.quantity;
 }
 
+// ── 录入单位记忆：按「方向 + SKU」记住上次用的单位，下次选中这个货直接带上 ──
+const UNIT_MEMORY_KEY = 'owms:line-unit-memory';
+
+function rememberUnit(direction: string, skuCode: string, unit: string): void {
+  try {
+    const map = JSON.parse(localStorage.getItem(UNIT_MEMORY_KEY) ?? '{}') as Record<string, string>;
+    map[`${direction}:${skuCode}`] = unit;
+    localStorage.setItem(UNIT_MEMORY_KEY, JSON.stringify(map));
+  } catch {
+    // 隐私模式 / 存储被占满：记住失败就算了，不影响开单
+  }
+}
+
+/** 记住的单位在新 SKU 上未必存在（换货/改档案）：allowed 过滤，认不出回落基本单位 */
+function recallUnit(direction: string, skuCode: string, sku: Sku | undefined): string {
+  let remembered = '';
+  try {
+    const map = JSON.parse(localStorage.getItem(UNIT_MEMORY_KEY) ?? '{}') as Record<string, string>;
+    remembered = map[`${direction}:${skuCode}`] ?? '';
+  } catch {
+    return '';
+  }
+  if (!remembered || !sku) return '';
+  if (remembered === sku.unit) return '';
+  return sku.packages?.some((p) => p.unit === remembered) ? remembered : '';
+}
+
+/** 数量框文本 → { 数量, 录入单位 }：认「2」「2.5」「2箱」这类写法（单位须是该 SKU 定义的） */
+function parseQtyText(raw: string, sku: Sku | undefined): { quantity: number; unit?: string } | null {
+  const m = raw.match(/^\s*(\d+(?:\.\d+)?)\s*(.*?)\s*$/);
+  if (!m) return null;
+  const quantity = Number(m[1]);
+  if (!Number.isFinite(quantity)) return null;
+  const suffix = m[2] ?? '';
+  if (!suffix) return { quantity };
+  if (!sku) return null;
+  if (suffix === sku.unit) return { quantity, unit: '' };
+  if (sku.packages?.some((p) => p.unit === suffix)) return { quantity, unit: suffix };
+  return null; // 单位认不出：只当文本，不改数量
+}
+
 function splitSerials(text: string): string[] {
   return text
     .split(/[\s,，]+/)
@@ -71,7 +112,11 @@ function splitSerials(text: string): string[] {
     .filter((part) => part.length > 0);
 }
 
-function withScan(lines: LineDraft[], skuCode: string): { lines: LineDraft[]; key: string } {
+function withScan(
+  lines: LineDraft[],
+  skuCode: string,
+  defaultUnit = '',
+): { lines: LineDraft[]; key: string } {
   const found = lines.findIndex((line) => line.skuCode === skuCode);
   if (found >= 0) {
     const key = lines[found]!.key;
@@ -87,10 +132,10 @@ function withScan(lines: LineDraft[], skuCode: string): { lines: LineDraft[]; ke
     const key = lines[empty]!.key;
     return {
       key,
-      lines: lines.map((line, index) => (index === empty ? { ...line, skuCode, quantity: 1 } : line)),
+      lines: lines.map((line, index) => (index === empty ? { ...line, skuCode, quantity: 1, unit: defaultUnit } : line)),
     };
   }
-  const added = { ...blankLine(), skuCode, quantity: 1 };
+  const added = { ...blankLine(), skuCode, quantity: 1, unit: defaultUnit };
   return { key: added.key, lines: [...lines, added] };
 }
 
@@ -117,6 +162,8 @@ export default function OrderCreatePage({
   const [expectedAt, setExpectedAt] = useState('');
   const [lines, setLines] = useState<LineDraft[]>(() => [blankLine()]);
   const [focusKey, setFocusKey] = useState<string | null>(null);
+  // 数量框的原始文本（支持「2箱」这类写法）：敲键时先存原文再解析，失焦后归一成「数量+单位」
+  const [qtyTexts, setQtyTexts] = useState<Record<string, string>>({});
 
   const modules = snapshot.data?.modules;
   const asnOn = modules?.['module.asn']?.enabled === true;
@@ -157,8 +204,12 @@ export default function OrderCreatePage({
       return;
     }
     setLines((prev) => {
-      const next = withScan(prev, sku.skuCode);
+      // 新扫入的行带上这个货上次用的录入单位（记过的）；已在本单的行只加数量
+      const next = withScan(prev, sku.skuCode, recallUnit(direction, sku.skuCode, sku));
       setFocusKey(next.key);
+      // 数量变了（+1 / 新行）：数量框文本跟着刷新成「数量+单位」
+      const line = next.lines.find((l) => l.key === next.key);
+      if (line) setQtyTexts((texts) => ({ ...texts, [line.key]: `${line.quantity}${line.unit}` }));
       return next.lines;
     });
     message.success(`已记入 ${sku.skuCode} · ${skuLabel(sku)}`);
@@ -201,8 +252,11 @@ export default function OrderCreatePage({
           style={{ width: '100%', minWidth: 220 }}
           value={line.skuCode || undefined}
           onChange={(value) => {
-            // 换商品：录入单位跟着复位（旧商品的包装在新商品上不一定有）
-            patchLine(setLines, line.key, { skuCode: value, unit: '' });
+            // 换商品：带上这个货上次用的录入单位（记过的、且新货上还有效），没有就回基本单位
+            const nextSku = skuRows.find((item) => item.skuCode === value);
+            const unit = recallUnit(direction, value, nextSku);
+            patchLine(setLines, line.key, { skuCode: value, unit });
+            setQtyTexts((texts) => ({ ...texts, [line.key]: '' }));
             setFocusKey(line.key);
           }}
           options={skuRows.map((sku) => ({
@@ -245,26 +299,42 @@ export default function OrderCreatePage({
         return (
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <InputNumber
-                min={0.001}
-                precision={3}
-                value={line.quantity}
-                style={{ flex: 1, minWidth: 100 }}
-                onChange={(value) => patchLine(setLines, line.key, { quantity: typeof value === 'number' ? value : 0 })}
+              <Input
+                aria-label="数量"
+                placeholder="如 2 或 2箱"
+                style={{ flex: 1, minWidth: 100, textAlign: 'right' }}
+                value={qtyTexts[line.key] ?? (line.quantity ? `${line.quantity}${line.unit}` : '')}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setQtyTexts((texts) => ({ ...texts, [line.key]: raw }));
+                  if (raw.trim() === '') {
+                    patchLine(setLines, line.key, { quantity: 0 }); // 清空 = 数量 0（保存会被拦，与旧数字框一致）
+                    return;
+                  }
+                  const parsed = parseQtyText(raw, sku);
+                  if (!parsed) return; // 敲到一半 / 单位还认不出：先只存文本
+                  patchLine(setLines, line.key, {
+                    quantity: parsed.quantity,
+                    ...(parsed.unit !== undefined ? { unit: parsed.unit } : {}),
+                  });
+                }}
+                onBlur={() => setQtyTexts((texts) => ({ ...texts, [line.key]: '' }))}
               />
               {sku?.packages?.length && sku.unit ? (
-                // 定义了包装的商品：单位可选（默认基本单位），选包装时数量按包装计
-                <Select
+                // 定义了包装的商品：分段按钮选录入单位（瓶 │ 包(6) │ 箱(24)），选过的下次直接带上
+                <Segmented
                   aria-label="录入单位"
-                  style={{ width: 88, flex: 'none' }}
                   value={line.unit || sku.unit}
                   options={[
                     { value: sku.unit, label: sku.unit },
-                    ...sku.packages.map((p) => ({ value: p.unit, label: p.unit })),
+                    ...sku.packages.map((p) => ({ value: p.unit, label: `${p.unit}(${p.ratio})` })),
                   ]}
-                  onChange={(value: string) =>
-                    patchLine(setLines, line.key, { unit: value === sku.unit ? '' : value })
-                  }
+                  onChange={(value) => {
+                    const unit = value === sku.unit ? '' : String(value);
+                    patchLine(setLines, line.key, { unit });
+                    setQtyTexts((texts) => ({ ...texts, [line.key]: '' }));
+                    rememberUnit(direction, line.skuCode, unit);
+                  }}
                 />
               ) : sku?.unit ? (
                 <span>{sku.unit}</span>
