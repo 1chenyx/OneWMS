@@ -302,6 +302,7 @@ describe('新建出入库单', () => {
     expect(await screen.findByText('可乐')).toBeInTheDocument();
 
     const qty = screen.getByLabelText('数量');
+    await user.clear(qty); // 扫入时数量框已有「1」，type 是追加语义，先清
     await user.type(qty, '2箱');
     expect(await screen.findByText('= 48 瓶')).toBeInTheDocument();
 
@@ -323,7 +324,7 @@ describe('新建出入库单', () => {
     await user.click(screen.getByRole('button', { name: '保存单据' }));
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
 
-    await user.click(screen.getByRole('button', { name: /返回列表/ }));
+    // 保存成功自动回列表：再开一单，扫同一货直接带上次的单位
     await user.click(screen.getByRole('button', { name: /新建单据/ }));
     await user.type(screen.getByPlaceholderText(/扫条码或编码/), 'C-3{Enter}');
     // 再扫：直接带上次的单位（1 箱 → = 24 瓶）
@@ -336,7 +337,6 @@ describe('新建出入库单', () => {
     });
 
     // 没有包装的货（A-1）：记忆里没有它的条目，照旧按基本单位
-    await user.click(screen.getByRole('button', { name: /返回列表/ }));
     await user.click(screen.getByRole('button', { name: /新建单据/ }));
     await user.type(screen.getByPlaceholderText(/扫条码或编码/), '6901234567892{Enter}');
     expect(await screen.findByText('螺丝')).toBeInTheDocument();

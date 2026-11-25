@@ -107,6 +107,12 @@ export interface SkuCreatedPayload {
    * 单据行可选包装单位录入，落事件前换算成基本单位。缺省 = 无包装单位。
    */
   readonly packages?: readonly SkuPackageDef[];
+  /**
+   * 包装级条码（可选）：{"箱":"690..."}——扫这个码 = 识别出该 SKU 且按「箱」录入。
+   * 键必须是该 SKU 的包装单位（自有或继承商品的）；同库所有码位（基本条码 +
+   * 全部包装条码）互不重码。缺省 = 无包装条码。
+   */
+  readonly packageBarcodes?: Record<string, string>;
   /** 按序列号管理（module.serial）。缺省 = 否 */
   readonly serialTracked?: boolean;
   /**
@@ -139,6 +145,11 @@ export interface SkuUpdatedPayload {
    * 删改包定义不影响已开单——行上另有 enteredQty/enteredUnit 录入快照。
    */
   readonly packages?: readonly SkuPackageDef[];
+  /**
+   * 包装级条码（箱码）：显式传才改（整体替换）；{} = 清空。键须对齐 SKU 的包装单位，
+   * 全库所有码位互不重码（工具层守卫）。删掉条码不影响历史单据。
+   */
+  readonly packageBarcodes?: Record<string, string>;
   /** 按序列号管理。缺省 = 不改。只有 module.serial 启用时工具才会写。 */
   readonly serialTracked?: boolean;
   /**

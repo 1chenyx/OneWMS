@@ -115,6 +115,11 @@ export function migrateWms(db: SqliteDatabase): void {
     if (skuColsNow.length > 0 && !skuColsNow.some((c) => c.name === 'packages')) {
       db.exec(`ALTER TABLE wms_sku ADD COLUMN packages TEXT`);
     }
+    // 包装级条码（箱码）：JSON {"箱":"690..."}，可空（NULL = 没设）。
+    // 键必须对上 SKU 的包装单位（自有或继承商品的），扫到即按该包装录入
+    if (skuColsNow.length > 0 && !skuColsNow.some((c) => c.name === 'package_barcodes')) {
+      db.exec(`ALTER TABLE wms_sku ADD COLUMN package_barcodes TEXT`);
+    }
     // 「一个商品下有哪些规格」下钻查询；列补齐后再建（老库首开时列刚 ALTER 出来）
     db.exec(`CREATE INDEX IF NOT EXISTS idx_wms_sku_product ON wms_sku (workspace_id, product_id)`);
 

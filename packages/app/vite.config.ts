@@ -47,7 +47,8 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./test/setup.ts'],
     // jsdom + AntD 交互测试在本机较慢（冻结弹窗等多步 userEvent 单测约 40s，
-    // 全仓并行跑时更甚）——统一放宽超时，避免环境慢误报为失败
-    testTimeout: 90000,
+    // 全仓并行跑时更甚，档案表单的阶梯/矩阵用例实测可到 100s+）——统一放宽
+    // 超时到 4 分钟，避免环境慢被误报为失败；断言语义不受影响
+    testTimeout: 240000,
   },
 });

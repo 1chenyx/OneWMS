@@ -23,13 +23,35 @@ export function normalizeBarcode(raw: string): string {
 
 /**
  * 条码唯一校验（M18）：同库条码不允许二义（扫码识读必须有唯一解）。
- * 占用者是当前 SKU 自身时放行（改其他字段不动条码 / 重复声明同码）。
+ * 码位 = 基本 barcode 或任一 SKU 的任一包装条码（箱码）——全库互不重码。
+ * 占用者是当前 SKU 自身时放行（改其他字段不动条码 / 重复声明同码）；
+ * selfSlot 是本次写入的码位（'base' 或包装单位名），同 SKU 自己的其它码位撞上也拒
+ * （一个 SKU 的箱码和基本条码同码，扫码没有唯一解）。
  */
-export function assertBarcodeFree(ws: WmsWorkspace, barcode: string, selfSkuId?: string): void {
-  const holder = ws.skus.byBarcode(barcode);
-  if (holder && holder.id !== selfSkuId) {
-    throw new SkuBarcodeExistsError(barcode, holder.skuCode);
+export function assertBarcodeFree(ws: WmsWorkspace, barcode: string, selfSkuId?: string, selfSlot?: string): void {
+  const conflict = findBarcodeConflict(ws, barcode, selfSkuId, selfSlot ?? 'base');
+  if (conflict) throw new SkuBarcodeExistsError(barcode, conflict);
+}
+
+/** 全库扫一遍所有码位（含停用档），返回撞码者的描述；无冲突返回 undefined */
+function findBarcodeConflict(
+  ws: WmsWorkspace,
+  barcode: string,
+  selfSkuId?: string,
+  selfSlot?: string,
+): string | undefined {
+  for (const sku of ws.skus.list()) {
+    const self = sku.id === selfSkuId;
+    if (sku.barcode === barcode && !(self && selfSlot === 'base')) {
+      return self ? `本 SKU 的基本条码` : `SKU ${sku.skuCode} 的基本条码`;
+    }
+    for (const [unit, bc] of Object.entries(sku.packageBarcodes ?? {})) {
+      if (bc === barcode && !(self && selfSlot === unit)) {
+        return self ? `本 SKU 的 ${unit} 码` : `SKU ${sku.skuCode} 的 ${unit} 码`;
+      }
+    }
   }
+  return undefined;
 }
 
 // ── 包装单位换算守卫 ─────────────────────────────────
@@ -68,6 +90,43 @@ export function normalizePackages(
     }
     seen.add(unit);
     out.push({ unit, ratio: quantizeQty(ratio) });
+  }
+  return out;
+}
+
+/**
+ * 包装级条码（箱码）的形状与语义校验（wms.sku.create / wms.sku.update 共用）。
+ * 规则：键必须是该 SKU 的包装单位名（自有或继承商品的——扫箱码的意义就是
+ * 「识别这个货 + 按箱入账」，没有对应换算的码没有意义）；值 trim 非空；
+ * 全库所有码位互不重码（含自己的基本条码与其它包装位）；同一次提交里两个
+ * 包装不能共用一个码。返回规整后的 map；空对象原样返回（调用方按「清空」落事件）。
+ */
+export function normalizePackageBarcodes(
+  raw: Record<string, string>,
+  allowedUnits: readonly string[],
+  ws: WmsWorkspace,
+  selfSkuId?: string,
+): Record<string, string> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new SkuPackagesInvalidError('packageBarcodes 必须是「包装单位 → 条码」的对象，如 {"箱":"690..."}');
+  }
+  const out: Record<string, string> = {};
+  for (const [unit, value] of Object.entries(raw)) {
+    const u = unit.trim();
+    const bc = typeof value === 'string' ? value.trim() : '';
+    if (!u && !bc) continue; // 整条空着：当成没填
+    if (!bc) throw new SkuPackagesInvalidError(`包装「${u}」的条码是空白——不设这条就删掉它`);
+    if (!u) throw new SkuPackagesInvalidError('有一条包装条码没写包装单位');
+    if (!allowedUnits.includes(u)) {
+      throw new SkuPackagesInvalidError(
+        `包装「${u}」还没有定义——箱码只能挂在包装单位上（先在 packages 或商品默认包装里定义 ${u}）`,
+      );
+    }
+    if (Object.values(out).includes(bc)) {
+      throw new SkuPackagesInvalidError(`条码 ${bc} 挂到了两个包装上——扫码要能唯一识别单位`);
+    }
+    assertBarcodeFree(ws, bc, selfSkuId, u);
+    out[u] = bc;
   }
   return out;
 }

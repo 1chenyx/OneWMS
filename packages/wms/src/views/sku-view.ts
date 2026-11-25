@@ -40,6 +40,11 @@ export interface SkuRecord {
   readonly packages: readonly SkuPackageDef[] | null;
   /** packages 是从所属商品继承来的（SKU 自己没定义）；改商品的默认包装会跟着变 */
   readonly packagesInherited: boolean;
+  /**
+   * 包装级条码（箱码）：{"箱":"690..."}——键 = 包装单位名，值 = 扫这个码即按该包装录入。
+   * null = 没设。挂在 SKU 上（不是商品）：同款商品不同规格的箱码各不相同。
+   */
+  readonly packageBarcodes: Readonly<Record<string, string>> | null;
   /** 按序列号管理（module.serial）。老数据缺省否 */
   readonly serialTracked: boolean;
   /** 所属商品 id（多规格）：null = 独立商品（不挂 SPU，存量/单规格） */
@@ -62,6 +67,7 @@ interface SkuRow {
   status: string;
   unit: string | null;
   packages: string | null;
+  package_barcodes: string | null;
   /** LEFT JOIN wms_product 带出的商品默认值（继承用）；没挂商品或商品没设 = null */
   product_unit: string | null;
   product_packages: string | null;
@@ -82,6 +88,18 @@ function parseVariantAttrs(raw: string | null): Record<string, string> | null {
 function parsePackages(raw: string): readonly SkuPackageDef[] | null {
   const parsed = JSON.parse(raw) as SkuPackageDef[];
   return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+}
+
+/** 空 map / 非 string 值丢弃，读取层归一成 null */
+function parsePackageBarcodes(raw: string | null): Readonly<Record<string, string>> | null {
+  if (!raw) return null;
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const out: Record<string, string> = {};
+  for (const [unit, bc] of Object.entries(parsed)) {
+    if (typeof bc === 'string' && bc.trim()) out[unit] = bc.trim();
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /**
@@ -105,6 +123,7 @@ function rowToRecord(row: SkuRow): SkuRecord {
     unitInherited: !row.unit && Boolean(row.product_unit),
     packages: ownPackages === undefined ? productPackages : ownPackages,
     packagesInherited: ownPackages === undefined && productPackages !== null,
+    packageBarcodes: parsePackageBarcodes(row.package_barcodes),
     serialTracked: row.serial_tracked === 1,
     extData: JSON.parse(row.ext_data) as Record<string, unknown>,
     createdAt: row.created_at,
@@ -127,8 +146,8 @@ export class SkuView {
         // sku_code / barcode 唯一冲突不走 OR IGNORE 静默——那是业务冲突，必须显式炸出来
         this.db
           .prepare(
-            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, product_id, variant_attrs, reorder_point, status, unit, packages, serial_tracked, ext_data, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO wms_sku (id, workspace_id, sku_code, barcode, name, product_id, variant_attrs, reorder_point, status, unit, packages, package_barcodes, serial_tracked, ext_data, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             p.skuId,
@@ -142,6 +161,7 @@ export class SkuView {
             'active',
             p.unit ?? null,
             p.packages === undefined ? null : JSON.stringify(p.packages),
+            p.packageBarcodes === undefined ? null : JSON.stringify(p.packageBarcodes),
             p.serialTracked === true ? 1 : 0,
             JSON.stringify(p.extData ?? {}),
             env.createdAt,
@@ -161,6 +181,7 @@ export class SkuView {
                reorder_point = COALESCE(?, reorder_point),
                unit = COALESCE(?, unit),
                packages = COALESCE(?, packages),
+               package_barcodes = COALESCE(?, package_barcodes),
                serial_tracked = COALESCE(?, serial_tracked),
                status = COALESCE(?, status),
                ext_data = COALESCE(?, ext_data),
@@ -175,6 +196,7 @@ export class SkuView {
             p.reorderPoint ?? null,
             p.unit ?? null,
             p.packages === undefined ? null : JSON.stringify(p.packages),
+            p.packageBarcodes === undefined ? null : JSON.stringify(p.packageBarcodes),
             p.serialTracked === undefined ? null : p.serialTracked ? 1 : 0,
             p.status ?? null,
             p.extData === undefined ? null : JSON.stringify(p.extData),
@@ -201,6 +223,29 @@ export class SkuView {
       .prepare<unknown[], SkuRow>(`${SELECT_WITH_PRODUCT} WHERE s.workspace_id = ? AND s.barcode = ?`)
       .get(this.workspaceId, barcode);
     return row ? rowToRecord(row) : undefined;
+  }
+
+  /**
+   * 按包装级条码（箱码）查：返回命中条码的 SKU + 包装单位名。
+   * 只认「包装单位仍在该 SKU 当前包装清单里」的条码——商品的默认包装后来删掉
+   * 这个单位后，悬挂的旧码不再识读（避免按已废弃的换算比例入账）。含停用档
+   * （与 byBarcode 的扫码语义一致：旧码的存量库存照常可扫）。
+   */
+  byPackageBarcode(barcode: string): { sku: SkuRecord; unit: string } | undefined {
+    const rows = this.db
+      .prepare<unknown[], SkuRow>(`${SELECT_WITH_PRODUCT} WHERE s.workspace_id = ? ORDER BY s.sku_code`)
+      .all(this.workspaceId) as unknown as SkuRow[];
+    for (const row of rows) {
+      const barcodes = parsePackageBarcodes(row.package_barcodes);
+      if (!barcodes) continue;
+      const record = rowToRecord(row);
+      for (const unit of Object.keys(barcodes)) {
+        if (barcodes[unit] === barcode && record.packages?.some((p) => p.unit === unit)) {
+          return { sku: record, unit };
+        }
+      }
+    }
+    return undefined;
   }
 
   /** 按 id 查 */
